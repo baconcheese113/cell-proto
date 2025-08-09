@@ -49,7 +49,7 @@ export function setHud(scene: Phaser.Scene, ctx: HudCtx) {
   if (!hudText || !hudBg || !objectivesText || !objectivesBg) addHud(scene);
 
   // Main HUD content
-  const header = `Controls: WASD move | 1 Transcribe | 2 Translate | R Stress wave` +
+  const header = `Controls: WASD move | SPACE dash | 1 Transcribe | 2 Translate | R Stress wave` +
     (ctx.nextWaveIn != null ? `  | Next wave in: ${Math.max(0, Math.ceil(ctx.nextWaveIn))}s` : "");
 
   const lines = [
@@ -81,7 +81,7 @@ export function setHud(scene: Phaser.Scene, ctx: HudCtx) {
     "(1 Transcribe, 2 Translate) and delivering",
     "to Peroxisome.",
     "",
-    "Controls: WASD, 1, 2, R",
+    "Controls: WASD, SPACE dash, 1, 2, R",
     "",
     waveTimer,
     survivalTime

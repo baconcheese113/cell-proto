@@ -4,7 +4,7 @@ import { cellMachine } from "../state/cell-machine";
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture, makeStationTexture } from "../gfx/textures";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "ONE" | "TWO" | "R" | "ENTER", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "ONE" | "TWO" | "R" | "ENTER" | "SPACE", Phaser.Input.Keyboard.Key>;
 type CellState = StateFrom<typeof cellMachine>;
 type CellActor = ActorRefFrom<typeof cellMachine>;
 
@@ -58,6 +58,18 @@ export class GameScene extends Phaser.Scene {
   // Contextual tooltips
   private contextTooltip!: Phaser.GameObjects.Text;
   private contextTooltipBg!: Phaser.GameObjects.Rectangle;
+
+  // Movement and dash mechanics
+  private dashCooldown = 0;
+  private maxDashCooldown = 1.5; // 1.5 second cooldown
+  private dashSpeed = 400;
+  private normalMaxSpeed = 100;
+  private acceleration = 500;
+  private isDashing = false;
+  private dashDuration = 0.3; // 200ms dash
+  private dashTimer = 0;
+  private dashCooldownBar!: Phaser.GameObjects.Rectangle;
+  private dashCooldownBg!: Phaser.GameObjects.Rectangle;
 
   private col = {
     bg: 0x0b0f14, gridMinor: 0x10141d, gridMajor: 0x182131,
@@ -128,7 +140,7 @@ export class GameScene extends Phaser.Scene {
     // player
     const pkey = makeDotTexture(this, 16, this.col.player);
     this.player = this.physics.add.sprite(this.cellCenter.x, this.cellCenter.y, pkey).setDepth(4);
-    this.player.setCircle(8).setMaxVelocity(200).setDamping(true).setDrag(0.9);
+    this.player.setCircle(8).setMaxVelocity(this.normalMaxSpeed).setDamping(true).setDrag(0.85);
     const rkey = makeRingTexture(this, 22, 3, this.col.playerRing);
     this.ring = this.add.image(this.player.x, this.player.y, rkey).setDepth(3).setAlpha(0.9);
 
@@ -139,6 +151,10 @@ export class GameScene extends Phaser.Scene {
     this.transcribeCooldownBar = this.add.rectangle(0, 0, barWidth, barHeight, 0x66ddff, 1).setDepth(7).setVisible(false);
     this.translateCooldownBg = this.add.rectangle(0, 0, barWidth, barHeight, 0x333333, 0.8).setDepth(6).setVisible(false);
     this.translateCooldownBar = this.add.rectangle(0, 0, barWidth, barHeight, 0x88ff66, 1).setDepth(7).setVisible(false);
+    
+    // Dash cooldown bar
+    this.dashCooldownBg = this.add.rectangle(0, 0, barWidth, barHeight, 0x333333, 0.8).setDepth(6).setVisible(false);
+    this.dashCooldownBar = this.add.rectangle(0, 0, barWidth, barHeight, 0xffaa44, 1).setDepth(7).setVisible(false);
 
     // Contextual tooltips
     this.contextTooltipBg = this.add.rectangle(0, 0, 300, 40, 0x001122, 0.9).setDepth(8).setVisible(false);
@@ -161,6 +177,7 @@ export class GameScene extends Phaser.Scene {
       TWO: this.input.keyboard!.addKey("TWO"),
       R: this.input.keyboard!.addKey("R"),
       ENTER: this.input.keyboard!.addKey("ENTER"),
+      SPACE: this.input.keyboard!.addKey("SPACE"),
     };
 
     // HUD
@@ -263,13 +280,11 @@ export class GameScene extends Phaser.Scene {
     if (this.gameState === "playing") {
       if (ctx.hp <= 0) {
         this.gameState = "dead";
-        this.player.setVelocity(0, 0);
         this.showOverlay("Cell died: oxidative stress\nPress Enter to restart");
         return;
       }
       if (ctx.survivalTimer <= 0) {
         this.gameState = "won";
-        this.player.setVelocity(0, 0);
         this.showOverlay("Survived!\nPress Enter to play again");
         return;
       }
@@ -281,22 +296,19 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    // Always update movement (including deceleration when game ends)
+    const deltaSeconds = this.game.loop.delta / 1000;
+    this.updateMovement(deltaSeconds);
+
     // Only process game logic when playing
     if (this.gameState !== "playing") return;
 
     // Wave timer management (independent of machine state timer)
-    this.waveTimer -= this.game.loop.delta / 1000;
+    this.waveTimer -= deltaSeconds;
     if (this.waveTimer <= 0) {
       this.triggerStressWave();
       this.waveTimer = 30; // Reset to 30 seconds
     }
-
-    // movement
-    const vx = (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0);
-    const vy = (this.keys.S.isDown ? 1 : 0) - (this.keys.W.isDown ? 1 : 0);
-    const v = new Phaser.Math.Vector2(vx, vy).normalize().scale(200);
-    this.player.setVelocity(v.x, v.y);
-    this.ring.setPosition(this.player.x, this.player.y);
 
     // station ranges and glow effects
     const inNucleus = Phaser.Math.Distance.BetweenPoints(this.player, this.nucleusSprite) < 80;
@@ -397,6 +409,95 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private updateMovement(deltaSeconds: number) {
+    // Update dash timers
+    if (this.dashTimer > 0) {
+      this.dashTimer -= deltaSeconds;
+      if (this.dashTimer <= 0) {
+        this.isDashing = false;
+        this.player.setMaxVelocity(this.normalMaxSpeed);
+        // Reset ring effect
+        this.ring.setScale(1).setAlpha(0.9);
+      }
+    }
+
+    if (this.dashCooldown > 0) {
+      this.dashCooldown -= deltaSeconds;
+    }
+
+    // Only accept input when the game is playing
+    let vx = 0, vy = 0;
+    if (this.gameState === "playing") {
+      // Handle dash input
+      if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) && this.dashCooldown <= 0 && !this.isDashing) {
+        this.startDash();
+      }
+
+      // Get input direction
+      vx = (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0);
+      vy = (this.keys.S.isDown ? 1 : 0) - (this.keys.W.isDown ? 1 : 0);
+    }
+
+    const inputDir = new Phaser.Math.Vector2(vx, vy);
+
+    if (inputDir.lengthSq() > 0) {
+      inputDir.normalize();
+      
+      if (this.isDashing) {
+        // During dash, maintain high speed in dash direction
+        const dashForce = inputDir.scale(this.acceleration * 3);
+        this.player.setAcceleration(dashForce.x, dashForce.y);
+      } else {
+        // Normal acceleration-based movement
+        const force = inputDir.scale(this.acceleration);
+        this.player.setAcceleration(force.x, force.y);
+      }
+    } else {
+      // No input - apply stronger deceleration for more noticeable speed bleed-off
+      this.player.setAcceleration(0, 0);
+      
+      // Apply additional deceleration force to make speed bleed off more noticeable
+      const currentVel = this.player.body.velocity;
+      const deceleration = 50; // Stronger deceleration
+      
+      if (currentVel.lengthSq() > 0) {
+        const decelDir = currentVel.clone().normalize().scale(-deceleration);
+        this.player.setAcceleration(decelDir.x, decelDir.y);
+        
+        // Stop completely when velocity gets very low to avoid jittering
+        if (currentVel.lengthSq() < 100) { // velocity magnitude < 10
+          this.player.setVelocity(0, 0);
+          this.player.setAcceleration(0, 0);
+        }
+      }
+    }
+
+    // Update ring position and visual effects
+    this.ring.setPosition(this.player.x, this.player.y);
+  }
+
+  private startDash() {
+    this.isDashing = true;
+    this.dashTimer = this.dashDuration;
+    this.dashCooldown = this.maxDashCooldown;
+    
+    // Temporarily increase max velocity for dash
+    this.player.setMaxVelocity(this.dashSpeed);
+    
+    // Visual feedback - ring effect
+    this.ring.setScale(1.5).setAlpha(1);
+    this.tweens.add({
+      targets: this.ring,
+      scale: 1,
+      alpha: 0.9,
+      duration: this.dashDuration * 1000,
+      ease: "Power2"
+    });
+
+    // Screen shake effect
+    this.cameras.main.shake(100, 0.01);
+  }
+
   private showMessage(message: string, duration = 1000) {
     this.currentMessage = message;
     this.messageTimer = duration;
@@ -488,6 +589,19 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.translateCooldownBg.setVisible(false);
       this.translateCooldownBar.setVisible(false);
+    }
+
+    // Dash cooldown bar
+    if (this.dashCooldown > 0) {
+      const progress = this.dashCooldown / this.maxDashCooldown;
+      const barWidth = 30 * progress;
+      
+      this.dashCooldownBg.setPosition(this.player.x, barY + 16).setVisible(true);
+      this.dashCooldownBar.setPosition(this.player.x - (30 - barWidth) / 2, barY + 16)
+        .setSize(barWidth, 3).setVisible(true);
+    } else {
+      this.dashCooldownBg.setVisible(false);
+      this.dashCooldownBar.setVisible(false);
     }
   }
 
