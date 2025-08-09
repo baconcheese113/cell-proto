@@ -13,6 +13,7 @@ export type Ctx = {
   cooldownTranslate: number;
   misfolded: number;        // reserved for future use
   nextWaveIn: number;       // countdown timer for next stress wave
+  survivalTimer: number;    // countdown timer to win condition
 };
 
 export type Evt =
@@ -21,7 +22,8 @@ export type Evt =
   | { type: "TRANSCRIBE" }
   | { type: "TRANSLATE" }
   | { type: "DELIVER_CATALASE" }
-  | { type: "STRESS"; amount: number };
+  | { type: "STRESS"; amount: number }
+  | { type: "REPAIR_MISFOLDED" };
 
 const clamp = (v: number, min = 0, max = 999) => Math.max(min, Math.min(max, v));
 
@@ -37,7 +39,7 @@ export const cellMachine = createMachine({
     catalaseFree: 0, catalaseActive: 0,
     stress: 0, hp: 10,
     cooldownTranscribe: 0, cooldownTranslate: 0,
-    misfolded: 0, nextWaveIn: 30
+    misfolded: 0, nextWaveIn: 30, survivalTimer: 120
   },
 
   initial: "homeostasis",
@@ -69,13 +71,19 @@ export const cellMachine = createMachine({
         TRANSLATE: {
           guard: ({ context }) =>
             context.aa >= 3 && context.atp >= 1 && context.mrna > 0 && context.cooldownTranslate <= 0,
-          actions: assign(({ context }) => ({
-            aa: context.aa - 3,
-            atp: context.atp - 1,
-            mrna: context.mrna - 1,
-            catalaseFree: context.catalaseFree + 1,
-            cooldownTranslate: 0.8
-          }))
+          actions: assign(({ context }) => {
+            // Check for misfolding - 30% chance if ATP < 2
+            const shouldMisfold = context.atp < 2 && Math.random() < 0.3;
+            
+            return {
+              aa: context.aa - 3,
+              atp: context.atp - 1,
+              mrna: context.mrna - 1,
+              catalaseFree: shouldMisfold ? context.catalaseFree : context.catalaseFree + 1,
+              misfolded: shouldMisfold ? context.misfolded + 1 : context.misfolded,
+              cooldownTranslate: 0.8
+            };
+          })
         },
 
         DELIVER_CATALASE: {
@@ -83,6 +91,15 @@ export const cellMachine = createMachine({
           actions: assign(({ context }) => ({
             catalaseFree: context.catalaseFree - 1,
             catalaseActive: clamp(context.catalaseActive + 1, 0, 99)
+          }))
+        },
+
+        REPAIR_MISFOLDED: {
+          guard: ({ context }) => context.misfolded > 0 && context.atp >= 1,
+          actions: assign(({ context }) => ({
+            misfolded: context.misfolded - 1,
+            catalaseFree: context.catalaseFree + 1,
+            atp: context.atp - 1
           }))
         },
 
@@ -103,7 +120,8 @@ export const cellMachine = createMachine({
                 cooldownTranscribe: Math.max(0, context.cooldownTranscribe - event.dt),
                 cooldownTranslate: Math.max(0, context.cooldownTranslate - event.dt),
                 nextWaveIn: 30,  // reset timer when wave triggers
-                stress: clamp(context.stress + 20, 0, 100)
+                stress: clamp(context.stress + 20, 0, 100),
+                survivalTimer: Math.max(0, context.survivalTimer - event.dt)
               };
             })
           },
@@ -113,7 +131,8 @@ export const cellMachine = createMachine({
               return {
                 cooldownTranscribe: Math.max(0, context.cooldownTranscribe - event.dt),
                 cooldownTranslate: Math.max(0, context.cooldownTranslate - event.dt),
-                nextWaveIn: Math.max(0, context.nextWaveIn - event.dt)
+                nextWaveIn: Math.max(0, context.nextWaveIn - event.dt),
+                survivalTimer: Math.max(0, context.survivalTimer - event.dt)
               };
             })
           }
@@ -132,7 +151,8 @@ export const cellMachine = createMachine({
             return {
               atp: clamp(context.atp - dmg, 0, 999),
               hp: clamp(context.hp - (dmg > 0 ? 1 : 0), 0, 10),
-              nextWaveIn: Math.max(0, context.nextWaveIn - event.dt)
+              nextWaveIn: Math.max(0, context.nextWaveIn - event.dt),
+              survivalTimer: Math.max(0, context.survivalTimer - event.dt)
             };
           })
         },

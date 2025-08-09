@@ -3,7 +3,7 @@ import type { Ctx } from "../state/cell-machine";
 
 // HUD expects a subset of the machine context; extra fields are fine.
 export type HudCtx = Pick<Ctx,
-  "atp" | "aa" | "nt" | "mrna" | "catalaseFree" | "catalaseActive" | "stress" | "hp"
+  "atp" | "aa" | "nt" | "mrna" | "catalaseFree" | "catalaseActive" | "stress" | "hp" | "survivalTimer"
 > & {
   cooldownTranscribe?: number;
   cooldownTranslate?: number;
@@ -74,6 +74,7 @@ export function setHud(scene: Phaser.Scene, ctx: HudCtx) {
 
   // Objectives panel content
   const waveTimer = ctx.nextWaveIn != null ? `Next wave in: ${Math.max(0, Math.ceil(ctx.nextWaveIn))}s` : "Next wave in: --s";
+  const survivalTime = ctx.survivalTimer != null ? `Survive: ${Math.max(0, Math.ceil(ctx.survivalTimer))}s` : "Survive: --s";
   const objectivesContent = [
     "OBJECTIVE:",
     "Survive stress waves by making Catalase",
@@ -82,7 +83,8 @@ export function setHud(scene: Phaser.Scene, ctx: HudCtx) {
     "",
     "Controls: WASD, 1, 2, R",
     "",
-    waveTimer
+    waveTimer,
+    survivalTime
   ].join("\n");
 
   objectivesText!.setText(objectivesContent);

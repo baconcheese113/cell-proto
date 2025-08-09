@@ -62,7 +62,7 @@ export function makeDotTexture(scene: Phaser.Scene, size: number, color: number)
   return key;
 }
 
-export function makeStationTexture(scene: Phaser.Scene, kind: "Nucleus" | "Ribosome" | "Peroxisome"): string {
+export function makeStationTexture(scene: Phaser.Scene, kind: "Nucleus" | "Ribosome" | "Peroxisome" | "Chaperone"): string {
   const key = `station-${kind}`;
   if (scene.textures.exists(key)) return key;
   const size = 48;
@@ -77,6 +77,12 @@ export function makeStationTexture(scene: Phaser.Scene, kind: "Nucleus" | "Ribos
     gfx.strokeRect(size/2-12, size/2-12, 24, 24);
     gfx.lineBetween(size/2-12, size/2, size/2+12, size/2);
     gfx.lineBetween(size/2, size/2-12, size/2, size/2+12);
+  } else if (kind === "Chaperone") {
+    // Draw a repair/wrench-like symbol
+    gfx.strokeEllipse(size/2, size/2, 20, 12);
+    gfx.strokeRect(size/2-3, size/2-6, 6, 12);
+    gfx.strokeCircle(size/2-8, size/2-4, 3);
+    gfx.strokeCircle(size/2+8, size/2+4, 3);
   }
   gfx.generateTexture(key, size, size);
   gfx.destroy();
