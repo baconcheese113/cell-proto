@@ -61,15 +61,21 @@ export class GameScene extends Phaser.Scene {
 
   // Movement and dash mechanics
   private dashCooldown = 0;
-  private maxDashCooldown = 1.5; // 1.5 second cooldown
-  private dashSpeed = 400;
-  private normalMaxSpeed = 100;
-  private acceleration = 500;
+  private maxDashCooldown = 1.2; // Slightly shorter cooldown for more responsive feel
+  private dashSpeed = 320; // More balanced dash speed
+  private normalMaxSpeed = 120; // Increased base speed for better navigation
+  private acceleration = 600; // Smoother acceleration
   private isDashing = false;
-  private dashDuration = 0.3; // 200ms dash
+  private dashDuration = 0.25; // Slightly shorter dash for snappiness
   private dashTimer = 0;
   private dashCooldownBar!: Phaser.GameObjects.Rectangle;
   private dashCooldownBg!: Phaser.GameObjects.Rectangle;
+
+  // Elastic world mechanics
+  private membraneSpringForce = 400; // Stronger membrane push-back
+  private cameraLerpSpeed = 0.08; // Slightly more responsive camera
+  private cameraSmoothTarget = new Phaser.Math.Vector2(0, 0);
+  private lastMembraneHit = 0;
 
   private col = {
     bg: 0x0b0f14, gridMinor: 0x10141d, gridMajor: 0x182131,
@@ -85,10 +91,14 @@ export class GameScene extends Phaser.Scene {
   constructor() { super("game"); }
 
   create() {
-    // grid
+    // grid - make it large enough to cover camera movement
     const view = this.scale.gameSize;
-    const gridKey = makeGridTexture(this, view.width, view.height, this.col.bg, this.col.gridMinor, this.col.gridMajor);
-    this.grid = this.add.image(0, 0, gridKey).setOrigin(0, 0).setDepth(0);
+    const gridSize = Math.max(view.width, view.height) * 2; // Make grid 2x larger than viewport
+    const gridKey = makeGridTexture(this, gridSize, gridSize, this.col.bg, this.col.gridMinor, this.col.gridMajor);
+    this.grid = this.add.image(0, 0, gridKey).setOrigin(0.5, 0.5).setDepth(0);
+    
+    // Center the grid at the world center
+    this.grid.setPosition(view.width * 0.5, view.height * 0.5);
 
     // center cell
     this.cellCenter.set(view.width * 0.5, view.height * 0.5);
@@ -140,7 +150,7 @@ export class GameScene extends Phaser.Scene {
     // player
     const pkey = makeDotTexture(this, 16, this.col.player);
     this.player = this.physics.add.sprite(this.cellCenter.x, this.cellCenter.y, pkey).setDepth(4);
-    this.player.setCircle(8).setMaxVelocity(this.normalMaxSpeed).setDamping(true).setDrag(0.85);
+    this.player.setCircle(8).setMaxVelocity(this.normalMaxSpeed).setDamping(true).setDrag(0.7);
     const rkey = makeRingTexture(this, 22, 3, this.col.playerRing);
     this.ring = this.add.image(this.player.x, this.player.y, rkey).setDepth(3).setAlpha(0.9);
 
@@ -203,9 +213,11 @@ export class GameScene extends Phaser.Scene {
       const newWidth = Math.ceil(sz.width);
       const newHeight = Math.ceil(sz.height);
       
-      // Regenerate grid texture with new dimensions
-      const key = makeGridTexture(this, newWidth, newHeight, this.col.bg, this.col.gridMinor, this.col.gridMajor);
-      this.grid.setTexture(key).setOrigin(0, 0);
+      // Regenerate grid texture with new larger dimensions
+      const gridSize = Math.max(newWidth, newHeight) * 2;
+      const key = makeGridTexture(this, gridSize, gridSize, this.col.bg, this.col.gridMinor, this.col.gridMajor);
+      this.grid.setTexture(key).setOrigin(0.5, 0.5);
+      this.grid.setPosition(newWidth * 0.5, newHeight * 0.5);
       
       // Re-center everything
       this.cellCenter.set(newWidth * 0.5, newHeight * 0.5);
@@ -240,7 +252,7 @@ export class GameScene extends Phaser.Scene {
     const view = this.scale.gameSize;
     
     // Main overlay container
-    this.overlay = this.add.container(0, 0).setDepth(1000).setVisible(false);
+    this.overlay = this.add.container(0, 0).setDepth(1000).setVisible(false).setScrollFactor(0);
     
     // Overlay background
     this.overlayBg = this.add.rectangle(view.width / 2, view.height / 2, view.width, view.height, 0x000000, 0.8);
@@ -259,7 +271,7 @@ export class GameScene extends Phaser.Scene {
 
     // Pulse overlay for stress waves (full screen flash)
     this.pulseOverlay = this.add.rectangle(view.width / 2, view.height / 2, view.width, view.height, 0xff4444, 0)
-      .setDepth(999);
+      .setDepth(999).setScrollFactor(0);
   }
 
   private spawnPickup(x: number, y: number, kind: "glucose" | "aa" | "nt", color: number) {
@@ -440,37 +452,51 @@ export class GameScene extends Phaser.Scene {
 
     const inputDir = new Phaser.Math.Vector2(vx, vy);
 
+    // Apply elastic membrane boundary forces
+    const elasticForce = this.calculateElasticForces();
+    
     if (inputDir.lengthSq() > 0) {
       inputDir.normalize();
       
-      if (this.isDashing) {
-        // During dash, maintain high speed in dash direction
-        const dashForce = inputDir.scale(this.acceleration * 3);
-        this.player.setAcceleration(dashForce.x, dashForce.y);
-      } else {
-        // Normal acceleration-based movement
-        const force = inputDir.scale(this.acceleration);
-        this.player.setAcceleration(force.x, force.y);
-      }
-    } else {
-      // No input - apply stronger deceleration for more noticeable speed bleed-off
-      this.player.setAcceleration(0, 0);
+      let baseAcceleration = this.acceleration;
       
-      // Apply additional deceleration force to make speed bleed off more noticeable
+      if (this.isDashing) {
+        // During dash, higher acceleration for snappy feel
+        baseAcceleration *= 2.5;
+      } else {
+        // Smooth acceleration ramp-up
+        const currentSpeed = this.player.body.velocity.length();
+        const speedRatio = currentSpeed / this.normalMaxSpeed;
+        // Reduce acceleration as we approach max speed for smoother feel
+        baseAcceleration *= (1 - speedRatio * 0.3);
+      }
+      
+      const inputForce = inputDir.scale(baseAcceleration);
+      const totalForce = inputForce.add(elasticForce);
+      this.player.setAcceleration(totalForce.x, totalForce.y);
+    } else {
+      // No input - apply deceleration and elastic forces
       const currentVel = this.player.body.velocity;
-      const deceleration = 50; // Stronger deceleration
+      const deceleration = 600;
+      
+      let totalForce = elasticForce.clone();
       
       if (currentVel.lengthSq() > 0) {
         const decelDir = currentVel.clone().normalize().scale(-deceleration);
-        this.player.setAcceleration(decelDir.x, decelDir.y);
+        totalForce.add(decelDir);
         
-        // Stop completely when velocity gets very low to avoid jittering
-        if (currentVel.lengthSq() < 100) { // velocity magnitude < 10
+        // Stop completely when velocity gets very low
+        if (currentVel.lengthSq() < 100) {
           this.player.setVelocity(0, 0);
-          this.player.setAcceleration(0, 0);
+          totalForce.set(0, 0);
         }
       }
+      
+      this.player.setAcceleration(totalForce.x, totalForce.y);
     }
+
+    // Update camera smooth following
+    this.updateCameraSmoothing();
 
     // Update ring position and visual effects
     this.ring.setPosition(this.player.x, this.player.y);
@@ -481,21 +507,99 @@ export class GameScene extends Phaser.Scene {
     this.dashTimer = this.dashDuration;
     this.dashCooldown = this.maxDashCooldown;
     
-    // Temporarily increase max velocity for dash
+    // More moderate speed increase for better balance
     this.player.setMaxVelocity(this.dashSpeed);
     
-    // Visual feedback - ring effect
-    this.ring.setScale(1.5).setAlpha(1);
+    // Enhanced visual feedback - ring effect with more juice
+    this.ring.setScale(1.8).setAlpha(1).setTint(0xffdd44);
     this.tweens.add({
       targets: this.ring,
       scale: 1,
       alpha: 0.9,
       duration: this.dashDuration * 1000,
-      ease: "Power2"
+      ease: "Back.easeOut"
+    });
+    
+    // Reset tint after dash
+    this.time.delayedCall(this.dashDuration * 1000, () => {
+      this.ring.setTint(0xffffff);
     });
 
-    // Screen shake effect
-    this.cameras.main.shake(100, 0.01);
+    // More subtle screen shake
+    this.cameras.main.shake(80, 0.008);
+    
+    // Camera zoom effect for emphasis
+    const originalZoom = this.cameras.main.zoom;
+    this.cameras.main.setZoom(originalZoom * 1.05);
+    this.tweens.add({
+      targets: this.cameras.main,
+      zoom: originalZoom,
+      duration: this.dashDuration * 800,
+      ease: "Power2"
+    });
+  }
+
+  private calculateElasticForces(): Phaser.Math.Vector2 {
+    const force = new Phaser.Math.Vector2(0, 0);
+    const playerPos = new Phaser.Math.Vector2(this.player.x, this.player.y);
+    
+    // Membrane boundary spring force only
+    const distanceFromCenter = Phaser.Math.Distance.BetweenPoints(playerPos, this.cellCenter);
+    const maxDistance = this.cellRadius - this.player.width / 2;
+    
+    if (distanceFromCenter > maxDistance) {
+      // Player is outside the membrane - push back
+      const penetration = distanceFromCenter - maxDistance;
+      const directionToCenter = new Phaser.Math.Vector2(
+        this.cellCenter.x - playerPos.x,
+        this.cellCenter.y - playerPos.y
+      ).normalize();
+      
+      const springForce = directionToCenter.scale(penetration * this.membraneSpringForce);
+      force.add(springForce);
+      
+      // Visual feedback for membrane hit
+      if (this.time.now - this.lastMembraneHit > 200) {
+        this.lastMembraneHit = this.time.now;
+        this.createMembraneRipple(playerPos);
+      }
+    }
+    
+    // No organelle collision forces - player can move freely through organelles
+    
+    return force;
+  }
+
+  private createMembraneRipple(position: Phaser.Math.Vector2) {
+    // Create a ripple effect at the membrane contact point
+    const ripple = this.add.circle(position.x, position.y, 20, 0x66ccff, 0.3);
+    ripple.setDepth(2);
+    
+    this.tweens.add({
+      targets: ripple,
+      scaleX: 3,
+      scaleY: 3,
+      alpha: 0,
+      duration: 300,
+      ease: "Power2",
+      onComplete: () => ripple.destroy()
+    });
+  }
+
+  private updateCameraSmoothing() {
+    // Set smooth camera target to follow player
+    this.cameraSmoothTarget.set(this.player.x, this.player.y);
+    
+    // Get current camera center
+    const currentCenterX = this.cameras.main.scrollX + this.cameras.main.width / 2;
+    const currentCenterY = this.cameras.main.scrollY + this.cameras.main.height / 2;
+    
+    // Lerp camera towards target
+    const newCenterX = Phaser.Math.Linear(currentCenterX, this.cameraSmoothTarget.x, this.cameraLerpSpeed);
+    const newCenterY = Phaser.Math.Linear(currentCenterY, this.cameraSmoothTarget.y, this.cameraLerpSpeed);
+    
+    // Apply camera position
+    this.cameras.main.centerOn(newCenterX, newCenterY);
   }
 
   private showMessage(message: string, duration = 1000) {
@@ -610,14 +714,20 @@ export class GameScene extends Phaser.Scene {
     let showTooltip = false;
 
     if (inNucleus && ctx.cooldownTranscribe <= 0) {
-      tooltipText = "Press 1 to transcribe (cost: 2 NT + 1 ATP → +1 mRNA)";
+      const hasResources = ctx.nt >= 2 && ctx.atp >= 1;
+      const permissionText = hasResources ? "✓ Ready" : "✗ Need NT≥2 & ATP≥1";
+      tooltipText = `Press 1 to transcribe ${permissionText} (cost: 2 NT + 1 ATP → +1 mRNA)`;
       showTooltip = true;
     } else if (inRibo && ctx.cooldownTranslate <= 0) {
+      const hasResources = ctx.mrna > 0 && ctx.aa >= 3 && ctx.atp >= 1;
+      const permissionText = hasResources ? "✓ Ready" : "✗ Need mRNA & AA≥3 & ATP≥1";
       const riskText = ctx.atp < 2 ? " [LOW ATP: Risk misfolding!]" : "";
-      tooltipText = `Press 2 to translate (cost: 3 AA + 1 ATP → +1 Catalase)${riskText}`;
+      tooltipText = `Press 2 to translate ${permissionText} (cost: 3 AA + 1 ATP → +1 Catalase)${riskText}`;
       showTooltip = true;
     } else if (inChaperone && ctx.misfolded > 0) {
-      tooltipText = "Press 2 to repair misfolded (cost: 1 ATP → +1 Catalase)";
+      const hasResources = ctx.atp >= 1;
+      const permissionText = hasResources ? "✓ Ready" : "✗ Need ATP≥1";
+      tooltipText = `Press 2 to repair misfolded ${permissionText} (cost: 1 ATP → +1 Catalase)`;
       showTooltip = true;
     }
 
@@ -634,4 +744,5 @@ export class GameScene extends Phaser.Scene {
       this.contextTooltipBg.setVisible(false);
     }
   }
+
 }

@@ -27,7 +27,7 @@ export function addHud(scene: Phaser.Scene) {
   objectivesBg?.destroy(); objectivesBg = null;
 
   // Main HUD (resources)
-  hudBg = scene.add.rectangle(8, 8, 10, 10, 0x000000, 0.35).setOrigin(0, 0).setDepth(999);
+  hudBg = scene.add.rectangle(8, 8, 10, 10, 0x000000, 0.35).setOrigin(0, 0).setDepth(999).setScrollFactor(0);
   hudText = scene.add.text(14, 12, "", {
     fontFamily: "monospace",
     fontSize: "14px",
@@ -36,7 +36,7 @@ export function addHud(scene: Phaser.Scene) {
   }).setDepth(1000).setScrollFactor(0);
 
   // Objectives panel (top-left)
-  objectivesBg = scene.add.rectangle(8, 120, 10, 10, 0x001133, 0.9).setOrigin(0, 0).setDepth(999);
+  objectivesBg = scene.add.rectangle(8, 120, 10, 10, 0x001133, 0.9).setOrigin(0, 0).setDepth(999).setScrollFactor(0);
   objectivesText = scene.add.text(16, 130, "", {
     fontFamily: "monospace", 
     fontSize: "13px",
