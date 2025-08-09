@@ -3,19 +3,19 @@ import type { EnemyDef, EnemyKind, WeaponDef, Wave } from "./types.ts";
 export const ENEMIES: Record<EnemyKind, EnemyDef> = {
   Slime: {
     kind: "Slime",
-    stats: { maxHp: 20, moveSpeed: 90, dmg: 5, fireRate: 0 },
+    stats: { maxHp: 20, moveSpeed: 5, dmg: 5, fireRate: 0 },
     ai: "melee_chase",
     tint: 0x8ef58a, radius: 12,
   },
   Spitter: {
     kind: "Spitter",
-    stats: { maxHp: 18, moveSpeed: 70, dmg: 4, fireRate: 1.2 },
+    stats: { maxHp: 18, moveSpeed: 3, dmg: 4, fireRate: 1.2 },
     ai: "ranged_kite",
     tint: 0x6ed0ff, radius: 10,
   },
   Swarmlet: {
     kind: "Swarmlet",
-    stats: { maxHp: 6, moveSpeed: 120, dmg: 2, fireRate: 0 },
+    stats: { maxHp: 6, moveSpeed: 7, dmg: 2, fireRate: 0 },
     ai: "swarm",
     tint: 0xffb3a7, radius: 6,
   },
@@ -31,7 +31,7 @@ export const WEAPONS = {
   PhageBurst: {
     name: "PhageBurst",
     cooldownMs: 900,
-    projectileSpeed: 0,
+    projectileSpeed: 5,
     spread: 360,
     onHit: "dot",
   },
