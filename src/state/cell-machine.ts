@@ -12,6 +12,7 @@ export type Ctx = {
   cooldownTranscribe: number;
   cooldownTranslate: number;
   misfolded: number;        // reserved for future use
+  nextWaveIn: number;       // countdown timer for next stress wave
 };
 
 export type Evt =
@@ -36,7 +37,7 @@ export const cellMachine = createMachine({
     catalaseFree: 0, catalaseActive: 0,
     stress: 0, hp: 10,
     cooldownTranscribe: 0, cooldownTranslate: 0,
-    misfolded: 0
+    misfolded: 0, nextWaveIn: 30
   },
 
   initial: "homeostasis",
@@ -92,16 +93,31 @@ export const cellMachine = createMachine({
           )
         },
 
-        TICK: {
-          actions: assign(({ context, event }) =>
-            event.type === "TICK"
-              ? {
-                  cooldownTranscribe: Math.max(0, context.cooldownTranscribe - event.dt),
-                  cooldownTranslate: Math.max(0, context.cooldownTranslate - event.dt)
-                }
-              : {}
-          )
-        }
+        TICK: [
+          {
+            guard: ({ context, event }) => event.type === "TICK" && Math.max(0, context.nextWaveIn - event.dt) === 0,
+            target: "stress",
+            actions: assign(({ context, event }) => {
+              if (event.type !== "TICK") return {};
+              return {
+                cooldownTranscribe: Math.max(0, context.cooldownTranscribe - event.dt),
+                cooldownTranslate: Math.max(0, context.cooldownTranslate - event.dt),
+                nextWaveIn: 30,  // reset timer when wave triggers
+                stress: clamp(context.stress + 20, 0, 100)
+              };
+            })
+          },
+          {
+            actions: assign(({ context, event }) => {
+              if (event.type !== "TICK") return {};
+              return {
+                cooldownTranscribe: Math.max(0, context.cooldownTranscribe - event.dt),
+                cooldownTranslate: Math.max(0, context.cooldownTranslate - event.dt),
+                nextWaveIn: Math.max(0, context.nextWaveIn - event.dt)
+              };
+            })
+          }
+        ]
       }
     },
 
@@ -115,7 +131,8 @@ export const cellMachine = createMachine({
             const dmg = Math.max(0, need - shield);
             return {
               atp: clamp(context.atp - dmg, 0, 999),
-              hp: clamp(context.hp - (dmg > 0 ? 1 : 0), 0, 10)
+              hp: clamp(context.hp - (dmg > 0 ? 1 : 0), 0, 10),
+              nextWaveIn: Math.max(0, context.nextWaveIn - event.dt)
             };
           })
         },
