@@ -10,8 +10,9 @@ import { ConservationTracker } from "../species/conservation-tracker";
 import { OrganelleSystem } from "../organelles/organelle-system";
 import { OrganelleRenderer } from "../organelles/organelle-renderer";
 import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
+import { PlayerInventorySystem } from "../player/player-inventory";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -55,6 +56,9 @@ export class GameScene extends Phaser.Scene {
   private organelleSystem!: OrganelleSystem;
   private organelleRenderer!: OrganelleRenderer;
   private organelleSelection!: OrganelleSelectionSystem;
+
+  // Player inventory system - Milestone 4 Task 1
+  private playerInventory!: PlayerInventorySystem;
 
   // Movement mechanics
   private dashCooldown = 0;
@@ -128,6 +132,9 @@ export class GameScene extends Phaser.Scene {
       RIGHT: this.input.keyboard!.addKey("RIGHT"),
       P: this.input.keyboard!.addKey("P"),
       T: this.input.keyboard!.addKey("T"),
+      V: this.input.keyboard!.addKey("V"),
+      Q: this.input.keyboard!.addKey("Q"),
+      E: this.input.keyboard!.addKey("E"),
     };
 
     // Initialize systems
@@ -141,6 +148,7 @@ export class GameScene extends Phaser.Scene {
     this.initializePassiveEffectsSystem();
     this.initializeConservationTracker();
     this.initializeOrganelleSystem();
+    this.initializePlayerInventory();
     this.initializeDebugInfo();
     
     // Initialize HUD with current information
@@ -694,13 +702,35 @@ export class GameScene extends Phaser.Scene {
     console.log('Organelle system initialized');
   }
 
+  // Player Inventory System - Milestone 4 Task 1
+  
+  private initializePlayerInventory(): void {
+    this.playerInventory = new PlayerInventorySystem(50); // Max capacity of 50 units
+    console.log('Player inventory system initialized');
+  }
+
   private updateHUD(): void {
     const heatmapInfo = this.heatmapSystem.getCurrentSpeciesInfo();
     const heatmapStatus = `Heatmap: ${heatmapInfo.label} (${heatmapInfo.index}/${heatmapInfo.total})`;
     
-    const message = `${heatmapStatus}  |  Keys 1-6: Inject ATP,AA,NT,ROS,GLUCOSE,PRE_MRNA  |  H: Cycle Species  |  P: Pause`;
+    // Player inventory status
+    const loadRatio = this.playerInventory.getLoadRatio();
+    const loadBar = this.createLoadBar(loadRatio);
+    const inventoryStatus = `Inventory: ${loadBar} ${this.playerInventory.getCurrentLoad().toFixed(0)}/${this.playerInventory.getMaxCapacity()}`;
+    
+    const message = `${heatmapStatus}  |  ${inventoryStatus}  |  Q: Scoop Current Species  |  E: Drop Current Species`;
     
     setHud(this, { message });
+  }
+
+  /**
+   * Create a visual load bar for inventory
+   */
+  private createLoadBar(ratio: number): string {
+    const barLength = 8;
+    const filled = Math.floor(ratio * barLength);
+    const empty = barLength - filled;
+    return '[' + '█'.repeat(filled) + '░'.repeat(empty) + ']';
   }
 
   private updateConservationPanel(): void {
@@ -762,12 +792,13 @@ export class GameScene extends Phaser.Scene {
   // Debug Controls - Task 4
   
   private handleDebugControls(): void {
-    if (!this.selectedTile) return;
+    const playerCoord = this.getPlayerHexCoord();
+    if (!playerCoord) return;
 
-    // Clear all species on selected tile
+    // Clear all species on player's current tile
     if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
-      this.hexGrid.clearConcentrations(this.selectedTile.coord);
-      console.log(`Cleared all species on tile (${this.selectedTile.coord.q}, ${this.selectedTile.coord.r})`);
+      this.hexGrid.clearConcentrations(playerCoord);
+      console.log(`Cleared all species on tile (${playerCoord.q}, ${playerCoord.r})`);
     }
 
     // Inject species using number keys 1-6
@@ -791,13 +822,94 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.SIX)) {
       this.injectSpecies('PRE_MRNA', injectionAmount);
     }
+
+    // Show player inventory status (Debug)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
+      console.log('Player Inventory Status:', this.playerInventory.getStatus());
+    }
+
+    // Tile interactions - Tasks 2-9
+    this.handleTileInteractions();
+  }
+
+  /**
+   * Get the hex coordinate of the tile the player is currently standing on
+   */
+  private getPlayerHexCoord(): { q: number; r: number } | null {
+    const coord = this.hexGrid.worldToHex(this.player.x, this.player.y);
+    console.log(`DEBUG: Player world pos (${this.player.x.toFixed(1)}, ${this.player.y.toFixed(1)}) -> hex coord (${coord?.q}, ${coord?.r})`);
+    return coord;
+  }
+
+  /**
+   * Handle tile interaction controls for player logistics
+   */
+  private handleTileInteractions(): void {
+    const playerCoord = this.getPlayerHexCoord();
+    if (!playerCoord) return;
+
+    // Q key - Scoop current heatmap species from player's tile
+    if (Phaser.Input.Keyboard.JustDown(this.keys.Q)) {
+      this.scoopCurrentSpecies(playerCoord);
+    }
+
+    // E key - Drop current heatmap species onto player's tile  
+    if (Phaser.Input.Keyboard.JustDown(this.keys.E)) {
+      this.dropCurrentSpecies(playerCoord);
+    }
+  }
+
+  /**
+   * Scoop current heatmap species from player's current tile
+   */
+  private scoopCurrentSpecies(coord: { q: number; r: number }): void {
+    const currentSpecies = this.heatmapSystem.getCurrentSpecies();
+    
+    // Debug logging
+    console.log(`DEBUG: Player at coord (${coord.q}, ${coord.r}), scooping ${currentSpecies}`);
+    
+    const tile = this.hexGrid.getTile(coord);
+    if (tile) {
+      const beforeAmount = tile.concentrations[currentSpecies] || 0;
+      console.log(`DEBUG: Tile has ${beforeAmount} ${currentSpecies} before scoop`);
+    }
+    
+    const result = this.playerInventory.scoopFromTile(this.hexGrid, coord, currentSpecies);
+    
+    if (tile) {
+      const afterAmount = tile.concentrations[currentSpecies] || 0;
+      console.log(`DEBUG: Tile has ${afterAmount} ${currentSpecies} after scoop`);
+    }
+    
+    if (result.taken > 0) {
+      console.log(`Scooped ${currentSpecies}: ${result.taken.toFixed(2)} from tile (${coord.q}, ${coord.r})`);
+    } else if (result.available > 0) {
+      console.log(`Inventory full! Cannot scoop ${currentSpecies} from tile (${coord.q}, ${coord.r})`);
+    } else {
+      console.log(`No ${currentSpecies} available on tile (${coord.q}, ${coord.r})`);
+    }
+  }
+
+  /**
+   * Drop current heatmap species onto player's current tile
+   */
+  private dropCurrentSpecies(coord: { q: number; r: number }): void {
+    const currentSpecies = this.heatmapSystem.getCurrentSpecies();
+    const result = this.playerInventory.dropOntoTile(this.hexGrid, coord, currentSpecies);
+    
+    if (result.dropped > 0) {
+      console.log(`Dropped ${currentSpecies}: ${result.dropped.toFixed(2)} onto tile (${coord.q}, ${coord.r})`);
+    } else {
+      console.log(`No ${currentSpecies} in inventory to drop`);
+    }
   }
 
   private injectSpecies(speciesId: string, amount: number): void {
-    if (!this.selectedTile) return;
+    const playerCoord = this.getPlayerHexCoord();
+    if (!playerCoord) return;
     
-    this.hexGrid.addConcentration(this.selectedTile.coord, speciesId, amount);
-    console.log(`Injected ${amount} ${speciesId} into tile (${this.selectedTile.coord.q}, ${this.selectedTile.coord.r})`);
+    this.hexGrid.addConcentration(playerCoord, speciesId, amount);
+    console.log(`Injected ${amount} ${speciesId} into tile (${playerCoord.q}, ${playerCoord.r})`);
   }
 
 }

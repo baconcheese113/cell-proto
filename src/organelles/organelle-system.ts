@@ -326,7 +326,7 @@ export class OrganelleSystem {
           const available = tile.concentrations[input.id] || 0;
           const needed = units * input.rate;
           if (available < needed + 0.001) { // Small epsilon for floating point
-            console.log(`${organelle.config.label} limited by ${input.id} on tile (${tileCoord.q},${tileCoord.r})`);
+            // console.log(`${organelle.config.label} limited by ${input.id} on tile (${tileCoord.q},${tileCoord.r})`);
           }
         }
       }
