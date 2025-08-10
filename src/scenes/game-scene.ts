@@ -18,6 +18,7 @@ import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
+import { getAllMembraneProteins } from "../membrane/membrane-protein-registry";
 
 type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F", Phaser.Input.Keyboard.Key>;
 
@@ -48,6 +49,7 @@ export class GameScene extends Phaser.Scene {
   private membraneGraphics!: Phaser.GameObjects.Graphics;
   private showMembraneDebug = false;
   private transporterLabels: Phaser.GameObjects.Text[] = [];
+  private proteinGlyphs: Phaser.GameObjects.Text[] = [];
   
   // Milestone 6: Membrane exchange system
   private membraneExchangeSystem!: MembraneExchangeSystem;
@@ -112,9 +114,10 @@ export class GameScene extends Phaser.Scene {
   constructor() { super("game"); }
 
   create() {
-    // Background grid
+    // Background grid - cap size to prevent memory issues
     const view = this.scale.gameSize;
-    const gridSize = Math.max(view.width, view.height) * 2;
+    const maxGridSize = 2048; // Reasonable maximum for browser memory
+    const gridSize = Math.min(Math.max(view.width, view.height) * 2, maxGridSize);
     const gridKey = makeGridTexture(this, gridSize, gridSize, this.col.bg, this.col.gridMinor, this.col.gridMajor);
     this.grid = this.add.image(0, 0, gridKey).setOrigin(0.5, 0.5).setDepth(0);
     this.grid.setPosition(view.width * 0.5, view.height * 0.5);
@@ -179,6 +182,9 @@ export class GameScene extends Phaser.Scene {
     this.initializeBlueprintSystem(); // After membrane exchange system
     this.initializeDebugInfo();
     
+    // Initialize protein glyphs by rendering membrane debug
+    this.renderMembraneDebug();
+    
     // Initialize HUD with current information
     this.updateHUD();
 
@@ -216,6 +222,9 @@ export class GameScene extends Phaser.Scene {
         if (this.organelleSelection) {
           this.organelleSelection.onResize();
         }
+        
+        // Re-render protein glyphs with new positions
+        this.updateProteinGlyphs();
       }
     });
   }
@@ -258,6 +267,9 @@ export class GameScene extends Phaser.Scene {
 
     // Blueprint system input handling - Milestone 5
     this.handleBlueprintInput();
+
+    // Milestone 6: Membrane protein interaction handling - Task 7
+    this.handleMembraneProteinInput();
 
     // Update hex interaction
     this.updateHexInteraction();
@@ -504,8 +516,8 @@ export class GameScene extends Phaser.Scene {
   private initializeMembraneGraphics(): void {
     this.membraneGraphics = this.add.graphics();
     this.membraneGraphics.setDepth(1.6); // Above hex grid, below organelles
-    this.membraneGraphics.setVisible(this.showMembraneDebug);
-    this.renderMembraneDebug();
+    this.membraneGraphics.setVisible(true); // Always visible now that it contains protein glyphs
+    // Note: renderMembraneDebug() will be called after membrane exchange system is initialized
   }
 
   private renderMembraneDebug(): void {
@@ -519,51 +531,173 @@ export class GameScene extends Phaser.Scene {
     }
     this.transporterLabels = [];
     
-    if (!this.showMembraneDebug) return;
-    
-    // Draw membrane tiles with a distinct outline
-    this.membraneGraphics.lineStyle(2, 0xff4444, 0.8); // Red outline
-    this.membraneGraphics.fillStyle(0xff4444, 0.2); // Semi-transparent red fill
+    // Clean up old protein glyphs
+    for (const glyph of this.proteinGlyphs) {
+      glyph.destroy();
+    }
+    this.proteinGlyphs = [];
     
     const membraneTiles = this.hexGrid.getMembraneTiles();
     
-    for (const tile of membraneTiles) {
-      // Draw each hexagon individually for proper fill and stroke
-      this.membraneGraphics.beginPath();
-      this.drawSingleHexagon(tile.worldPos.x, tile.worldPos.y, this.hexSize);
-      this.membraneGraphics.fillPath();
-      this.membraneGraphics.strokePath();
+    // Only draw membrane outline/fill if debug mode is on
+    if (this.showMembraneDebug) {
+      // Draw membrane tiles with a distinct outline
+      this.membraneGraphics.lineStyle(2, 0xff4444, 0.8); // Red outline
+      this.membraneGraphics.fillStyle(0xff4444, 0.2); // Semi-transparent red fill
+      
+      for (const tile of membraneTiles) {
+        // Draw each hexagon individually for proper fill and stroke
+        this.membraneGraphics.beginPath();
+        this.drawSingleHexagon(tile.worldPos.x, tile.worldPos.y, this.hexSize);
+        this.membraneGraphics.fillPath();
+        this.membraneGraphics.strokePath();
+      }
+      
+      // Draw transporter indicators
+      this.membraneGraphics.lineStyle(2, 0x00ff00, 1.0); // Green for transporters
+      this.membraneGraphics.fillStyle(0x00ff00, 0.6); // Semi-transparent green fill
+      
+      for (const tile of membraneTiles) {
+        const transporters = this.membraneExchangeSystem.getTransportersAt(tile.coord);
+        if (transporters.length > 0) {
+          // Draw small circles to indicate transporters
+          const radius = this.hexSize * 0.3;
+          this.membraneGraphics.fillCircle(tile.worldPos.x, tile.worldPos.y, radius);
+          this.membraneGraphics.strokeCircle(tile.worldPos.x, tile.worldPos.y, radius);
+          
+          // Add text label showing number of transporters
+          if (transporters.length > 1) {
+            const label = this.add.text(tile.worldPos.x, tile.worldPos.y, transporters.length.toString(), {
+              fontSize: '12px',
+              fontFamily: 'Arial',
+              color: '#ffffff',
+              backgroundColor: '#000000',
+              padding: { x: 2, y: 2 }
+            });
+            label.setOrigin(0.5, 0.5);
+            label.setDepth(10);
+            this.transporterLabels.push(label);
+          }
+        }
+      }
+      
+      console.log(`Membrane debug rendered: ${membraneTiles.length} membrane tiles`);
     }
     
-    // Draw transporter indicators
-    this.membraneGraphics.lineStyle(2, 0x00ff00, 1.0); // Green for transporters
-    this.membraneGraphics.fillStyle(0x00ff00, 0.6); // Semi-transparent green fill
+    // Always render protein glyphs (regardless of debug mode)
+    this.renderProteinGlyphsAsGraphics();
+  }
+
+  private renderProteinGlyphsAsGraphics(): void {
+    if (!this.hexGrid || !this.membraneExchangeSystem) return;
+    
+    const membraneTiles = this.hexGrid.getMembraneTiles();
+    let glyphsRendered = 0;
     
     for (const tile of membraneTiles) {
-      const transporters = this.membraneExchangeSystem.getTransportersAt(tile.coord);
-      if (transporters.length > 0) {
-        // Draw small circles to indicate transporters
-        const radius = this.hexSize * 0.3;
-        this.membraneGraphics.fillCircle(tile.worldPos.x, tile.worldPos.y, radius);
-        this.membraneGraphics.strokeCircle(tile.worldPos.x, tile.worldPos.y, radius);
+      const installedProtein = this.membraneExchangeSystem.getInstalledProtein(tile.coord);
+      if (installedProtein) {
+        // Draw a colored circle with a symbol inside using graphics
+        this.membraneGraphics.lineStyle(1, 0x000000, 1.0); // Black outline
         
-        // Add text label showing number of transporters
-        if (transporters.length > 1) {
-          const label = this.add.text(tile.worldPos.x, tile.worldPos.y, transporters.length.toString(), {
-            fontSize: '12px',
-            fontFamily: 'Arial',
-            color: '#ffffff',
-            backgroundColor: '#000000',
-            padding: { x: 2, y: 2 }
-          });
-          label.setOrigin(0.5, 0.5);
-          label.setDepth(10);
-          this.transporterLabels.push(label);
+        if (installedProtein.kind === 'transporter') {
+          const color = installedProtein.direction === 'in' ? 0x00ff88 : 0xff8800;
+          this.membraneGraphics.fillStyle(color, 0.8);
+          this.membraneGraphics.lineStyle(2, 0x000000, 1.0); // Black outline for circle
+          const radius = this.hexSize * 0.3; // Smaller circle to make room for arrow
+          this.membraneGraphics.fillCircle(tile.worldPos.x, tile.worldPos.y, radius);
+          this.membraneGraphics.strokeCircle(tile.worldPos.x, tile.worldPos.y, radius);
+          
+          // Calculate direction toward/away from cell center for more intuitive arrows
+          const centerX = this.cellCenter.x;
+          const centerY = this.cellCenter.y;
+          const deltaX = tile.worldPos.x - centerX;
+          const deltaY = tile.worldPos.y - centerY;
+          const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+          
+          // Normalize to unit vector
+          const unitX = deltaX / distance;
+          const unitY = deltaY / distance;
+          
+          // Arrow properties
+          this.membraneGraphics.lineStyle(1, 0xffffff, 1.0); // Thick white arrow for visibility
+          const arrowLength = this.hexSize * 0.4;
+          const arrowHeadSize = this.hexSize * 0.2;
+          
+          if (installedProtein.direction === 'in') {
+            // Arrow points TOWARD center (import)
+            const startX = tile.worldPos.x + unitX * (radius + 4);
+            const startY = tile.worldPos.y + unitY * (radius + 4);
+            const endX = startX - unitX * arrowLength;
+            const endY = startY - unitY * arrowLength;
+            
+            // Arrow shaft
+            this.membraneGraphics.lineBetween(startX, startY, endX, endY);
+            
+            // Arrow head (pointing toward center)
+            const perpX = -unitY; // Perpendicular vector
+            const perpY = unitX;
+            this.membraneGraphics.lineBetween(
+              endX, endY,
+              endX + unitX * arrowHeadSize + perpX * arrowHeadSize * 0.5,
+              endY + unitY * arrowHeadSize + perpY * arrowHeadSize * 0.5
+            );
+            this.membraneGraphics.lineBetween(
+              endX, endY,
+              endX + unitX * arrowHeadSize - perpX * arrowHeadSize * 0.5,
+              endY + unitY * arrowHeadSize - perpY * arrowHeadSize * 0.5
+            );
+          } else {
+            // Arrow points AWAY from center (export)
+            const startX = tile.worldPos.x - unitX * (radius + 4);
+            const startY = tile.worldPos.y - unitY * (radius + 4);
+            const endX = startX + unitX * arrowLength;
+            const endY = startY + unitY * arrowLength;
+            
+            // Arrow shaft
+            this.membraneGraphics.lineBetween(startX, startY, endX, endY);
+            
+            // Arrow head (pointing away from center)
+            const perpX = -unitY; // Perpendicular vector
+            const perpY = unitX;
+            this.membraneGraphics.lineBetween(
+              endX, endY,
+              endX - unitX * arrowHeadSize + perpX * arrowHeadSize * 0.5,
+              endY - unitY * arrowHeadSize + perpY * arrowHeadSize * 0.5
+            );
+            this.membraneGraphics.lineBetween(
+              endX, endY,
+              endX - unitX * arrowHeadSize - perpX * arrowHeadSize * 0.5,
+              endY - unitY * arrowHeadSize - perpY * arrowHeadSize * 0.5
+            );
+          }
+        } else if (installedProtein.kind === 'receptor') {
+          // Draw receptor as a square
+          this.membraneGraphics.fillStyle(0xff44ff, 0.8);
+          const size = this.hexSize * 0.6;
+          this.membraneGraphics.fillRect(tile.worldPos.x - size/2, tile.worldPos.y - size/2, size, size);
+          this.membraneGraphics.strokeRect(tile.worldPos.x - size/2, tile.worldPos.y - size/2, size, size);
         }
+        
+        glyphsRendered++;
       }
     }
     
-    console.log(`Membrane debug rendered: ${membraneTiles.length} membrane tiles`);
+    // Only log when there are actually glyphs to render, and less frequently
+    if (glyphsRendered > 0 && Math.random() < 0.01) { // 1% chance to log
+      console.log(`🎨 Rendered ${glyphsRendered} protein glyphs as graphics`);
+    }
+  }
+
+  private updateProteinGlyphs(): void {
+    // Clear existing glyphs
+    for (const glyph of this.proteinGlyphs) {
+      glyph.destroy();
+    }
+    this.proteinGlyphs = [];
+    
+    // Re-render membrane graphics which now includes protein glyphs
+    this.renderMembraneDebug();
   }
 
   private drawSingleHexagon(x: number, y: number, size: number): void {
@@ -831,21 +965,46 @@ export class GameScene extends Phaser.Scene {
       if (tile.isMembrane) {
         info.push(`🧬 Membrane Tile`);
         
-        // Check if there's a membrane organelle built on this tile
-        if (organelle && (organelle.type === 'membrane-port' || organelle.type === 'transporter' || organelle.type === 'receptor')) {
-          // Already shown above in organelle info section, just add a note
-          info.push(`🏗️ Membrane structure built`);
+        // Check for installed membrane proteins (new system)
+        const installedProtein = this.membraneExchangeSystem.getInstalledProtein(tile.coord);
+        if (installedProtein) {
+          info.push(`🔬 Installed: ${installedProtein.label}`);
+          
+          if (installedProtein.kind === 'transporter') {
+            const direction = installedProtein.direction === 'in' ? '⬇️ Import' : '⬆️ Export';
+            info.push(`  ${direction} ${installedProtein.speciesId}: ${installedProtein.ratePerTick}/tick`);
+          } else if (installedProtein.kind === 'receptor') {
+            info.push(`  🔥 Signal: ${installedProtein.messengerId} (${installedProtein.messengerRate}/tick)`);
+            info.push(`  📡 Ligand: ${installedProtein.ligandId}`);
+          }
+          
+          info.push(`Use X to uninstall (future feature)`);
         } else {
-          // Show installed transporters (from test system, if any remain)
-          const transporters = this.membraneExchangeSystem.getTransportersAt(tile.coord);
-          if (transporters.length > 0) {
-            info.push(`🚛 Test Transporters:`);
-            for (const transporter of transporters) {
-              const direction = transporter.fluxRate > 0 ? '⬇️' : '⬆️';
-              info.push(`  ${direction} ${transporter.type}: ${transporter.speciesId} ${transporter.fluxRate > 0 ? '+' : ''}${transporter.fluxRate}/sec`);
-            }
+          // Check if there's a membrane organelle built on this tile
+          if (organelle && (organelle.type === 'membrane-port' || organelle.type === 'transporter' || organelle.type === 'receptor')) {
+            // Show installation options for built organelles
+            info.push(`🔧 Ready for protein installation`);
+            info.push(`Press number keys:`);
+            info.push(`  1: GLUT (Glucose import)`);
+            info.push(`  2: AA Transporter`);
+            info.push(`  3: NT Transporter`);
+            info.push(`  4: ROS Exporter`);
+            info.push(`  5: Secretion Pump (Cargo export)`);
+            info.push(`  6: Growth Factor Receptor`);
           } else {
-            info.push(`🔧 Available`);
+            // No organelle built - can't install proteins
+            info.push(`❌ Build a transporter or receptor here first`);
+            info.push(`Use build mode (B) to place organelles`);
+            
+            // Show legacy transporters if any
+            const transporters = this.membraneExchangeSystem.getTransportersAt(tile.coord);
+            if (transporters.length > 0) {
+              info.push(`🚛 Legacy Transporters:`);
+              for (const transporter of transporters) {
+                const direction = transporter.fluxRate > 0 ? '⬇️' : '⬆️';
+                info.push(`  ${direction} ${transporter.type}: ${transporter.speciesId} ${transporter.fluxRate > 0 ? '+' : ''}${transporter.fluxRate}/sec`);
+              }
+            }
           }
         }
         info.push(''); // Add spacing
@@ -1108,26 +1267,31 @@ export class GameScene extends Phaser.Scene {
       console.log(`Cleared all species on tile (${playerCoord.q}, ${playerCoord.r})`);
     }
 
-    // Inject species using number keys 1-6
+    // Inject species using SHIFT + number keys 1-6 (to avoid conflict with protein installation)
     const injectionAmount = 20; // Modest amount to inject
     
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
-      this.injectSpecies('ATP', injectionAmount);
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
-      this.injectSpecies('AA', injectionAmount);
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) {
-      this.injectSpecies('NT', injectionAmount);
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
-      this.injectSpecies('ROS', injectionAmount);
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) {
-      this.injectSpecies('GLUCOSE', injectionAmount);
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.SIX)) {
-      this.injectSpecies('PRE_MRNA', injectionAmount);
+    // Species injection now requires holding SHIFT to avoid conflicts
+    const shiftHeld = this.input.keyboard?.checkDown(this.input.keyboard.addKey('SHIFT'), 0);
+    
+    if (shiftHeld) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
+        this.injectSpecies('ATP', injectionAmount);
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
+        this.injectSpecies('AA', injectionAmount);
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) {
+        this.injectSpecies('NT', injectionAmount);
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
+        this.injectSpecies('ROS', injectionAmount);
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) {
+        this.injectSpecies('GLUCOSE', injectionAmount);
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.SIX)) {
+        this.injectSpecies('PRE_MRNA', injectionAmount);
+      }
     }
 
     // Show player inventory status (Debug)
@@ -1198,6 +1362,44 @@ export class GameScene extends Phaser.Scene {
           console.log(`🗑️ Cancelled blueprint with 50% refund`);
         }
       }
+    }
+  }
+
+  private handleMembraneProteinInput(): void {
+    // Detect exactly which protein key was pressed (capture once!)
+    let pressed: 'ONE'|'TWO'|'THREE'|'FOUR'|'FIVE'|'SIX'|null = null;
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) pressed = 'ONE';
+    else if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) pressed = 'TWO';
+    else if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) pressed = 'THREE';
+    else if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) pressed = 'FOUR';
+    else if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) pressed = 'FIVE';
+    else if (Phaser.Input.Keyboard.JustDown(this.keys.SIX)) pressed = 'SIX';
+
+    if (!pressed) return;
+
+    console.log("🎯 PROTEIN KEY PRESSED - handleMembraneProteinInput() called");
+
+    const playerCoord = this.getPlayerHexCoord();
+    if (!playerCoord) return;
+
+    const organelle = this.organelleSystem.getOrganelleAtTile(playerCoord);
+    const isValidOrganelle = !!organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
+    if (!isValidOrganelle) return;
+
+    // Now branch on the captured key (do NOT call JustDown again)
+    try {
+      let ok = false;
+      switch (pressed) {
+        case 'ONE': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'GLUT'); break;
+        case 'TWO': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'AA_TRANSPORTER'); break;
+        case 'THREE': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'NT_TRANSPORTER'); break;
+        case 'FOUR': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'ROS_EXPORTER'); break;
+        case 'FIVE': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'SECRETION_PUMP'); break;
+        case 'SIX': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'GROWTH_FACTOR_RECEPTOR'); break;
+      }
+      if (ok) this.updateProteinGlyphs();
+    } catch (e) {
+      console.error("❌ Error during membrane protein installation:", e);
     }
   }
 

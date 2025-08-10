@@ -103,12 +103,19 @@ export class BlueprintSystem {
         errors.push(`${recipe.label} cannot be built on membrane tiles (cytosol only)`);
       }
       
-      // Task 3: One build per membrane tile constraint
+      // Milestone 6 Task 3: One build per membrane tile constraint
       if (recipe.membraneOnly && isMembraneTile && this.membraneExchangeSystem) {
         const hasTransporters = this.membraneExchangeSystem.hasTransporters({ q: tile.q, r: tile.r });
-        if (hasTransporters) {
-          errors.push(`Membrane tile (${tile.q}, ${tile.r}) already has a transporter installed`);
+        const hasInstalledProtein = this.membraneExchangeSystem.hasInstalledProtein({ q: tile.q, r: tile.r });
+        
+        if (hasTransporters || hasInstalledProtein) {
+          errors.push(`Membrane tile (${tile.q}, ${tile.r}) already occupied`);
         }
+      }
+
+      // Task 2: Reject cytosolic organelles on membrane hexes
+      if (!recipe.membraneOnly && isMembraneTile) {
+        errors.push(`Non-membrane structures cannot be built on membrane tiles`);
       }
     }
 

@@ -17,7 +17,9 @@ export type SpeciesId =
   | 'CARGO'
   | 'LIPID'
   | 'H2O'
-  | 'CO2';
+  | 'CO2'
+  | 'SIGNAL'
+  | 'LIGAND_GROWTH';
 
 export interface SpeciesData {
   id: SpeciesId;
@@ -112,6 +114,27 @@ class SpeciesRegistry {
       maxConcentration: 20,
       color: 0x66ff99
     });
+
+    // Milestone 6: Signaling species
+    this.registerSpecies({
+      id: 'SIGNAL',
+      label: 'Intracellular Signal',
+      diffusionCoefficient: 0.002, // Very low diffusion for second messenger
+      minConcentration: 0,
+      maxConcentration: 15,
+      color: 0xff33ff
+    });
+
+    // Note: LIGAND_GROWTH is a reference-only species for external ligands
+    // It's not stored in tile concentrations, just used by receptors
+    this.registerSpecies({
+      id: 'LIGAND_GROWTH',
+      label: 'Growth Factor (External)',
+      diffusionCoefficient: 0, // No diffusion - external only
+      minConcentration: 0,
+      maxConcentration: 0, // Never stored in tiles
+      color: 0x00ff88
+    });
   }
 
   private registerSpecies(species: SpeciesData): void {
@@ -155,11 +178,14 @@ class SpeciesRegistry {
 
   /**
    * Helper to create empty concentration object for all species
+   * Excludes LIGAND_GROWTH since it's external-only
    */
   public createEmptyConcentrations(): Record<SpeciesId, number> {
     const concentrations: Record<string, number> = {};
     for (const id of this.getAllSpeciesIds()) {
-      concentrations[id] = 0;
+      if (id !== 'LIGAND_GROWTH') { // External ligands not stored per tile
+        concentrations[id] = 0;
+      }
     }
     return concentrations as Record<SpeciesId, number>;
   }

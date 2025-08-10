@@ -16,6 +16,14 @@ export interface OrganelleIOProfile {
   priority: number;    // Lower number = higher priority (processed first)
   inputs: OrganelleIOSpec[];   // Species consumed
   outputs: OrganelleIOSpec[];  // Species produced
+  
+  // Milestone 6: Signal-driven bonuses
+  signalBonus?: {
+    signalSpecies: SpeciesId;    // Which signal species to detect
+    bonusOutputs: OrganelleIOSpec[]; // Additional outputs when signal present
+    coefficient: number;         // Multiplier for signal effect (0.1 = 10% of signal level)
+    maxBonus: number;           // Cap on bonus effect
+  };
 }
 
 /**
@@ -32,7 +40,16 @@ export const ORGANELLE_IO_PROFILES: Record<string, OrganelleIOProfile> = {
     ],
     outputs: [
       { id: "PRE_MRNA", rate: 0.3 }  // Pre-mRNA production
-    ]
+    ],
+    // Milestone 6: Signal-driven transcription boost
+    signalBonus: {
+      signalSpecies: "SIGNAL",
+      bonusOutputs: [
+        { id: "PRE_MRNA", rate: 0.1 }  // Additional pre-mRNA when signal present
+      ],
+      coefficient: 0.1,  // 10% of signal level becomes bonus
+      maxBonus: 1.0      // Cap bonus to avoid runaway production
+    }
   },
 
   // Ribosome Hub - translation: amino acids + pre-mRNA -> proteins

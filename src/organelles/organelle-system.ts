@@ -333,6 +333,26 @@ export class OrganelleSystem {
       changes.set(output.id, current + production);
     }
 
+    // Milestone 6: Apply signal-driven bonus production
+    if (ioProfile.signalBonus) {
+      const tile = this.hexGrid.getTile(tileCoord);
+      if (tile) {
+        const signalLevel = tile.concentrations[ioProfile.signalBonus.signalSpecies] || 0;
+        const bonusMultiplier = Math.min(
+          signalLevel * ioProfile.signalBonus.coefficient,
+          ioProfile.signalBonus.maxBonus
+        );
+        
+        if (bonusMultiplier > 0) {
+          for (const bonusOutput of ioProfile.signalBonus.bonusOutputs) {
+            const bonusProduction = units * bonusOutput.rate * bonusMultiplier;
+            const current = changes.get(bonusOutput.id) || 0;
+            changes.set(bonusOutput.id, current + bonusProduction);
+          }
+        }
+      }
+    }
+
     // Debug logging for limiting factors
     if (units < ioProfile.capPerTick) {
       for (const input of ioProfile.inputs) {
