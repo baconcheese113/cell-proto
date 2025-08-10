@@ -14,12 +14,18 @@ export class BuildPaletteUI {
   private selectedRecipeId: string | null = null;
   private buttons: Map<string, Phaser.GameObjects.Container> = new Map();
   private isVisible: boolean = false;
+  
+  // Store the desired screen position
+  private screenOffsetX: number;
+  private screenOffsetY: number;
 
   // Callbacks
   public onRecipeSelected?: (recipeId: string) => void;
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     this.scene = scene;
+    this.screenOffsetX = x;
+    this.screenOffsetY = y;
     this.container = scene.add.container(x, y);
     // Remove setScrollFactor(0) to avoid coordinate system conflicts
     this.container.setDepth(100); // Ensure it appears above other UI
@@ -142,10 +148,10 @@ export class BuildPaletteUI {
   public show(): void {
     this.isVisible = true;
     
-    // Position relative to current camera position to keep it in a fixed screen location
+    // Position relative to current camera position using the specified screen offset
     const camera = this.scene.cameras.main;
-    const screenX = camera.scrollX + 150; // 150px from left edge of screen
-    const screenY = camera.scrollY + 150; // 150px from top edge of screen
+    const screenX = camera.scrollX + this.screenOffsetX;
+    const screenY = camera.scrollY + this.screenOffsetY;
     this.container.setPosition(screenX, screenY);
     
     this.container.setVisible(true);
@@ -172,8 +178,8 @@ export class BuildPaletteUI {
     // Update position to stay in fixed screen location if visible
     if (this.isVisible) {
       const camera = this.scene.cameras.main;
-      const screenX = camera.scrollX + 150; // 150px from left edge of screen
-      const screenY = camera.scrollY + 150; // 150px from top edge of screen
+      const screenX = camera.scrollX + this.screenOffsetX;
+      const screenY = camera.scrollY + this.screenOffsetY;
       this.container.setPosition(screenX, screenY);
     }
   }
