@@ -9,6 +9,7 @@ import type { HexCoord } from "../hex/hex-grid";
 import { HexGrid } from "../hex/hex-grid";
 import type { ConstructionRecipe } from "./construction-recipes";
 import { CONSTRUCTION_RECIPES } from "./construction-recipes";
+import type { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
 
 export interface Blueprint {
   id: string;
@@ -40,11 +41,15 @@ export class BlueprintSystem {
   // For organelle system integration
   private getOccupiedTiles: () => Set<string>;
   private spawnOrganelle?: (type: string, coord: HexCoord) => void;
+  
+  // Milestone 6: Membrane system integration
+  private membraneExchangeSystem?: MembraneExchangeSystem;
 
-  constructor(hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: string, coord: HexCoord) => void) {
+  constructor(hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: string, coord: HexCoord) => void, membraneExchangeSystem?: MembraneExchangeSystem) {
     this.hexGrid = hexGrid;
     this.getOccupiedTiles = getOccupiedTiles;
     this.spawnOrganelle = spawnOrganelle;
+    this.membraneExchangeSystem = membraneExchangeSystem;
   }
 
   /**
@@ -82,6 +87,25 @@ export class BlueprintSystem {
       const distance = Math.sqrt(tile.q * tile.q + tile.r * tile.r + tile.q * tile.r);
       if (distance >= 8) { // cell radius
         errors.push(`Tile (${tile.q}, ${tile.r}) is outside the membrane`);
+      }
+      
+      // Milestone 6 Task 3: Membrane-specific build rules
+      const isMembraneTile = this.hexGrid.isMembraneCoord({ q: tile.q, r: tile.r });
+      
+      if (recipe.membraneOnly && !isMembraneTile) {
+        errors.push(`${recipe.label} can only be built on membrane tiles`);
+      }
+      
+      if (recipe.cytosolOnly && isMembraneTile) {
+        errors.push(`${recipe.label} cannot be built on membrane tiles (cytosol only)`);
+      }
+      
+      // Task 3: One build per membrane tile constraint
+      if (recipe.membraneOnly && isMembraneTile && this.membraneExchangeSystem) {
+        const hasTransporters = this.membraneExchangeSystem.hasTransporters({ q: tile.q, r: tile.r });
+        if (hasTransporters) {
+          errors.push(`Membrane tile (${tile.q}, ${tile.r}) already has a transporter installed`);
+        }
       }
     }
 

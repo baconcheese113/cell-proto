@@ -6,7 +6,6 @@
  */
 
 import type { HexCoord } from "../hex/hex-grid";
-import { ORGANELLE_FOOTPRINTS } from "./organelle-footprints";
 
 export interface OrganelleDefinition {
   // Basic properties
@@ -115,6 +114,46 @@ export const ORGANELLE_REGISTRY: Record<string, OrganelleDefinition> = {
     priority: 2,
     buildCost: { 'PROTEIN': 30 },
     buildRatePerTick: 0.7
+  },
+
+  // Milestone 6: Membrane organelles
+  'membrane-port': {
+    id: 'membrane-port',
+    type: 'membrane-port',
+    label: 'Membrane Port',
+    color: 0x44aa44,
+    size: 0.6,
+    footprint: 'SINGLE',
+    throughputCap: 10,
+    priority: 3,
+    buildCost: { 'PROTEIN': 30, 'LIPID': 20 },
+    buildRatePerTick: 2.0
+  },
+
+  'transporter': {
+    id: 'transporter',
+    type: 'transporter',
+    label: 'Transporter',
+    color: 0x6666ff,
+    size: 0.5,
+    footprint: 'SINGLE',
+    throughputCap: 15,
+    priority: 2,
+    buildCost: { 'PROTEIN': 50, 'NT': 15 },
+    buildRatePerTick: 1.5
+  },
+
+  'receptor': {
+    id: 'receptor',
+    type: 'receptor',
+    label: 'Receptor',
+    color: 0xff6644,
+    size: 0.4,
+    footprint: 'SINGLE',
+    throughputCap: 8,
+    priority: 1,
+    buildCost: { 'PROTEIN': 40, 'NT': 10 },
+    buildRatePerTick: 1.8
   }
 };
 

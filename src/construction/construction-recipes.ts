@@ -25,6 +25,10 @@ export interface ConstructionRecipe {
   // Display
   description?: string;
   color?: number;
+  
+  // Milestone 6: Membrane-specific constraints
+  membraneOnly?: boolean; // Only placeable on membrane tiles
+  cytosolOnly?: boolean;  // Only placeable on cytosol (non-membrane) tiles
 }
 
 /**
@@ -50,9 +54,63 @@ class ConstructionRecipeRegistry {
         buildRatePerTick: definition.buildRatePerTick,
         onCompleteType: definition.type,
         description: `Build ${definition.label}`,
-        color: definition.color
+        color: definition.color,
+        cytosolOnly: true // Regular organelles are cytosol-only
       });
     }
+    
+    // Milestone 6: Add membrane-specific recipes
+    this.initializeMembraneRecipes();
+  }
+
+  private initializeMembraneRecipes(): void {
+    // Membrane Port - basic transport structure
+    this.registerRecipe({
+      id: 'membrane-port',
+      label: 'Membrane Port',
+      footprintShape: [{ q: 0, r: 0 }], // Single tile
+      buildCost: {
+        'PROTEIN': 30,
+        'LIPID': 20
+      },
+      buildRatePerTick: 2.0,
+      onCompleteType: 'membrane-port',
+      description: 'Basic membrane transport structure',
+      color: 0x44aa44,
+      membraneOnly: true
+    });
+    
+    // Transporter - specialized transport protein
+    this.registerRecipe({
+      id: 'transporter',
+      label: 'Transporter',
+      footprintShape: [{ q: 0, r: 0 }], // Single tile
+      buildCost: {
+        'PROTEIN': 50,
+        'NT': 15
+      },
+      buildRatePerTick: 1.5,
+      onCompleteType: 'transporter',
+      description: 'Specialized transport protein',
+      color: 0x6666ff,
+      membraneOnly: true
+    });
+    
+    // Receptor - signaling protein
+    this.registerRecipe({
+      id: 'receptor',
+      label: 'Receptor',
+      footprintShape: [{ q: 0, r: 0 }], // Single tile
+      buildCost: {
+        'PROTEIN': 40,
+        'NT': 10
+      },
+      buildRatePerTick: 1.8,
+      onCompleteType: 'receptor',
+      description: 'Membrane signaling protein',
+      color: 0xff6644,
+      membraneOnly: true
+    });
   }
 
   private registerRecipe(recipe: ConstructionRecipe): void {

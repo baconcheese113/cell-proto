@@ -17,6 +17,10 @@ export interface HexTile {
   coord: HexCoord;
   worldPos: Phaser.Math.Vector2;
   concentrations: Record<string, number>; // Species ID -> concentration value
+  
+  // Milestone 6: Membrane system
+  isMembrane: boolean;
+  membraneIndex?: number; // Optional index for membrane growth tracking
 }
 
 // Main hex grid class
@@ -43,7 +47,9 @@ export class HexGrid {
         const tile: HexTile = {
           coord,
           worldPos: worldPos.clone(),
-          concentrations: createEmptyConcentrations() // Initialize all species to 0
+          concentrations: createEmptyConcentrations(), // Initialize all species to 0
+          isMembrane: false, // Will be computed after generation
+          membraneIndex: undefined
         };
         this.tiles.set(this.coordToKey(coord), tile);
       }
@@ -216,5 +222,95 @@ export class HexGrid {
     }
 
     return { x: rx, y: ry, z: rz };
+  }
+
+  // Milestone 6 Task 1: Membrane detection system
+  
+  /**
+   * Recompute which tiles are membrane tiles based on current cell boundary.
+   * A tile is membrane if it's on the outer ring of the cell.
+   */
+  public recomputeMembranes(cellCenterX: number, cellCenterY: number, cellRadius: number): void {
+    // Reset all membrane flags
+    for (const tile of this.tiles.values()) {
+      tile.isMembrane = false;
+      tile.membraneIndex = undefined;
+    }
+
+    // Find outer ring tiles - those with at least one missing neighbor toward the outside
+    const membraneTiles: HexTile[] = [];
+    
+    for (const tile of this.tiles.values()) {
+      // Check if this tile is on the boundary by seeing if any neighbor direction
+      // would lead to a tile that's either missing or outside the cell radius
+      const allDirections = [
+        { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
+        { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }
+      ];
+
+      let isBoundary = false;
+      for (const dir of allDirections) {
+        const neighborCoord = { q: tile.coord.q + dir.q, r: tile.coord.r + dir.r };
+        const neighborTile = this.getTile(neighborCoord);
+        
+        if (!neighborTile) {
+          // Missing neighbor means we're on the boundary
+          isBoundary = true;
+          break;
+        }
+
+        // Also check if the neighbor would be outside the circular cell boundary
+        const neighborWorldPos = this.hexToWorld(neighborCoord);
+        const distanceFromCenter = Phaser.Math.Distance.Between(
+          neighborWorldPos.x, neighborWorldPos.y,
+          cellCenterX, cellCenterY
+        );
+        
+        if (distanceFromCenter > cellRadius) {
+          isBoundary = true;
+          break;
+        }
+      }
+
+      if (isBoundary) {
+        tile.isMembrane = true;
+        membraneTiles.push(tile);
+      }
+    }
+
+    // Assign membrane indices for tracking (useful for future growth)
+    membraneTiles.forEach((tile, index) => {
+      tile.membraneIndex = index;
+    });
+
+    console.log(`Membrane computation complete: ${membraneTiles.length} membrane tiles identified`);
+  }
+
+  /**
+   * Milestone 6 Task 8: Future-proofing hook for cell growth
+   * Called when the cell boundary expands - will need to re-tag membrane tiles
+   */
+  public onCellGrowth(newCenterX: number, newCenterY: number, newRadius: number): void {
+    // TODO: In future milestones, this will:
+    // 1. Re-tag membrane tiles after boundary expansion
+    // 2. Update existing transporter references
+    // 3. Handle membrane protein repositioning
+    console.log(`Cell growth event: new radius ${newRadius} (membrane recomputation needed)`);
+    this.recomputeMembranes(newCenterX, newCenterY, newRadius);
+  }
+
+  /**
+   * Get all current membrane tiles
+   */
+  public getMembraneTiles(): HexTile[] {
+    return Array.from(this.tiles.values()).filter(tile => tile.isMembrane);
+  }
+
+  /**
+   * Check if a coordinate is a membrane tile
+   */
+  public isMembraneCoord(coord: HexCoord): boolean {
+    const tile = this.getTile(coord);
+    return tile?.isMembrane ?? false;
   }
 }

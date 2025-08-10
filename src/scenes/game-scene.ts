@@ -16,8 +16,9 @@ import { BuildPaletteUI } from "../construction/build-palette-ui";
 import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
+import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -41,6 +42,14 @@ export class GameScene extends Phaser.Scene {
   private hexInteractionGraphics!: Phaser.GameObjects.Graphics;
   private tileInfoPanel!: Phaser.GameObjects.Text;
   private debugInfoPanel!: Phaser.GameObjects.Text;
+
+  // Milestone 6: Membrane debug visualization
+  private membraneGraphics!: Phaser.GameObjects.Graphics;
+  private showMembraneDebug = false;
+  private transporterLabels: Phaser.GameObjects.Text[] = [];
+  
+  // Milestone 6: Membrane exchange system
+  private membraneExchangeSystem!: MembraneExchangeSystem;
 
   // Species diffusion system - Task 3
   private diffusionSystem!: DiffusionSystem;
@@ -149,6 +158,8 @@ export class GameScene extends Phaser.Scene {
       E: this.input.keyboard!.addKey("E"),
       B: this.input.keyboard!.addKey("B"),
       X: this.input.keyboard!.addKey("X"),
+      M: this.input.keyboard!.addKey("M"),
+      F: this.input.keyboard!.addKey("F"),
     };
 
     // Initialize systems
@@ -163,7 +174,8 @@ export class GameScene extends Phaser.Scene {
     this.initializeConservationTracker();
     this.initializeOrganelleSystem();
     this.initializePlayerInventory();
-    this.initializeBlueprintSystem();
+    this.initializeMembraneExchangeSystem();
+    this.initializeBlueprintSystem(); // After membrane exchange system
     this.initializeDebugInfo();
     
     // Initialize HUD with current information
@@ -211,6 +223,11 @@ export class GameScene extends Phaser.Scene {
     // Handle hex grid toggle
     if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
       this.toggleHexGrid();
+    }
+
+    // Milestone 6: Handle membrane debug toggle
+    if (Phaser.Input.Keyboard.JustDown(this.keys.M)) {
+      this.toggleMembraneDebug();
     }
 
     // Handle heatmap controls - Task 5
@@ -445,6 +462,9 @@ export class GameScene extends Phaser.Scene {
     const maxDistance = this.cellRadius - this.hexSize;
     this.hexGrid.filterTilesInCircle(this.cellCenter.x, this.cellCenter.y, maxDistance);
     
+    // Milestone 6 Task 1: Compute membrane tiles
+    this.hexGrid.recomputeMembranes(this.cellCenter.x, this.cellCenter.y, this.cellRadius);
+    
     console.log(`Hex Grid initialized:
       - Tiles: ${this.hexGrid.getTileCount()}
       - Hex size: ${this.hexSize}
@@ -475,6 +495,89 @@ export class GameScene extends Phaser.Scene {
     this.hexGraphics.setDepth(1.5); // Above background, below organelles
     this.hexGraphics.setVisible(this.showHexGrid);
     this.renderHexGrid();
+    
+    // Milestone 6: Initialize membrane debug graphics
+    this.initializeMembraneGraphics();
+  }
+
+  private initializeMembraneGraphics(): void {
+    this.membraneGraphics = this.add.graphics();
+    this.membraneGraphics.setDepth(1.6); // Above hex grid, below organelles
+    this.membraneGraphics.setVisible(this.showMembraneDebug);
+    this.renderMembraneDebug();
+  }
+
+  private renderMembraneDebug(): void {
+    if (!this.hexGrid || !this.membraneGraphics) return;
+    
+    this.membraneGraphics.clear();
+    
+    // Clean up old transporter labels
+    for (const label of this.transporterLabels) {
+      label.destroy();
+    }
+    this.transporterLabels = [];
+    
+    if (!this.showMembraneDebug) return;
+    
+    // Draw membrane tiles with a distinct outline
+    this.membraneGraphics.lineStyle(2, 0xff4444, 0.8); // Red outline
+    this.membraneGraphics.fillStyle(0xff4444, 0.2); // Semi-transparent red fill
+    
+    const membraneTiles = this.hexGrid.getMembraneTiles();
+    
+    for (const tile of membraneTiles) {
+      // Draw each hexagon individually for proper fill and stroke
+      this.membraneGraphics.beginPath();
+      this.drawSingleHexagon(tile.worldPos.x, tile.worldPos.y, this.hexSize);
+      this.membraneGraphics.fillPath();
+      this.membraneGraphics.strokePath();
+    }
+    
+    // Draw transporter indicators
+    this.membraneGraphics.lineStyle(2, 0x00ff00, 1.0); // Green for transporters
+    this.membraneGraphics.fillStyle(0x00ff00, 0.6); // Semi-transparent green fill
+    
+    for (const tile of membraneTiles) {
+      const transporters = this.membraneExchangeSystem.getTransportersAt(tile.coord);
+      if (transporters.length > 0) {
+        // Draw small circles to indicate transporters
+        const radius = this.hexSize * 0.3;
+        this.membraneGraphics.fillCircle(tile.worldPos.x, tile.worldPos.y, radius);
+        this.membraneGraphics.strokeCircle(tile.worldPos.x, tile.worldPos.y, radius);
+        
+        // Add text label showing number of transporters
+        if (transporters.length > 1) {
+          const label = this.add.text(tile.worldPos.x, tile.worldPos.y, transporters.length.toString(), {
+            fontSize: '12px',
+            fontFamily: 'Arial',
+            color: '#ffffff',
+            backgroundColor: '#000000',
+            padding: { x: 2, y: 2 }
+          });
+          label.setOrigin(0.5, 0.5);
+          label.setDepth(10);
+          this.transporterLabels.push(label);
+        }
+      }
+    }
+    
+    console.log(`Membrane debug rendered: ${membraneTiles.length} membrane tiles`);
+  }
+
+  private drawSingleHexagon(x: number, y: number, size: number): void {
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i;
+      const px = x + size * Math.cos(angle);
+      const py = y + size * Math.sin(angle);
+      
+      if (i === 0) {
+        this.membraneGraphics.moveTo(px, py);
+      } else {
+        this.membraneGraphics.lineTo(px, py);
+      }
+    }
+    this.membraneGraphics.closePath();
   }
 
   private renderHexGrid(): void {
@@ -519,6 +622,15 @@ export class GameScene extends Phaser.Scene {
     console.log(`Hex grid ${this.showHexGrid ? 'shown' : 'hidden'}`);
   }
 
+  private toggleMembraneDebug(): void {
+    this.showMembraneDebug = !this.showMembraneDebug;
+    if (this.membraneGraphics) {
+      this.membraneGraphics.setVisible(this.showMembraneDebug);
+      this.renderMembraneDebug();
+    }
+    console.log(`Membrane debug ${this.showMembraneDebug ? 'shown' : 'hidden'}`);
+  }
+
   // Hex Interaction System
   private initializeHexInteraction(): void {
     this.hexInteractionGraphics = this.add.graphics();
@@ -541,6 +653,11 @@ export class GameScene extends Phaser.Scene {
     const tile = this.hexGrid.getTileAtWorld(worldX, worldY);
     
     this.hoveredTile = tile || null;
+    
+    // Milestone 6 Task 6: Update build palette based on hovered tile type
+    if (this.buildPalette && this.isInBuildMode) {
+      this.updateBuildPaletteFilter();
+    }
   }
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
@@ -566,6 +683,8 @@ export class GameScene extends Phaser.Scene {
           this.isInBuildMode = false;
           this.selectedRecipeId = null;
           this.buildPalette.hide();
+          // Reset palette to show all recipes
+          this.buildPalette.rebuildPalette('all');
         } else {
           console.warn(`Failed to place blueprint: ${result.error}`);
         }
@@ -707,6 +826,30 @@ export class GameScene extends Phaser.Scene {
         info.push(''); // Add spacing
       }
       
+      // Milestone 6: Membrane and organelle info
+      if (tile.isMembrane) {
+        info.push(`🧬 Membrane Tile`);
+        
+        // Check if there's a membrane organelle built on this tile
+        if (organelle && (organelle.type === 'membrane-port' || organelle.type === 'transporter' || organelle.type === 'receptor')) {
+          // Already shown above in organelle info section, just add a note
+          info.push(`🏗️ Membrane structure built`);
+        } else {
+          // Show installed transporters (from test system, if any remain)
+          const transporters = this.membraneExchangeSystem.getTransportersAt(tile.coord);
+          if (transporters.length > 0) {
+            info.push(`🚛 Test Transporters:`);
+            for (const transporter of transporters) {
+              const direction = transporter.fluxRate > 0 ? '⬇️' : '⬆️';
+              info.push(`  ${direction} ${transporter.type}: ${transporter.speciesId} ${transporter.fluxRate > 0 ? '+' : ''}${transporter.fluxRate}/sec`);
+            }
+          } else {
+            info.push(`🔧 Available`);
+          }
+        }
+        info.push(''); // Add spacing
+      }
+      
       info.push(`Species Concentrations:`);
       
       // Show all species concentrations
@@ -732,6 +875,10 @@ export class GameScene extends Phaser.Scene {
       "← → - Cycle species",
       "P - Toggle passive effects",
       "T - Pause/show conservation",
+      "M - Toggle membrane debug",
+      "B - Toggle build menu",
+      "F - Instant construction",
+      "X - Cancel blueprint",
       "Click tile to select",
       "C - Clear selected tile",
       "1 - Inject ATP",
@@ -809,15 +956,16 @@ export class GameScene extends Phaser.Scene {
   // Blueprint System - Milestone 5
   
   private initializeBlueprintSystem(): void {
-    // Initialize blueprint system with reference to organelle occupied tiles
+    // Initialize blueprint system with reference to organelle occupied tiles and membrane exchange system
     this.blueprintSystem = new BlueprintSystem(
       this.hexGrid, 
       () => this.organelleSystem.getOccupiedTiles(),
-      (organelleType: string, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord)
+      (organelleType: string, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord),
+      this.membraneExchangeSystem
     );
     
     // Initialize build palette UI
-    this.buildPalette = new BuildPaletteUI(this, 350, 200);
+    this.buildPalette = new BuildPaletteUI(this, 350, 50);
     this.buildPalette.onRecipeSelected = (recipeId: string) => {
       this.selectedRecipeId = recipeId;
       this.isInBuildMode = true;
@@ -922,6 +1070,11 @@ export class GameScene extends Phaser.Scene {
     console.log('Diffusion system initialized');
   }
 
+  private initializeMembraneExchangeSystem(): void {
+    this.membraneExchangeSystem = new MembraneExchangeSystem(this.hexGrid);
+    console.log('Membrane exchange system initialized');
+  }
+
   private updateDiffusion(deltaSeconds: number): void {
     this.diffusionTimeAccumulator += deltaSeconds;
     
@@ -932,6 +1085,9 @@ export class GameScene extends Phaser.Scene {
       
       // Process organelles (consume/produce species)
       this.organelleSystem.update(this.diffusionTimestep);
+      
+      // Milestone 6 Task 4: Apply membrane exchange after organelles
+      this.membraneExchangeSystem.processExchange(this.diffusionTimestep * 1000); // Convert to milliseconds
       
       // Then run diffusion
       this.diffusionSystem.step();
@@ -978,8 +1134,38 @@ export class GameScene extends Phaser.Scene {
       console.log('Player Inventory Status:', this.playerInventory.getStatus());
     }
 
+    // F key - Instantly complete construction on current tile
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
+      this.instantCompleteConstruction(playerCoord);
+    }
+
     // Tile interactions - Tasks 2-9
     this.handleTileInteractions();
+  }
+
+  /**
+   * Debug function to instantly complete any blueprint construction on the given tile
+   */
+  private instantCompleteConstruction(coord: HexCoord): void {
+    const blueprint = this.blueprintSystem.getBlueprintAtTile(coord.q, coord.r);
+    if (!blueprint) {
+      console.log(`No blueprint found at (${coord.q}, ${coord.r})`);
+      return;
+    }
+
+    const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
+    if (!recipe) {
+      console.warn(`Recipe not found for blueprint ${blueprint.id}`);
+      return;
+    }
+
+    // Fill all requirements instantly
+    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
+      blueprint.progress[speciesId] = requiredAmount;
+      blueprint.totalProgress += requiredAmount;
+    }
+
+    console.log(`🚀 Instantly completed ${recipe.label} construction at (${coord.q}, ${coord.r})`);
   }
 
   // Blueprint System Input Handling - Milestone 5
@@ -993,6 +1179,8 @@ export class GameScene extends Phaser.Scene {
       if (!this.buildPalette.getIsVisible()) {
         this.isInBuildMode = false;
         this.selectedRecipeId = null;
+        // Reset palette to show all recipes when closing
+        this.buildPalette.rebuildPalette('all');
       }
     }
 
@@ -1010,6 +1198,20 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
+  }
+
+  /**
+   * Milestone 6 Task 6: Update build palette filter based on hovered tile
+   */
+  private updateBuildPaletteFilter(): void {
+    if (!this.hoveredTile) {
+      this.buildPalette.rebuildPalette('all');
+      return;
+    }
+
+    const isMembraneTile = this.hexGrid.isMembraneCoord(this.hoveredTile.coord);
+    const filter = isMembraneTile ? 'membrane' : 'cytosol';
+    this.buildPalette.rebuildPalette(filter);
   }
 
   /**

@@ -18,6 +18,9 @@ export class BuildPaletteUI {
   // Store the desired screen position
   private screenOffsetX: number;
   private screenOffsetY: number;
+  
+  // Milestone 6: Dynamic filtering
+  private currentFilter: 'all' | 'membrane' | 'cytosol' = 'all';
 
   // Callbacks
   public onRecipeSelected?: (recipeId: string) => void;
@@ -30,23 +33,46 @@ export class BuildPaletteUI {
     // Remove setScrollFactor(0) to avoid coordinate system conflicts
     this.container.setDepth(100); // Ensure it appears above other UI
     this.createPalette();
+    // Initially position the container correctly
+    this.updatePosition();
   }
 
   private createPalette(): void {
-    const recipes = CONSTRUCTION_RECIPES.getAllRecipes();
+    this.rebuildPalette('all');
+  }
+
+  /**
+   * Milestone 6: Rebuild palette with filtering
+   */
+  public rebuildPalette(filter: 'all' | 'membrane' | 'cytosol'): void {
+    this.currentFilter = filter;
+    
+    // Clear existing palette
+    this.container.removeAll(true);
+    this.buttons.clear();
+    
+    // Get filtered recipes
+    const allRecipes = CONSTRUCTION_RECIPES.getAllRecipes();
+    const filteredRecipes = allRecipes.filter(recipe => {
+      if (filter === 'membrane') return recipe.membraneOnly;
+      if (filter === 'cytosol') return recipe.cytosolOnly;
+      return true; // 'all' shows everything
+    });
+
     const buttonHeight = 40;
     const buttonWidth = 200;
     const spacing = 5;
-    const titleHeight = 25; // Space reserved for title
+    const titleHeight = 25;
 
-    // Background panel - add extra space for title
-    const panelHeight = recipes.length * (buttonHeight + spacing) + titleHeight + 20;
+    // Background panel
+    const panelHeight = Math.max(filteredRecipes.length * (buttonHeight + spacing) + titleHeight + 20, 80);
     const background = this.scene.add.rectangle(0, 0, buttonWidth + 20, panelHeight, 0x333333, 0.9);
     background.setStrokeStyle(2, 0x666666);
     this.container.add(background);
 
-    // Title - positioned at the top with proper spacing
-    const title = this.scene.add.text(0, -panelHeight/2 + titleHeight/2, 'Build Menu', {
+    // Title with filter info
+    const filterText = filter === 'all' ? '' : ` (${filter})`;
+    const title = this.scene.add.text(0, -panelHeight/2 + titleHeight/2, `Build Menu${filterText}`, {
       fontSize: '14px',
       fontFamily: 'Arial',
       color: '#ffffff'
@@ -54,16 +80,24 @@ export class BuildPaletteUI {
     title.setOrigin(0.5, 0.5);
     this.container.add(title);
 
-    // Recipe buttons - start after title with proper spacing
-    recipes.forEach((recipe, index) => {
-      const buttonY = -panelHeight/2 + titleHeight + 15 + index * (buttonHeight + spacing);
-      const button = this.createRecipeButton(recipe, buttonY, buttonWidth, buttonHeight);
-      this.container.add(button);
-      this.buttons.set(recipe.id, button);
-    });
-
-    // Start hidden
-    this.container.setVisible(false);
+    if (filteredRecipes.length === 0) {
+      // Show "no items" message
+      const noItemsText = this.scene.add.text(0, 0, `No ${filter} items available`, {
+        fontSize: '12px',
+        fontFamily: 'Arial',
+        color: '#888888'
+      });
+      noItemsText.setOrigin(0.5, 0.5);
+      this.container.add(noItemsText);
+    } else {
+      // Recipe buttons
+      filteredRecipes.forEach((recipe, index) => {
+        const buttonY = -panelHeight/2 + titleHeight + 15 + index * (buttonHeight + spacing);
+        const button = this.createRecipeButton(recipe, buttonY, buttonWidth, buttonHeight);
+        this.container.add(button);
+        this.buttons.set(recipe.id, button);
+      });
+    }
   }
 
   private createRecipeButton(recipe: ConstructionRecipe, y: number, width: number, height: number): Phaser.GameObjects.Container {
@@ -151,9 +185,12 @@ export class BuildPaletteUI {
     // Position relative to current camera position using the specified screen offset
     const camera = this.scene.cameras.main;
     const screenX = camera.scrollX + this.screenOffsetX;
-    const screenY = camera.scrollY + this.screenOffsetY;
-    this.container.setPosition(screenX, screenY);
     
+    // Calculate panel height to adjust Y position so top of panel is at screenOffsetY
+    const panelHeight = this.calculatePanelHeight();
+    const screenY = camera.scrollY + this.screenOffsetY + panelHeight / 2;
+    
+    this.container.setPosition(screenX, screenY);
     this.container.setVisible(true);
   }
 
@@ -179,9 +216,28 @@ export class BuildPaletteUI {
     if (this.isVisible) {
       const camera = this.scene.cameras.main;
       const screenX = camera.scrollX + this.screenOffsetX;
-      const screenY = camera.scrollY + this.screenOffsetY;
+      
+      // Calculate panel height to adjust Y position so top of panel is at screenOffsetY
+      const panelHeight = this.calculatePanelHeight();
+      const screenY = camera.scrollY + this.screenOffsetY + panelHeight / 2;
+      
       this.container.setPosition(screenX, screenY);
     }
+  }
+
+  private calculatePanelHeight(): number {
+    const allRecipes = CONSTRUCTION_RECIPES.getAllRecipes();
+    const filteredRecipes = allRecipes.filter(recipe => {
+      if (this.currentFilter === 'membrane') return recipe.membraneOnly;
+      if (this.currentFilter === 'cytosol') return recipe.cytosolOnly;
+      return true; // 'all' shows everything
+    });
+
+    const buttonHeight = 40;
+    const spacing = 5;
+    const titleHeight = 25;
+    
+    return Math.max(filteredRecipes.length * (buttonHeight + spacing) + titleHeight + 20, 80);
   }
 
   public setPosition(x: number, y: number): void {
