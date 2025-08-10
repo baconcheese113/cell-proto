@@ -70,6 +70,34 @@ class SpeciesRegistry {
       maxConcentration: 50,
       color: 0xffd93d
     });
+
+    // New species for organelle processing - Milestone 3
+    this.registerSpecies({
+      id: 'PRE_MRNA',
+      label: 'pre-mRNA',
+      diffusionCoefficient: 0.01, // Slower, larger molecules
+      minConcentration: 0,
+      maxConcentration: 30,
+      color: 0x9966ff
+    });
+
+    this.registerSpecies({
+      id: 'PROTEIN',
+      label: 'Protein Units',
+      diffusionCoefficient: 0.008, // Even slower
+      minConcentration: 0,
+      maxConcentration: 25,
+      color: 0xff9966
+    });
+
+    this.registerSpecies({
+      id: 'CARGO',
+      label: 'Cargo Vesicles',
+      diffusionCoefficient: 0.005, // Slowest diffusion
+      minConcentration: 0,
+      maxConcentration: 20,
+      color: 0x66ff99
+    });
   }
 
   private registerSpecies(species: SpeciesData): void {

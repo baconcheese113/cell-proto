@@ -1,22 +1,21 @@
 import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
-import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture, makeStationTexture } from "../gfx/textures";
+import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture } from "../gfx/textures";
 import { HexGrid } from "../hex/hex-grid";
 import { getAllSpecies } from "../species/species-registry";
 import { DiffusionSystem } from "../species/diffusion-system";
 import { HeatmapSystem } from "../species/heatmap-system";
 import { PassiveEffectsSystem } from "../species/passive-effects-system";
 import { ConservationTracker } from "../species/conservation-tracker";
+import { OrganelleSystem } from "../organelles/organelle-system";
+import { OrganelleRenderer } from "../organelles/organelle-renderer";
+import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 
 type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "H" | "LEFT" | "RIGHT" | "P" | "T", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
   private cellSprite!: Phaser.GameObjects.Image;
-  private nucleusSprite!: Phaser.GameObjects.Image;
-  private ribosomeSprite!: Phaser.GameObjects.Image;
-  private peroxisomeSprite!: Phaser.GameObjects.Image;
-  private chaperoneSprite!: Phaser.GameObjects.Image;
 
   private player!: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
   private ring!: Phaser.GameObjects.Image;
@@ -25,7 +24,6 @@ export class GameScene extends Phaser.Scene {
   private cellCenter = new Phaser.Math.Vector2(0, 0);
   private cellRadius = 220;
   private membraneThickness = 10;
-
   // Hex grid system
   private hexGrid!: HexGrid;
   private hexSize = 16; // Tunable hex tile size
@@ -53,15 +51,10 @@ export class GameScene extends Phaser.Scene {
   private conservationTracker!: ConservationTracker;
   private conservationPanel!: Phaser.GameObjects.Text;
 
-  // Station visuals (legacy organelles kept as decoration)
-  private nucleusLabel!: Phaser.GameObjects.Text;
-  private ribosomeLabel!: Phaser.GameObjects.Text;
-  private peroxisomeLabel!: Phaser.GameObjects.Text;
-  private chaperoneLabel!: Phaser.GameObjects.Text;
-  private nucleusGlow!: Phaser.GameObjects.Image;
-  private ribosomeGlow!: Phaser.GameObjects.Image;
-  private peroxisomeGlow!: Phaser.GameObjects.Image;
-  private chaperoneGlow!: Phaser.GameObjects.Image;
+  // Organelle system - Milestone 3 Task 1
+  private organelleSystem!: OrganelleSystem;
+  private organelleRenderer!: OrganelleRenderer;
+  private organelleSelection!: OrganelleSelectionSystem;
 
   // Movement mechanics
   private dashCooldown = 0;
@@ -105,48 +98,6 @@ export class GameScene extends Phaser.Scene {
     const cellKey = makeCellTexture(this, this.cellRadius * 2 + this.membraneThickness * 2, this.membraneThickness, this.col.cellFill, this.col.membrane);
     this.cellSprite = this.add.image(this.cellCenter.x, this.cellCenter.y, cellKey).setDepth(1);
 
-    // Organelle stations (kept as visual decoration)
-    const nucleusKey = makeCellTexture(this, 180, 8, this.col.nucleusFill, this.col.nucleusRim);
-    this.nucleusSprite = this.add.image(this.cellCenter.x - 80, this.cellCenter.y - 20, nucleusKey).setDepth(2);
-    const riboKey = makeCellTexture(this, 140, 8, this.col.riboFill, this.col.riboRim);
-    this.ribosomeSprite = this.add.image(this.cellCenter.x + 100, this.cellCenter.y + 40, riboKey).setDepth(2);
-    const peroxiKey = makeCellTexture(this, 120, 8, this.col.peroxiFill, this.col.peroxiRim);
-    this.peroxisomeSprite = this.add.image(this.cellCenter.x - 110, this.cellCenter.y + 80, peroxiKey).setDepth(2);
-    const chaperoneKey = makeCellTexture(this, 100, 8, this.col.chaperoneFill, this.col.chaperoneRim);
-    this.chaperoneSprite = this.add.image(this.cellCenter.x + 120, this.cellCenter.y - 60, chaperoneKey).setDepth(2);
-
-    this.add.image(this.nucleusSprite.x, this.nucleusSprite.y, makeStationTexture(this, "Nucleus")).setDepth(3).setAlpha(0.9);
-    this.add.image(this.ribosomeSprite.x, this.ribosomeSprite.y, makeStationTexture(this, "Ribosome")).setDepth(3).setAlpha(0.9);
-    this.add.image(this.peroxisomeSprite.x, this.peroxisomeSprite.y, makeStationTexture(this, "Peroxisome")).setDepth(3).setAlpha(0.9);
-    this.add.image(this.chaperoneSprite.x, this.chaperoneSprite.y, makeStationTexture(this, "Chaperone")).setDepth(3).setAlpha(0.9);
-
-    // Station glow effects
-    const glowKey = makeRingTexture(this, 200, 6, 0x88ddff);
-    this.nucleusGlow = this.add.image(this.nucleusSprite.x, this.nucleusSprite.y, glowKey).setDepth(1).setAlpha(0).setTint(this.col.nucleusRim);
-    const riboGlowKey = makeRingTexture(this, 160, 6, 0x88ddff);
-    this.ribosomeGlow = this.add.image(this.ribosomeSprite.x, this.ribosomeSprite.y, riboGlowKey).setDepth(1).setAlpha(0).setTint(this.col.riboRim);
-    const peroxiGlowKey = makeRingTexture(this, 140, 6, 0x88ddff);
-    this.peroxisomeGlow = this.add.image(this.peroxisomeSprite.x, this.peroxisomeSprite.y, peroxiGlowKey).setDepth(1).setAlpha(0).setTint(this.col.peroxiRim);
-    const chaperoneGlowKey = makeRingTexture(this, 120, 6, 0x88ddff);
-    this.chaperoneGlow = this.add.image(this.chaperoneSprite.x, this.chaperoneSprite.y, chaperoneGlowKey).setDepth(1).setAlpha(0).setTint(this.col.chaperoneRim);
-
-    // Station labels
-    this.nucleusLabel = this.add.text(this.nucleusSprite.x, this.nucleusSprite.y - 110, "Nucleus", {
-      fontFamily: "monospace", fontSize: "16px", color: "#88ddff", stroke: "#000", strokeThickness: 2
-    }).setOrigin(0.5).setDepth(5);
-
-    this.ribosomeLabel = this.add.text(this.ribosomeSprite.x, this.ribosomeSprite.y - 90, "Ribosome", {
-      fontFamily: "monospace", fontSize: "16px", color: "#88ddff", stroke: "#000", strokeThickness: 2
-    }).setOrigin(0.5).setDepth(5);
-
-    this.peroxisomeLabel = this.add.text(this.peroxisomeSprite.x, this.peroxisomeSprite.y - 80, "Peroxisome", {
-      fontFamily: "monospace", fontSize: "16px", color: "#88ddff", stroke: "#000", strokeThickness: 2
-    }).setOrigin(0.5).setDepth(5);
-
-    this.chaperoneLabel = this.add.text(this.chaperoneSprite.x, this.chaperoneSprite.y - 70, "Chaperone", {
-      fontFamily: "monospace", fontSize: "16px", color: "#88ddff", stroke: "#000", strokeThickness: 2
-    }).setOrigin(0.5).setDepth(5);
-
     // Player
     const pkey = makeDotTexture(this, 16, this.col.player);
     this.player = this.physics.add.sprite(this.cellCenter.x, this.cellCenter.y, pkey).setDepth(4);
@@ -188,6 +139,7 @@ export class GameScene extends Phaser.Scene {
     this.initializeHeatmapSystem();
     this.initializePassiveEffectsSystem();
     this.initializeConservationTracker();
+    this.initializeOrganelleSystem();
     this.initializeDebugInfo();
     setHud(this, { message: "" });
 
@@ -202,24 +154,9 @@ export class GameScene extends Phaser.Scene {
       this.grid.setTexture(key).setOrigin(0.5, 0.5);
       this.grid.setPosition(newWidth * 0.5, newHeight * 0.5);
       
-      // Re-center cell and stations
+      // Re-center cell
       this.cellCenter.set(newWidth * 0.5, newHeight * 0.5);
       this.cellSprite.setPosition(this.cellCenter.x, this.cellCenter.y);
-      
-      this.nucleusSprite.setPosition(this.cellCenter.x - 80, this.cellCenter.y - 20);
-      this.ribosomeSprite.setPosition(this.cellCenter.x + 100, this.cellCenter.y + 40);
-      this.peroxisomeSprite.setPosition(this.cellCenter.x - 110, this.cellCenter.y + 80);
-      this.chaperoneSprite.setPosition(this.cellCenter.x + 120, this.cellCenter.y - 60);
-      
-      this.nucleusGlow.setPosition(this.nucleusSprite.x, this.nucleusSprite.y);
-      this.ribosomeGlow.setPosition(this.ribosomeSprite.x, this.ribosomeSprite.y);
-      this.peroxisomeGlow.setPosition(this.peroxisomeSprite.x, this.peroxisomeSprite.y);
-      this.chaperoneGlow.setPosition(this.chaperoneSprite.x, this.chaperoneSprite.y);
-      
-      this.nucleusLabel.setPosition(this.nucleusSprite.x, this.nucleusSprite.y - 110);
-      this.ribosomeLabel.setPosition(this.ribosomeSprite.x, this.ribosomeSprite.y - 90);
-      this.peroxisomeLabel.setPosition(this.peroxisomeSprite.x, this.peroxisomeSprite.y - 80);
-      this.chaperoneLabel.setPosition(this.chaperoneSprite.x, this.chaperoneSprite.y - 70);
 
       // Update hex grid
       if (this.hexGrid) {
@@ -229,6 +166,16 @@ export class GameScene extends Phaser.Scene {
         // Reinitialize diffusion system buffers after grid change
         if (this.diffusionSystem) {
           this.diffusionSystem.reinitialize();
+        }
+        
+        // Re-render organelles with new positions
+        if (this.organelleRenderer) {
+          this.organelleRenderer.onResize();
+        }
+        
+        // Update selection system
+        if (this.organelleSelection) {
+          this.organelleSelection.onResize();
         }
       }
     });
@@ -525,6 +472,9 @@ export class GameScene extends Phaser.Scene {
     if (this.hexGraphics) {
       this.hexGraphics.setVisible(this.showHexGrid);
     }
+    if (this.organelleRenderer) {
+      this.organelleRenderer.setVisible(this.showHexGrid);
+    }
     console.log(`Hex grid ${this.showHexGrid ? 'shown' : 'hidden'}`);
   }
 
@@ -636,9 +586,17 @@ export class GameScene extends Phaser.Scene {
       const info = [
         `Hex Tile Info:`,
         `Coord: (${tile.coord.q}, ${tile.coord.r})`,
-        `World: (${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`,
-        `Species Concentrations:`
+        `World: (${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`
       ];
+      
+      // Check for organelle on this tile
+      const organelle = this.organelleSystem.getOrganelleAtTile(tile.coord);
+      if (organelle) {
+        info.push(...this.organelleSystem.getOrganelleInfo(tile.coord));
+        info.push(''); // Add spacing
+      }
+      
+      info.push(`Species Concentrations:`);
       
       // Show all species concentrations
       for (const speciesId in concentrations) {
@@ -672,7 +630,7 @@ export class GameScene extends Phaser.Scene {
       "5 - Inject GLUCOSE"
     ].join('\n');
 
-    this.debugInfoPanel = this.add.text(14, 200, debugText, {
+    this.debugInfoPanel = this.add.text(14, 600, debugText, {
       fontFamily: "monospace",
       fontSize: "10px",
       color: "#88ddff",
@@ -691,7 +649,7 @@ export class GameScene extends Phaser.Scene {
   private initializeConservationTracker(): void {
     this.conservationTracker = new ConservationTracker(this.hexGrid, this.passiveEffectsSystem);
     
-    this.conservationPanel = this.add.text(14, 350, "", {
+    this.conservationPanel = this.add.text(14, 750, "", {
       fontFamily: "monospace",
       fontSize: "10px",
       color: "#ffcc88",
@@ -706,6 +664,28 @@ export class GameScene extends Phaser.Scene {
     this.conservationPanel.setVisible(false);
     
     console.log('Conservation tracker initialized');
+  }
+
+  // Organelle System - Milestone 3 Task 1
+  
+  private initializeOrganelleSystem(): void {
+    this.organelleSystem = new OrganelleSystem(this.hexGrid);
+    this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize);
+    this.organelleSelection = new OrganelleSelectionSystem(this, this.organelleSystem, this.hexSize);
+    
+    // Set up selection callback
+    this.organelleSelection.onSelectionChanged = (organelle) => {
+      if (organelle) {
+        console.log(`Selected organelle: ${organelle.config.label} (${organelle.id})`);
+      } else {
+        console.log('Selection cleared');
+      }
+    };
+    
+    // Always show organelles when grid is visible
+    this.organelleRenderer.setVisible(this.showHexGrid);
+    
+    console.log('Organelle system initialized');
   }
 
   private updateConservationPanel(): void {
@@ -750,8 +730,11 @@ export class GameScene extends Phaser.Scene {
     
     // Run diffusion at fixed timestep
     while (this.diffusionTimeAccumulator >= this.diffusionTimestep) {
-      // Apply passive effects before diffusion
+      // Apply passive effects before organelle processing
       this.passiveEffectsSystem.step(this.diffusionTimestep);
+      
+      // Process organelles (consume/produce species)
+      this.organelleSystem.update(this.diffusionTimestep);
       
       // Then run diffusion
       this.diffusionSystem.step();
