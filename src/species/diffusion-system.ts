@@ -8,13 +8,14 @@
 import { HexGrid } from "../hex/hex-grid";
 import type { HexCoord } from "../hex/hex-grid";
 import { getSpecies, getAllSpeciesIds } from "../species/species-registry";
+import type { SpeciesId } from "../species/species-registry";
 
 export class DiffusionSystem {
   private hexGrid: HexGrid;
-  private bufferA: Map<string, Record<string, number>> = new Map();
-  private bufferB: Map<string, Record<string, number>> = new Map();
-  private currentBuffer: Map<string, Record<string, number>>;
-  private nextBuffer: Map<string, Record<string, number>>;
+  private bufferA: Map<string, Record<SpeciesId, number>> = new Map();
+  private bufferB: Map<string, Record<SpeciesId, number>> = new Map();
+  private currentBuffer: Map<string, Record<SpeciesId, number>>;
+  private nextBuffer: Map<string, Record<SpeciesId, number>>;
 
   constructor(hexGrid: HexGrid) {
     this.hexGrid = hexGrid;
@@ -126,7 +127,7 @@ export class DiffusionSystem {
   /**
    * Copy current grid concentrations to buffer
    */
-  private copyGridToBuffer(buffer: Map<string, Record<string, number>>): void {
+  private copyGridToBuffer(buffer: Map<string, Record<SpeciesId, number>>): void {
     const allTiles = this.hexGrid.getAllTiles();
     
     for (const tile of allTiles) {
@@ -134,7 +135,7 @@ export class DiffusionSystem {
       const bufferEntry = buffer.get(key);
       if (bufferEntry) {
         for (const speciesId in tile.concentrations) {
-          bufferEntry[speciesId] = tile.concentrations[speciesId];
+          bufferEntry[speciesId as SpeciesId] = tile.concentrations[speciesId as SpeciesId];
         }
       }
     }
@@ -143,7 +144,7 @@ export class DiffusionSystem {
   /**
    * Copy buffer concentrations back to grid
    */
-  private copyBufferToGrid(buffer: Map<string, Record<string, number>>): void {
+  private copyBufferToGrid(buffer: Map<string, Record<SpeciesId, number>>): void {
     const allTiles = this.hexGrid.getAllTiles();
     
     for (const tile of allTiles) {
@@ -151,7 +152,7 @@ export class DiffusionSystem {
       const bufferEntry = buffer.get(key);
       if (bufferEntry) {
         for (const speciesId in tile.concentrations) {
-          tile.concentrations[speciesId] = bufferEntry[speciesId];
+          tile.concentrations[speciesId as SpeciesId] = bufferEntry[speciesId as SpeciesId];
         }
       }
     }
@@ -160,10 +161,10 @@ export class DiffusionSystem {
   /**
    * Clear all concentrations in buffer
    */
-  private clearBuffer(buffer: Map<string, Record<string, number>>): void {
+  private clearBuffer(buffer: Map<string, Record<SpeciesId, number>>): void {
     for (const concentrations of buffer.values()) {
       for (const speciesId in concentrations) {
-        concentrations[speciesId] = 0;
+        concentrations[speciesId as SpeciesId] = 0;
       }
     }
   }

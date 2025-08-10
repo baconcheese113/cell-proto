@@ -6,9 +6,10 @@
  */
 
 import { HexGrid } from "../hex/hex-grid";
+import type { SpeciesId } from "./species-registry";
 
 export interface PassiveEffect {
-  speciesId: string;
+  speciesId: SpeciesId;
   rate: number; // Amount per second (can be negative for decay)
   enabled: boolean;
 }
@@ -75,7 +76,7 @@ export class PassiveEffectsSystem {
   /**
    * Get effect for specific species
    */
-  public getEffect(speciesId: string): PassiveEffect | undefined {
+  public getEffect(speciesId: SpeciesId): PassiveEffect | undefined {
     return this.effects.get(speciesId);
   }
 

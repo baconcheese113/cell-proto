@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture } from "../gfx/textures";
 import { HexGrid, type HexCoord } from "../hex/hex-grid";
-import { getAllSpecies } from "../species/species-registry";
+import { getAllSpecies, type SpeciesId } from "../species/species-registry";
 import { DiffusionSystem } from "../species/diffusion-system";
 import { HeatmapSystem } from "../species/heatmap-system";
 import { PassiveEffectsSystem } from "../species/passive-effects-system";
@@ -13,6 +13,7 @@ import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 import { PlayerInventorySystem } from "../player/player-inventory";
 import { BlueprintSystem } from "../construction/blueprint-system";
 import { BuildPaletteUI } from "../construction/build-palette-ui";
+import type { OrganelleType } from "../organelles/organelle-registry";
 import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
@@ -78,7 +79,7 @@ export class GameScene extends Phaser.Scene {
   private blueprintSystem!: BlueprintSystem;
   private buildPalette!: BuildPaletteUI;
   private blueprintRenderer!: BlueprintRenderer;
-  private selectedRecipeId: string | null = null;
+  private selectedRecipeId: OrganelleType | null = null;
   private isInBuildMode: boolean = false;
 
   // Movement mechanics
@@ -816,7 +817,7 @@ export class GameScene extends Phaser.Scene {
         
         // Show progress for each species requirement
         for (const [speciesId, requiredAmount] of Object.entries(recipe?.buildCost || {})) {
-          const currentProgress = blueprint.progress[speciesId] || 0;
+          const currentProgress = blueprint.progress[speciesId as SpeciesId] || 0;
           const percent = Math.round((currentProgress / requiredAmount) * 100);
           const status = currentProgress >= requiredAmount ? '✅' : '⏳';
           info.push(`  ${status} ${speciesId}: ${currentProgress.toFixed(1)}/${requiredAmount} (${percent}%)`);
@@ -960,13 +961,13 @@ export class GameScene extends Phaser.Scene {
     this.blueprintSystem = new BlueprintSystem(
       this.hexGrid, 
       () => this.organelleSystem.getOccupiedTiles(),
-      (organelleType: string, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord),
+      (organelleType: OrganelleType, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord),
       this.membraneExchangeSystem
     );
     
     // Initialize build palette UI
     this.buildPalette = new BuildPaletteUI(this, 350, 50);
-    this.buildPalette.onRecipeSelected = (recipeId: string) => {
+    this.buildPalette.onRecipeSelected = (recipeId: OrganelleType) => {
       this.selectedRecipeId = recipeId;
       this.isInBuildMode = true;
       console.log(`Entered build mode with recipe: ${recipeId}`);
@@ -978,7 +979,7 @@ export class GameScene extends Phaser.Scene {
     console.log('Blueprint system initialized');
   }
 
-  private spawnOrganelleFromBlueprint(organelleType: string, coord: HexCoord): void {
+  private spawnOrganelleFromBlueprint(organelleType: OrganelleType, coord: HexCoord): void {
     console.log(`🔧 spawnOrganelleFromBlueprint called: type="${organelleType}", coord=(${coord.q}, ${coord.r})`);
     
     // Use centralized organelle registry instead of hardcoded mapping
@@ -1161,7 +1162,7 @@ export class GameScene extends Phaser.Scene {
 
     // Fill all requirements instantly
     for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
-      blueprint.progress[speciesId] = requiredAmount;
+      blueprint.progress[speciesId as SpeciesId] = requiredAmount;
       blueprint.totalProgress += requiredAmount;
     }
 
@@ -1313,7 +1314,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private injectSpecies(speciesId: string, amount: number): void {
+  private injectSpecies(speciesId: SpeciesId, amount: number): void {
     const playerCoord = this.getPlayerHexCoord();
     if (!playerCoord) return;
     

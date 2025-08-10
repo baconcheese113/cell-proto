@@ -9,12 +9,13 @@ import type { HexCoord } from "../hex/hex-grid";
 import { HexGrid } from "../hex/hex-grid";
 import { ORGANELLE_FOOTPRINTS, getFootprintTiles, type OrganelleFootprint } from "./organelle-footprints";
 import { getOrganelleIOProfile, type OrganelleIOProfile } from "./organelle-io-profiles";
-import { getStarterOrganelleDefinitions, definitionToConfig } from "./organelle-registry";
+import { getStarterOrganelleDefinitions, definitionToConfig, type OrganelleType } from "./organelle-registry";
+import type { SpeciesId } from "../species/species-registry";
 
 export interface OrganelleConfig {
   // Basic properties
   id: string;
-  type: string;
+  type: OrganelleType;
   label: string;
   
   // Visual properties
@@ -31,7 +32,7 @@ export interface OrganelleConfig {
 
 export interface Organelle {
   id: string;
-  type: string;
+  type: OrganelleType;
   coord: HexCoord;  // Primary/center coordinate
   config: OrganelleConfig;
   
@@ -47,7 +48,8 @@ export class OrganelleSystem {
   
   // Processing state
   private processingThisTick: Map<string, number> = new Map(); // organelle ID -> units processed
-  private tileChanges: Map<string, Map<string, number>> = new Map(); // tile key -> species changes
+  // Task 8: Batch tile changes to avoid intermediate state inconsistency
+  private tileChanges: Map<string, Map<SpeciesId, number>> = new Map(); // tile key -> species changes
 
   constructor(hexGrid: HexGrid) {
     this.hexGrid = hexGrid;
@@ -214,7 +216,7 @@ export class OrganelleSystem {
   /**
    * Get organelles by type
    */
-  public getOrganellesByType(type: string): Organelle[] {
+  public getOrganellesByType(type: OrganelleType): Organelle[] {
     return Array.from(this.organelles.values()).filter(org => org.type === type);
   }
 
@@ -308,12 +310,12 @@ export class OrganelleSystem {
   /**
    * Apply consumption and production to a tile
    */
-  private applyIOToTile(tileCoord: HexCoord, ioProfile: OrganelleIOProfile, units: number, organelle: Organelle): void {
+  private applyIOToTile(tileCoord: HexCoord, ioProfile: OrganelleIOProfile, units: number, _organelle: Organelle): void {
     const tileKey = this.coordToKey(tileCoord);
     
     // Ensure we have a change map for this tile
     if (!this.tileChanges.has(tileKey)) {
-      this.tileChanges.set(tileKey, new Map());
+      this.tileChanges.set(tileKey, new Map<SpeciesId, number>());
     }
     const changes = this.tileChanges.get(tileKey)!;
 

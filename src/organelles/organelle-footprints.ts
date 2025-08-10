@@ -1,6 +1,14 @@
 // Organelle footprint definitions for multi-hex placement
 import type { HexCoord } from "../hex/hex-grid";
 
+// Union type of all valid footprint names
+export type FootprintName = 
+  | 'SINGLE'
+  | 'NUCLEUS_LARGE_DISK'
+  | 'RIBOSOME_HUB_SMALL'
+  | 'PROTO_ER_BLOB'
+  | 'MEDIUM_DISK';
+
 // Use the standardized HexCoord type instead of duplicate HexCoordinate
 export interface OrganelleFootprint {
   name: string;
@@ -10,7 +18,7 @@ export interface OrganelleFootprint {
 }
 
 // Predefined footprint shapes
-export const ORGANELLE_FOOTPRINTS: Record<string, OrganelleFootprint> = {
+export const ORGANELLE_FOOTPRINTS: Record<FootprintName, OrganelleFootprint> = {
   // Single hex for basic organelles
   SINGLE: {
     name: "Single Hex",

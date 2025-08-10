@@ -6,21 +6,23 @@
  */
 
 import type { HexCoord } from "../hex/hex-grid";
+import type { SpeciesId } from "../species/species-registry";
+import type { OrganelleType } from "../organelles/organelle-registry";
 import { getBuildableOrganelleDefinitions, getFootprintShape } from "../organelles/organelle-registry";
 
 export interface ConstructionRecipe {
-  id: string;
+  id: OrganelleType;
   label: string;
   
   // Footprint definition (relative to anchor point)
   footprintShape: HexCoord[];
   
   // Build requirements
-  buildCost: Record<string, number>; // species ID -> amount needed
+  buildCost: Partial<Record<SpeciesId, number>>; // species ID -> amount needed
   buildRatePerTick: number; // max units that can be consumed per tick
   
   // Completion target
-  onCompleteType: string; // organelle type to spawn when finished
+  onCompleteType: OrganelleType; // organelle type to spawn when finished
   
   // Display
   description?: string;

@@ -5,8 +5,22 @@
  * Each species has diffusion properties and constraints.
  */
 
+// Union type of all valid species IDs
+export type SpeciesId = 
+  | 'ATP'
+  | 'AA' 
+  | 'NT'
+  | 'ROS'
+  | 'GLUCOSE'
+  | 'PRE_MRNA'
+  | 'PROTEIN'
+  | 'CARGO'
+  | 'LIPID'
+  | 'H2O'
+  | 'CO2';
+
 export interface SpeciesData {
-  id: string;
+  id: SpeciesId;
   label: string;
   diffusionCoefficient: number; // 0-1, fraction to exchange per tick
   minConcentration?: number;    // Optional lower clamp
@@ -18,7 +32,7 @@ export interface SpeciesData {
  * Central species registry containing all species definitions
  */
 class SpeciesRegistry {
-  private species: Map<string, SpeciesData> = new Map();
+  private species: Map<SpeciesId, SpeciesData> = new Map();
 
   constructor() {
     this.initializeSpecies();
@@ -107,7 +121,7 @@ class SpeciesRegistry {
   /**
    * Get all registered species IDs
    */
-  public getAllSpeciesIds(): string[] {
+  public getAllSpeciesIds(): SpeciesId[] {
     return Array.from(this.species.keys());
   }
 
@@ -121,14 +135,14 @@ class SpeciesRegistry {
   /**
    * Look up species metadata by ID
    */
-  public getSpecies(id: string): SpeciesData | undefined {
+  public getSpecies(id: SpeciesId): SpeciesData | undefined {
     return this.species.get(id);
   }
 
   /**
    * Check if a species exists
    */
-  public hasSpecies(id: string): boolean {
+  public hasSpecies(id: SpeciesId): boolean {
     return this.species.has(id);
   }
 
@@ -142,12 +156,12 @@ class SpeciesRegistry {
   /**
    * Helper to create empty concentration object for all species
    */
-  public createEmptyConcentrations(): Record<string, number> {
+  public createEmptyConcentrations(): Record<SpeciesId, number> {
     const concentrations: Record<string, number> = {};
     for (const id of this.getAllSpeciesIds()) {
       concentrations[id] = 0;
     }
-    return concentrations;
+    return concentrations as Record<SpeciesId, number>;
   }
 }
 
@@ -155,7 +169,7 @@ class SpeciesRegistry {
 export const speciesRegistry = new SpeciesRegistry();
 
 // Helper functions for easy access
-export function getAllSpeciesIds(): string[] {
+export function getAllSpeciesIds(): SpeciesId[] {
   return speciesRegistry.getAllSpeciesIds();
 }
 
@@ -163,14 +177,14 @@ export function getAllSpecies(): SpeciesData[] {
   return speciesRegistry.getAllSpecies();
 }
 
-export function getSpecies(id: string): SpeciesData | undefined {
+export function getSpecies(id: SpeciesId): SpeciesData | undefined {
   return speciesRegistry.getSpecies(id);
 }
 
-export function hasSpecies(id: string): boolean {
+export function hasSpecies(id: SpeciesId): boolean {
   return speciesRegistry.hasSpecies(id);
 }
 
-export function createEmptyConcentrations(): Record<string, number> {
+export function createEmptyConcentrations(): Record<SpeciesId, number> {
   return speciesRegistry.createEmptyConcentrations();
 }

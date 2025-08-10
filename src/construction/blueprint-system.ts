@@ -10,14 +10,17 @@ import { HexGrid } from "../hex/hex-grid";
 import type { ConstructionRecipe } from "./construction-recipes";
 import { CONSTRUCTION_RECIPES } from "./construction-recipes";
 import type { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
+import type { SpeciesId } from "../species/species-registry";
+import type { OrganelleType } from "../organelles/organelle-registry";
+import { getAllSpeciesIds } from "../species/species-registry";
 
 export interface Blueprint {
   id: string;
-  recipeId: string;
+  recipeId: OrganelleType;
   anchorCoord: HexCoord; // Primary placement coordinate
   
   // Construction state
-  progress: Record<string, number>; // species ID -> amount contributed
+  progress: Record<SpeciesId, number>; // species ID -> amount contributed
   totalProgress: number; // sum of all progress
   isActive: boolean;
   
@@ -40,12 +43,12 @@ export class BlueprintSystem {
 
   // For organelle system integration
   private getOccupiedTiles: () => Set<string>;
-  private spawnOrganelle?: (type: string, coord: HexCoord) => void;
+  private spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void;
   
   // Milestone 6: Membrane system integration
   private membraneExchangeSystem?: MembraneExchangeSystem;
 
-  constructor(hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: string, coord: HexCoord) => void, membraneExchangeSystem?: MembraneExchangeSystem) {
+  constructor(hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void, membraneExchangeSystem?: MembraneExchangeSystem) {
     this.hexGrid = hexGrid;
     this.getOccupiedTiles = getOccupiedTiles;
     this.spawnOrganelle = spawnOrganelle;
@@ -55,7 +58,7 @@ export class BlueprintSystem {
   /**
    * Task 2: Validate blueprint placement
    */
-  public validatePlacement(recipeId: string, anchorQ: number, anchorR: number): PlacementValidation {
+  public validatePlacement(recipeId: OrganelleType, anchorQ: number, anchorR: number): PlacementValidation {
     const recipe = CONSTRUCTION_RECIPES.getRecipe(recipeId);
     if (!recipe) {
       return {
@@ -119,7 +122,7 @@ export class BlueprintSystem {
   /**
    * Task 2: Place a blueprint
    */
-  public placeBlueprint(recipeId: string, anchorQ: number, anchorR: number): { success: boolean; blueprintId?: string; error?: string } {
+  public placeBlueprint(recipeId: OrganelleType, anchorQ: number, anchorR: number): { success: boolean; blueprintId?: string; error?: string } {
     const validation = this.validatePlacement(recipeId, anchorQ, anchorR);
     
     if (!validation.isValid) {
@@ -194,7 +197,7 @@ export class BlueprintSystem {
     const maxPullPerTick = recipe.buildRatePerTick * (deltaTime / 1000); // convert to per-second rate
 
     // Try to pull each required species
-    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
+    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost) as [SpeciesId, number][]) {
       const alreadyContributed = blueprint.progress[speciesId] || 0;
       const stillNeeded = Math.max(0, requiredAmount - alreadyContributed);
       
@@ -208,7 +211,7 @@ export class BlueprintSystem {
       const actualPulled = this.pullSpeciesFromFootprint(footprintTiles, speciesId, targetPull);
       
       if (actualPulled > 0) {
-        blueprint.progress[speciesId] = (blueprint.progress[speciesId] || 0) + actualPulled;
+        blueprint.progress[speciesId] = blueprint.progress[speciesId] + actualPulled;
         blueprint.totalProgress += actualPulled;
         
         // console.log(`Blueprint ${blueprint.id} consumed ${actualPulled.toFixed(2)} ${speciesId} (${blueprint.progress[speciesId].toFixed(2)}/${requiredAmount})`);
@@ -219,7 +222,7 @@ export class BlueprintSystem {
     this.checkCompletion(blueprint, recipe);
   }
 
-  private pullSpeciesFromFootprint(footprintTiles: HexCoord[], speciesId: string, totalAmount: number): number {
+  private pullSpeciesFromFootprint(footprintTiles: HexCoord[], speciesId: SpeciesId, totalAmount: number): number {
     if (footprintTiles.length === 0) return 0;
 
     const amountPerTile = totalAmount / footprintTiles.length;
@@ -244,7 +247,7 @@ export class BlueprintSystem {
   /**
    * Task 4: Player contribution - add dropped species directly to progress
    */
-  public addPlayerContribution(blueprintId: string, speciesId: string, amount: number): boolean {
+  public addPlayerContribution(blueprintId: string, speciesId: SpeciesId, amount: number): boolean {
     const blueprint = this.blueprints.get(blueprintId);
     if (!blueprint || !blueprint.isActive) return false;
 
@@ -252,8 +255,8 @@ export class BlueprintSystem {
     if (!recipe || !(speciesId in recipe.buildCost)) return false;
 
     const requiredAmount = recipe.buildCost[speciesId];
-    const currentProgress = blueprint.progress[speciesId] || 0;
-    const canAccept = Math.max(0, requiredAmount - currentProgress);
+    const currentProgress = blueprint.progress[speciesId];
+    const canAccept = Math.max(0, (requiredAmount || 0) - currentProgress);
     const actualContribution = Math.min(amount, canAccept);
 
     if (actualContribution > 0) {
@@ -275,7 +278,7 @@ export class BlueprintSystem {
   private checkCompletion(blueprint: Blueprint, recipe: ConstructionRecipe): void {
     // Check if ALL species requirements are met (not just total progress)
     let allRequirementsMet = true;
-    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
+    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost) as [SpeciesId, number][]) {
       const currentProgress = blueprint.progress[speciesId] || 0;
       if (currentProgress < requiredAmount) {
         allRequirementsMet = false;
@@ -313,7 +316,8 @@ export class BlueprintSystem {
     );
 
     // Refund contributed species back to footprint tiles
-    for (const [speciesId, contributed] of Object.entries(blueprint.progress)) {
+    for (const speciesId of getAllSpeciesIds()) {
+      const contributed = blueprint.progress[speciesId];
       if (contributed > 0) {
         const refundAmount = contributed * refundFraction;
         this.distributeRefund(footprintTiles, speciesId, refundAmount);
@@ -325,7 +329,7 @@ export class BlueprintSystem {
     return true;
   }
 
-  private distributeRefund(footprintTiles: HexCoord[], speciesId: string, totalRefund: number): void {
+  private distributeRefund(footprintTiles: HexCoord[], speciesId: SpeciesId, totalRefund: number): void {
     if (footprintTiles.length === 0) return;
 
     const refundPerTile = totalRefund / footprintTiles.length;

@@ -6,18 +6,19 @@
  */
 
 import type { HexGrid, HexCoord } from "../hex/hex-grid";
+import type { SpeciesId } from "../species/species-registry";
 
 export interface MembraneTransporter {
   id: string;
   type: string; // e.g., "GLUT-test", "ROS-leak-test"
-  speciesId: string;
+  speciesId: SpeciesId;
   fluxRate: number; // concentration change per second (can be negative for outflow)
   isActive: boolean;
 }
 
 export interface MembraneExchangeStats {
-  totalImports: Record<string, number>; // species ID -> total imported
-  totalExports: Record<string, number>; // species ID -> total exported
+  totalImports: Partial<Record<SpeciesId, number>>; // species ID -> total imported
+  totalExports: Partial<Record<SpeciesId, number>>; // species ID -> total exported
 }
 
 export class MembraneExchangeSystem {
@@ -26,7 +27,7 @@ export class MembraneExchangeSystem {
   private stats: MembraneExchangeStats;
   
   // External concentrations (constant for now)
-  private externalConcentrations: Record<string, number> = {
+  private externalConcentrations: Partial<Record<SpeciesId, number>> = {
     'GLUCOSE': 50.0,  // High external glucose availability
     'ROS': 2.0,       // Low but constant ROS leak from outside
     'H2O': 100.0,     // Water availability
@@ -41,7 +42,7 @@ export class MembraneExchangeSystem {
     };
     
     // Initialize stats for tracked species
-    for (const speciesId of Object.keys(this.externalConcentrations)) {
+    for (const speciesId of Object.keys(this.externalConcentrations) as SpeciesId[]) {
       this.stats.totalImports[speciesId] = 0;
       this.stats.totalExports[speciesId] = 0;
     }

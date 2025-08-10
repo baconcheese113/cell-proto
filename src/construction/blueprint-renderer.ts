@@ -150,7 +150,7 @@ export class BlueprintRenderer {
       : { x: 0, y: 0 };
   }
 
-  private renderProgressBar(blueprint: Blueprint, centroid: { x: number; y: number }, recipe: any): void {
+  private renderProgressBar(blueprint: Blueprint, centroid: { x: number; y: number }, _recipe: any): void {
     const totalCost = CONSTRUCTION_RECIPES.getTotalCost(blueprint.recipeId);
     const progress = blueprint.totalProgress / totalCost;
     

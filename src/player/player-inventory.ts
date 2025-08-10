@@ -6,9 +6,10 @@
 
 import type { HexGrid } from "../hex/hex-grid";
 import type { HexCoord } from "../hex/hex-grid";
+import type { SpeciesId } from "../species/species-registry";
 
 export interface PlayerInventory {
-  contents: Record<string, number>; // species id -> amount
+  contents: Partial<Record<SpeciesId, number>>; // species id -> amount
   maxCapacity: number; // total units
 }
 
@@ -46,7 +47,7 @@ export class PlayerInventorySystem {
   /**
    * Check if we can take a certain amount of a species
    */
-  public canTake(_speciesId: string, amount: number): boolean {
+  public canTake(_speciesId: SpeciesId, amount: number): boolean {
     if (amount <= 0) return false;
     return this.getRemainingCapacity() >= amount;
   }
@@ -54,7 +55,7 @@ export class PlayerInventorySystem {
   /**
    * Take species into inventory
    */
-  public take(speciesId: string, amount: number): number {
+  public take(speciesId: SpeciesId, amount: number): number {
     if (amount <= 0) return 0;
     
     const actualAmount = Math.min(amount, this.getRemainingCapacity());
@@ -69,7 +70,7 @@ export class PlayerInventorySystem {
   /**
    * Drop species from inventory
    */
-  public drop(speciesId: string, amount: number): number {
+  public drop(speciesId: SpeciesId, amount: number): number {
     if (amount <= 0) return 0;
     
     const current = this.inventory.contents[speciesId] || 0;
@@ -80,7 +81,7 @@ export class PlayerInventorySystem {
     this.inventory.contents[speciesId] = current - actualAmount;
     
     // Clean up zero entries
-    if (this.inventory.contents[speciesId] <= 0) {
+    if (this.inventory.contents[speciesId]! <= 0) {
       delete this.inventory.contents[speciesId];
     }
     
@@ -97,17 +98,17 @@ export class PlayerInventorySystem {
   /**
    * Get amount of specific species
    */
-  public getAmount(speciesId: string): number {
+  public getAmount(speciesId: SpeciesId): number {
     return this.inventory.contents[speciesId] || 0;
   }
 
   /**
    * Get all non-zero species in inventory
    */
-  public getNonZeroContents(): Array<{ speciesId: string; amount: number }> {
+  public getNonZeroContents(): Array<{ speciesId: SpeciesId; amount: number }> {
     return Object.entries(this.inventory.contents)
       .filter(([_, amount]) => amount > 0)
-      .map(([speciesId, amount]) => ({ speciesId, amount }));
+      .map(([speciesId, amount]) => ({ speciesId: speciesId as SpeciesId, amount: amount! }));
   }
 
   /**
@@ -138,7 +139,7 @@ export class PlayerInventorySystem {
   /**
    * Task 8: Clear all inventory contents (emergency dump)
    */
-  public clearInventory(): { totalCleared: number; contents: Array<{ speciesId: string; amount: number }> } {
+  public clearInventory(): { totalCleared: number; contents: Array<{ speciesId: SpeciesId; amount: number }> } {
     const clearedContents = this.getNonZeroContents();
     const totalCleared = this.getCurrentLoad();
     
@@ -157,7 +158,7 @@ export class PlayerInventorySystem {
   /**
    * Task 2: Scoop species from a tile (take all available of a species)
    */
-  public scoopFromTile(hexGrid: HexGrid, coord: HexCoord, speciesId: string): { taken: number; available: number } {
+  public scoopFromTile(hexGrid: HexGrid, coord: HexCoord, speciesId: SpeciesId): { taken: number; available: number } {
     console.log(`DEBUG: scoopFromTile called for ${speciesId} at (${coord.q}, ${coord.r})`);
     
     const tile = hexGrid.getTile(coord);
@@ -196,7 +197,7 @@ export class PlayerInventorySystem {
   /**
    * Task 6: Partial scoop - take specific amount from tile
    */
-  public scoopAmountFromTile(hexGrid: HexGrid, coord: HexCoord, speciesId: string, amount: number): { taken: number; available: number } {
+  public scoopAmountFromTile(hexGrid: HexGrid, coord: HexCoord, speciesId: SpeciesId, amount: number): { taken: number; available: number } {
     const tile = hexGrid.getTile(coord);
     if (!tile) {
       return { taken: 0, available: 0 };
@@ -227,7 +228,7 @@ export class PlayerInventorySystem {
   /**
    * Task 3: Drop species onto a tile (drop all held of a species)
    */
-  public dropOntoTile(hexGrid: HexGrid, coord: HexCoord, speciesId: string): { dropped: number; had: number } {
+  public dropOntoTile(hexGrid: HexGrid, coord: HexCoord, speciesId: SpeciesId): { dropped: number; had: number } {
     const tile = hexGrid.getTile(coord);
     if (!tile) {
       return { dropped: 0, had: 0 };
@@ -253,7 +254,7 @@ export class PlayerInventorySystem {
   /**
    * Task 7: Partial drop - drop specific amount onto tile
    */
-  public dropAmountOntoTile(hexGrid: HexGrid, coord: HexCoord, speciesId: string, amount: number): { dropped: number; had: number } {
+  public dropAmountOntoTile(hexGrid: HexGrid, coord: HexCoord, speciesId: SpeciesId, amount: number): { dropped: number; had: number } {
     const tile = hexGrid.getTile(coord);
     if (!tile) {
       return { dropped: 0, had: 0 };

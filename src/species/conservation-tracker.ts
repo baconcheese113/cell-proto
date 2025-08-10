@@ -6,11 +6,11 @@
  */
 
 import { HexGrid } from "../hex/hex-grid";
-import { getAllSpeciesIds } from "../species/species-registry";
+import { getAllSpeciesIds, type SpeciesId } from "../species/species-registry";
 import { PassiveEffectsSystem } from "./passive-effects-system";
 
 export interface ConservationData {
-  speciesId: string;
+  speciesId: SpeciesId;
   totalAmount: number;
   lastAmount: number;
   changeRate: number; // Amount change per second
@@ -73,7 +73,7 @@ export class ConservationTracker {
   /**
    * Calculate total amount of a species across all tiles
    */
-  private calculateTotal(speciesId: string): number {
+  private calculateTotal(speciesId: SpeciesId): number {
     let total = 0;
     const allTiles = this.hexGrid.getAllTiles();
     
@@ -87,7 +87,7 @@ export class ConservationTracker {
   /**
    * Get conservation data for a species
    */
-  public getConservationData(speciesId: string): ConservationData | undefined {
+  public getConservationData(speciesId: SpeciesId): ConservationData | undefined {
     return this.data.get(speciesId);
   }
 

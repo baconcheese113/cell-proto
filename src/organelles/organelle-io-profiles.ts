@@ -4,8 +4,10 @@
  * Defines what each organelle type consumes and produces per processing unit.
  */
 
+import type { SpeciesId } from "../species/species-registry";
+
 export interface OrganelleIOSpec {
-  id: string; // Species ID
+  id: SpeciesId; // Species ID
   rate: number; // units per processing unit
 }
 

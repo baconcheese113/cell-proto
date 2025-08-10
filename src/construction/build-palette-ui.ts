@@ -7,12 +7,13 @@
 import Phaser from "phaser";
 import type { ConstructionRecipe } from "./construction-recipes";
 import { CONSTRUCTION_RECIPES } from "./construction-recipes";
+import type { OrganelleType } from "../organelles/organelle-registry";
 
 export class BuildPaletteUI {
   private scene: Phaser.Scene;
   private container: Phaser.GameObjects.Container;
-  private selectedRecipeId: string | null = null;
-  private buttons: Map<string, Phaser.GameObjects.Container> = new Map();
+  private selectedRecipeId: OrganelleType | null = null;
+  private buttons: Map<OrganelleType, Phaser.GameObjects.Container> = new Map();
   private isVisible: boolean = false;
   
   // Store the desired screen position
@@ -23,7 +24,7 @@ export class BuildPaletteUI {
   private currentFilter: 'all' | 'membrane' | 'cytosol' = 'all';
 
   // Callbacks
-  public onRecipeSelected?: (recipeId: string) => void;
+  public onRecipeSelected?: (recipeId: OrganelleType) => void;
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     this.scene = scene;
@@ -150,7 +151,7 @@ export class BuildPaletteUI {
     return button;
   }
 
-  private selectRecipe(recipeId: string): void {
+  private selectRecipe(recipeId: OrganelleType): void {
     // Update visual selection
     if (this.selectedRecipeId) {
       const oldButton = this.buttons.get(this.selectedRecipeId);
@@ -175,7 +176,7 @@ export class BuildPaletteUI {
     console.log(`Selected recipe: ${recipeId}`);
   }
 
-  public getSelectedRecipe(): string | null {
+  public getSelectedRecipe(): OrganelleType | null {
     return this.selectedRecipeId;
   }
 

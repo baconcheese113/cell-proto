@@ -6,11 +6,27 @@
  */
 
 import type { HexCoord } from "../hex/hex-grid";
+import type { SpeciesId } from "../species/species-registry";
+import type { FootprintName } from "./organelle-footprints";
+
+// Union type of all valid organelle types
+export type OrganelleType = 
+  | 'nucleus'
+  | 'ribosome-hub'
+  | 'proto-er'
+  | 'golgi'
+  | 'peroxisome'
+  | 'membrane-port'
+  | 'transporter'
+  | 'receptor';
+
+// Union type for organelle IDs (same as types in this case)
+export type OrganelleId = OrganelleType;
 
 export interface OrganelleDefinition {
   // Basic properties
-  id: string;
-  type: string;
+  id: OrganelleId;
+  type: OrganelleType;
   label: string;
   
   // Visual properties
@@ -18,14 +34,14 @@ export interface OrganelleDefinition {
   size: number;
   
   // Spatial properties
-  footprint: string; // Reference to ORGANELLE_FOOTPRINTS key
+  footprint: FootprintName; // Reference to ORGANELLE_FOOTPRINTS key
   
   // Functional properties
   throughputCap: number;
   priority: number;
   
   // Construction properties
-  buildCost: Record<string, number>; // species ID -> amount needed
+  buildCost: Partial<Record<SpeciesId, number>>; // species ID -> amount needed
   buildRatePerTick: number;
   
   // Placement info for starter organelles
@@ -38,7 +54,7 @@ export interface OrganelleDefinition {
 /**
  * Central registry of all organelle types
  */
-export const ORGANELLE_REGISTRY: Record<string, OrganelleDefinition> = {
+export const ORGANELLE_REGISTRY: Record<OrganelleType, OrganelleDefinition> = {
   'nucleus': {
     id: 'nucleus',
     type: 'nucleus',
@@ -160,7 +176,7 @@ export const ORGANELLE_REGISTRY: Record<string, OrganelleDefinition> = {
 /**
  * Get organelle definition by type
  */
-export function getOrganelleDefinition(type: string): OrganelleDefinition | undefined {
+export function getOrganelleDefinition(type: OrganelleType): OrganelleDefinition | undefined {
   return ORGANELLE_REGISTRY[type];
 }
 
@@ -204,8 +220,8 @@ export function definitionToConfig(definition: OrganelleDefinition, instanceId?:
 /**
  * Get footprint shape for construction recipes
  */
-export function getFootprintShape(footprintKey: string): HexCoord[] {
-  const footprintShapes: Record<string, HexCoord[]> = {
+export function getFootprintShape(footprintKey: FootprintName): HexCoord[] {
+  const footprintShapes: Record<FootprintName, HexCoord[]> = {
     'SINGLE': [{ q: 0, r: 0 }],
     'RIBOSOME_HUB_SMALL': [
       { q: 0, r: 0 },

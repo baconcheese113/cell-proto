@@ -4,7 +4,7 @@ Milestone 2: Extended hex grid with species concentration support.
 */
 
 import Phaser from "phaser";
-import { createEmptyConcentrations } from "../species/species-registry";
+import { createEmptyConcentrations, type SpeciesId } from "../species/species-registry";
 
 // Axial coordinate system for hex grid
 export interface HexCoord {
@@ -16,7 +16,7 @@ export interface HexCoord {
 export interface HexTile {
   coord: HexCoord;
   worldPos: Phaser.Math.Vector2;
-  concentrations: Record<string, number>; // Species ID -> concentration value
+  concentrations: Record<SpeciesId, number>; // Species ID -> concentration value
   
   // Milestone 6: Membrane system
   isMembrane: boolean;
@@ -153,7 +153,7 @@ export class HexGrid {
   /**
    * Get concentration of a species on a tile
    */
-  getConcentration(coord: HexCoord, speciesId: string): number {
+  getConcentration(coord: HexCoord, speciesId: SpeciesId): number {
     const tile = this.getTile(coord);
     return tile?.concentrations[speciesId] ?? 0;
   }
@@ -161,7 +161,7 @@ export class HexGrid {
   /**
    * Set concentration of a species on a tile
    */
-  setConcentration(coord: HexCoord, speciesId: string, value: number): void {
+  setConcentration(coord: HexCoord, speciesId: SpeciesId, value: number): void {
     const tile = this.getTile(coord);
     if (tile && tile.concentrations.hasOwnProperty(speciesId)) {
       tile.concentrations[speciesId] = Math.max(0, value); // Ensure non-negative
@@ -171,7 +171,7 @@ export class HexGrid {
   /**
    * Add to concentration of a species on a tile
    */
-  addConcentration(coord: HexCoord, speciesId: string, delta: number): void {
+  addConcentration(coord: HexCoord, speciesId: SpeciesId, delta: number): void {
     const tile = this.getTile(coord);
     if (tile && tile.concentrations.hasOwnProperty(speciesId)) {
       tile.concentrations[speciesId] = Math.max(0, tile.concentrations[speciesId] + delta);
@@ -181,9 +181,9 @@ export class HexGrid {
   /**
    * Get all concentrations for a tile
    */
-  getAllConcentrations(coord: HexCoord): Record<string, number> {
+  getAllConcentrations(coord: HexCoord): Record<SpeciesId, number> {
     const tile = this.getTile(coord);
-    return tile ? { ...tile.concentrations } : {};
+    return tile ? { ...tile.concentrations } : {} as Record<SpeciesId, number>;
   }
 
   /**
@@ -193,7 +193,7 @@ export class HexGrid {
     const tile = this.getTile(coord);
     if (tile) {
       for (const speciesId in tile.concentrations) {
-        tile.concentrations[speciesId] = 0;
+        tile.concentrations[speciesId as SpeciesId] = 0;
       }
     }
   }

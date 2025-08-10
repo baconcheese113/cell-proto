@@ -1,14 +1,7 @@
-/**
- * Heatmap System - Milestone 2 Task 5
- * 
- * Visualizes species concentrations as colored overlay on hex tiles.
- * Supports toggling and cycling through different species.
- */
-
 import Phaser from "phaser";
 import { HexGrid } from "../hex/hex-grid";
 import type { HexTile } from "../hex/hex-grid";
-import { getAllSpeciesIds, getSpecies } from "../species/species-registry";
+import { getAllSpeciesIds, getSpecies, type SpeciesId } from "../species/species-registry";
 
 export class HeatmapSystem {
   private scene: Phaser.Scene;
@@ -18,7 +11,7 @@ export class HeatmapSystem {
   
   private isVisible = false;
   private currentSpeciesIndex = 0;
-  private allSpeciesIds: string[];
+  private allSpeciesIds: SpeciesId[];
 
   constructor(scene: Phaser.Scene, hexGrid: HexGrid, hexSize: number) {
     this.scene = scene;
@@ -73,7 +66,7 @@ export class HeatmapSystem {
   /**
    * Get current species being visualized
    */
-  public getCurrentSpecies(): string {
+  public getCurrentSpecies(): SpeciesId {
     return this.allSpeciesIds[this.currentSpeciesIndex] || 'ATP';
   }
 
@@ -115,7 +108,7 @@ export class HeatmapSystem {
   /**
    * Find maximum concentration for normalization
    */
-  private findMaxConcentration(tiles: HexTile[], speciesId: string): number {
+  private findMaxConcentration(tiles: HexTile[], speciesId: SpeciesId): number {
     let max = 0;
     for (const tile of tiles) {
       const concentration = tile.concentrations[speciesId] || 0;
