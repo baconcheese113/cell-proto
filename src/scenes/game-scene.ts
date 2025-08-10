@@ -1,44 +1,9 @@
-/*
-=== MILESTONE 0 - FUNCTIONALITY INVENTORY ===
-Current gameplay features audit - marked for next development phase:
-
-KEEP (Core mechanics):
-- [KEEP] Basic WASD movement with physics
-- [KEEP] Membrane boundary elastic collision/bounce
-- [KEEP] Camera following with smooth lerp
-
-REMOVE (Complex systems blocking clarity):
-- [REMOVE] Station action loops (ONE/TWO keys for transcribe/translate)
-- [REMOVE] Proximity-gated organelle entry restrictions  
-- [REMOVE] XState cell machine + resource management (glucose/AA/NT/ATP/etc)
-- [REMOVE] Production chains (transcription → translation → delivery)
-- [REMOVE] HUD resource displays
-- [REMOVE] Pickup collection system
-- [REMOVE] Stress wave system (R key, timer-based waves)
-- [REMOVE] Game win/lose states tied to survival/HP
-- [REMOVE] Cooldown bars and timers
-- [REMOVE] Station glow effects based on proximity
-- [REMOVE] Contextual tooltips for actions
-- [REMOVE] Station labels and descriptions
-
-REVISIT LATER (Potentially useful but not core):
-- [LATER] Dash mechanics (SPACE key)
-- [LATER] Organelle visual collision (keep as decoration)
-- [LATER] Message/feedback system
-- [LATER] Grid background pattern
-- [LATER] Player ring visual effect
-- [LATER] Game restart system (ENTER key)
-
-SIMPLIFICATION TARGET: Player moves around cell, bounces off membrane. Nothing else.
-*/
-
 import Phaser from "phaser";
-// REMOVED: XState imports - no longer using state machine for movement prototype
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture, makeStationTexture } from "../gfx/textures";
+import { HexGrid } from "../hex/hex-grid";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE", Phaser.Input.Keyboard.Key>;
-// REMOVED: XState type definitions - no state machine needed for movement prototype
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -52,13 +17,22 @@ export class GameScene extends Phaser.Scene {
   private ring!: Phaser.GameObjects.Image;
   private keys!: Keys;
 
-  // REMOVED: Cell machine - no biological simulation needed for movement prototype
-
   private cellCenter = new Phaser.Math.Vector2(0, 0);
   private cellRadius = 220;
   private membraneThickness = 10;
 
-  // Station labels and glow effects
+  // Hex grid system
+  private hexGrid!: HexGrid;
+  private hexSize = 16; // Tunable hex tile size
+  private gridRadius = 12; // Tunable number of hex rings
+  private hexGraphics!: Phaser.GameObjects.Graphics;
+  private showHexGrid = false;
+  private hoveredTile: any = null; // HexTile | null
+  private selectedTile: any = null; // HexTile | null
+  private hexInteractionGraphics!: Phaser.GameObjects.Graphics;
+  private tileInfoPanel!: Phaser.GameObjects.Text;
+
+  // Station visuals (legacy organelles kept as decoration)
   private nucleusLabel!: Phaser.GameObjects.Text;
   private ribosomeLabel!: Phaser.GameObjects.Text;
   private peroxisomeLabel!: Phaser.GameObjects.Text;
@@ -68,14 +42,7 @@ export class GameScene extends Phaser.Scene {
   private peroxisomeGlow!: Phaser.GameObjects.Image;
   private chaperoneGlow!: Phaser.GameObjects.Image;
 
-  // REMOVED: Cooldown bars above player - part of station action system
-
-  // REMOVED: Feedback system - no complex messaging needed for movement prototype
-
-  // REMOVED: Game state management, survival timers, wave scheduling
-  // REMOVED: XState cell machine integration
-
-  // Movement and dash mechanics (KEEP - core gameplay)
+  // Movement mechanics
   private dashCooldown = 0;
   private maxDashCooldown = 1.2;
   private dashSpeed = 320;
@@ -84,11 +51,10 @@ export class GameScene extends Phaser.Scene {
   private isDashing = false;
   private dashDuration = 0.25;
   private dashTimer = 0;
-  // REMOVED: Dash cooldown bars - part of station action system
 
-  // Elastic world mechanics
-  private membraneSpringForce = 400; // Stronger membrane push-back
-  private cameraLerpSpeed = 0.08; // Slightly more responsive camera
+  // Membrane physics
+  private membraneSpringForce = 400;
+  private cameraLerpSpeed = 0.08;
   private cameraSmoothTarget = new Phaser.Math.Vector2(0, 0);
   private lastMembraneHit = 0;
 
@@ -106,21 +72,19 @@ export class GameScene extends Phaser.Scene {
   constructor() { super("game"); }
 
   create() {
-    // grid - make it large enough to cover camera movement
+    // Background grid
     const view = this.scale.gameSize;
-    const gridSize = Math.max(view.width, view.height) * 2; // Make grid 2x larger than viewport
+    const gridSize = Math.max(view.width, view.height) * 2;
     const gridKey = makeGridTexture(this, gridSize, gridSize, this.col.bg, this.col.gridMinor, this.col.gridMajor);
     this.grid = this.add.image(0, 0, gridKey).setOrigin(0.5, 0.5).setDepth(0);
-    
-    // Center the grid at the world center
     this.grid.setPosition(view.width * 0.5, view.height * 0.5);
 
-    // center cell
+    // Cell membrane
     this.cellCenter.set(view.width * 0.5, view.height * 0.5);
     const cellKey = makeCellTexture(this, this.cellRadius * 2 + this.membraneThickness * 2, this.membraneThickness, this.col.cellFill, this.col.membrane);
     this.cellSprite = this.add.image(this.cellCenter.x, this.cellCenter.y, cellKey).setDepth(1);
 
-    // stations
+    // Organelle stations (kept as visual decoration)
     const nucleusKey = makeCellTexture(this, 180, 8, this.col.nucleusFill, this.col.nucleusRim);
     this.nucleusSprite = this.add.image(this.cellCenter.x - 80, this.cellCenter.y - 20, nucleusKey).setDepth(2);
     const riboKey = makeCellTexture(this, 140, 8, this.col.riboFill, this.col.riboRim);
@@ -135,7 +99,7 @@ export class GameScene extends Phaser.Scene {
     this.add.image(this.peroxisomeSprite.x, this.peroxisomeSprite.y, makeStationTexture(this, "Peroxisome")).setDepth(3).setAlpha(0.9);
     this.add.image(this.chaperoneSprite.x, this.chaperoneSprite.y, makeStationTexture(this, "Chaperone")).setDepth(3).setAlpha(0.9);
 
-    // Station glow effects (rings that appear when in range)
+    // Station glow effects
     const glowKey = makeRingTexture(this, 200, 6, 0x88ddff);
     this.nucleusGlow = this.add.image(this.nucleusSprite.x, this.nucleusSprite.y, glowKey).setDepth(1).setAlpha(0).setTint(this.col.nucleusRim);
     const riboGlowKey = makeRingTexture(this, 160, 6, 0x88ddff);
@@ -162,19 +126,14 @@ export class GameScene extends Phaser.Scene {
       fontFamily: "monospace", fontSize: "16px", color: "#88ddff", stroke: "#000", strokeThickness: 2
     }).setOrigin(0.5).setDepth(5);
 
-    // player
+    // Player
     const pkey = makeDotTexture(this, 16, this.col.player);
     this.player = this.physics.add.sprite(this.cellCenter.x, this.cellCenter.y, pkey).setDepth(4);
     this.player.setCircle(8).setMaxVelocity(this.normalMaxSpeed).setDamping(true).setDrag(0.7);
     const rkey = makeRingTexture(this, 22, 3, this.col.playerRing);
     this.ring = this.add.image(this.player.x, this.player.y, rkey).setDepth(3).setAlpha(0.9);
 
-    // REMOVED: Cooldown bars above player - part of station action system
-
-    // REMOVED: Contextual tooltips - not needed for core mechanics
-    // REMOVED: Resource pickups - removing resource system entirely
-
-    // keys
+    // Input keys
     this.keys = {
       W: this.input.keyboard!.addKey("W"),
       A: this.input.keyboard!.addKey("A"),
@@ -183,65 +142,67 @@ export class GameScene extends Phaser.Scene {
       R: this.input.keyboard!.addKey("R"),
       ENTER: this.input.keyboard!.addKey("ENTER"),
       SPACE: this.input.keyboard!.addKey("SPACE"),
+      G: this.input.keyboard!.addKey("G"),
     };
 
-    // HUD
+    // Initialize systems
     addHud(this);
-
-    // REMOVED: XState machine - no biological simulation needed for movement prototype
-    
-    // Initial simplified HUD
+    this.initializeHexGrid();
+    this.initializeHexGraphics();
+    this.initializeHexInteraction();
+    this.initializeTileInfoPanel();
     setHud(this, { message: "" });
 
-    // REMOVED: Game overlays for death/win states
-
-    // resize regeneration
+    // Window resize handling
     this.scale.on("resize", (sz: Phaser.Structs.Size) => {
       const newWidth = Math.ceil(sz.width);
       const newHeight = Math.ceil(sz.height);
       
-      // Regenerate grid texture with new larger dimensions
+      // Regenerate background grid
       const gridSize = Math.max(newWidth, newHeight) * 2;
       const key = makeGridTexture(this, gridSize, gridSize, this.col.bg, this.col.gridMinor, this.col.gridMajor);
       this.grid.setTexture(key).setOrigin(0.5, 0.5);
       this.grid.setPosition(newWidth * 0.5, newHeight * 0.5);
       
-      // Re-center everything
+      // Re-center cell and stations
       this.cellCenter.set(newWidth * 0.5, newHeight * 0.5);
       this.cellSprite.setPosition(this.cellCenter.x, this.cellCenter.y);
       
-      // Update station positions
       this.nucleusSprite.setPosition(this.cellCenter.x - 80, this.cellCenter.y - 20);
       this.ribosomeSprite.setPosition(this.cellCenter.x + 100, this.cellCenter.y + 40);
       this.peroxisomeSprite.setPosition(this.cellCenter.x - 110, this.cellCenter.y + 80);
       this.chaperoneSprite.setPosition(this.cellCenter.x + 120, this.cellCenter.y - 60);
       
-      // Update glow positions
       this.nucleusGlow.setPosition(this.nucleusSprite.x, this.nucleusSprite.y);
       this.ribosomeGlow.setPosition(this.ribosomeSprite.x, this.ribosomeSprite.y);
       this.peroxisomeGlow.setPosition(this.peroxisomeSprite.x, this.peroxisomeSprite.y);
       this.chaperoneGlow.setPosition(this.chaperoneSprite.x, this.chaperoneSprite.y);
       
-      // Update label positions
       this.nucleusLabel.setPosition(this.nucleusSprite.x, this.nucleusSprite.y - 110);
       this.ribosomeLabel.setPosition(this.ribosomeSprite.x, this.ribosomeSprite.y - 90);
       this.peroxisomeLabel.setPosition(this.peroxisomeSprite.x, this.peroxisomeSprite.y - 80);
       this.chaperoneLabel.setPosition(this.chaperoneSprite.x, this.chaperoneSprite.y - 70);
 
-      // REMOVED: Overlay position updates - no longer using game state overlays
+      // Update hex grid
+      if (this.hexGrid) {
+        this.hexGrid.updateCenter(this.cellCenter.x, this.cellCenter.y);
+        this.renderHexGrid();
+      }
     });
   }
 
   override update() {
-    // REMOVED: Game state transitions, death/win conditions, restart logic
-    // REMOVED: Wave timer management and stress wave system
-    // REMOVED: XState machine context checks for HP/survival
+    // Handle hex grid toggle
+    if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
+      this.toggleHexGrid();
+    }
 
-    // Core movement system (always update)
+    // Update hex interaction
+    this.updateHexInteraction();
+
+    // Core movement system
     const deltaSeconds = this.game.loop.delta / 1000;
     this.updateMovement(deltaSeconds);
-
-    // REMOVED: All other game logic - focusing on core movement only
   }
 
   private updateMovement(deltaSeconds: number) {
@@ -251,7 +212,6 @@ export class GameScene extends Phaser.Scene {
       if (this.dashTimer <= 0) {
         this.isDashing = false;
         this.player.setMaxVelocity(this.normalMaxSpeed);
-        // Reset ring effect
         this.ring.setScale(1).setAlpha(0.9);
       }
     }
@@ -260,7 +220,6 @@ export class GameScene extends Phaser.Scene {
       this.dashCooldown -= deltaSeconds;
     }
 
-    // Always accept input - no game state restrictions in simplified version
     let vx = 0, vy = 0;
     
     // Handle dash input
@@ -273,8 +232,6 @@ export class GameScene extends Phaser.Scene {
     vy = (this.keys.S.isDown ? 1 : 0) - (this.keys.W.isDown ? 1 : 0);
 
     const inputDir = new Phaser.Math.Vector2(vx, vy);
-
-    // Apply elastic membrane boundary forces
     const elasticForce = this.calculateElasticForces();
     
     if (inputDir.lengthSq() > 0) {
@@ -283,13 +240,10 @@ export class GameScene extends Phaser.Scene {
       let baseAcceleration = this.acceleration;
       
       if (this.isDashing) {
-        // During dash, higher acceleration for snappy feel
         baseAcceleration *= 2.5;
       } else {
-        // Smooth acceleration ramp-up
         const currentSpeed = this.player.body.velocity.length();
         const speedRatio = currentSpeed / this.normalMaxSpeed;
-        // Reduce acceleration as we approach max speed for smoother feel
         baseAcceleration *= (1 - speedRatio * 0.3);
       }
       
@@ -297,7 +251,6 @@ export class GameScene extends Phaser.Scene {
       const totalForce = inputForce.add(elasticForce);
       this.player.setAcceleration(totalForce.x, totalForce.y);
     } else {
-      // No input - apply deceleration and elastic forces
       const currentVel = this.player.body.velocity;
       const deceleration = 600;
       
@@ -307,7 +260,6 @@ export class GameScene extends Phaser.Scene {
         const decelDir = currentVel.clone().normalize().scale(-deceleration);
         totalForce.add(decelDir);
         
-        // Stop completely when velocity gets very low
         if (currentVel.lengthSq() < 100) {
           this.player.setVelocity(0, 0);
           totalForce.set(0, 0);
@@ -317,10 +269,7 @@ export class GameScene extends Phaser.Scene {
       this.player.setAcceleration(totalForce.x, totalForce.y);
     }
 
-    // Update camera smooth following
     this.updateCameraSmoothing();
-
-    // Update ring position and visual effects
     this.ring.setPosition(this.player.x, this.player.y);
   }
 
@@ -329,10 +278,9 @@ export class GameScene extends Phaser.Scene {
     this.dashTimer = this.dashDuration;
     this.dashCooldown = this.maxDashCooldown;
     
-    // More moderate speed increase for better balance
     this.player.setMaxVelocity(this.dashSpeed);
     
-    // Enhanced visual feedback - ring effect with more juice
+    // Visual feedback
     this.ring.setScale(1.8).setAlpha(1).setTint(0xffdd44);
     this.tweens.add({
       targets: this.ring,
@@ -342,15 +290,12 @@ export class GameScene extends Phaser.Scene {
       ease: "Back.easeOut"
     });
     
-    // Reset tint after dash
     this.time.delayedCall(this.dashDuration * 1000, () => {
       this.ring.setTint(0xffffff);
     });
 
-    // More subtle screen shake
     this.cameras.main.shake(80, 0.008);
     
-    // Camera zoom effect for emphasis
     const originalZoom = this.cameras.main.zoom;
     this.cameras.main.setZoom(originalZoom * 1.05);
     this.tweens.add({
@@ -365,12 +310,10 @@ export class GameScene extends Phaser.Scene {
     const force = new Phaser.Math.Vector2(0, 0);
     const playerPos = new Phaser.Math.Vector2(this.player.x, this.player.y);
     
-    // Membrane boundary spring force only
     const distanceFromCenter = Phaser.Math.Distance.BetweenPoints(playerPos, this.cellCenter);
     const maxDistance = this.cellRadius - this.player.width / 2;
     
     if (distanceFromCenter > maxDistance) {
-      // Player is outside the membrane - push back
       const penetration = distanceFromCenter - maxDistance;
       const directionToCenter = new Phaser.Math.Vector2(
         this.cellCenter.x - playerPos.x,
@@ -380,20 +323,16 @@ export class GameScene extends Phaser.Scene {
       const springForce = directionToCenter.scale(penetration * this.membraneSpringForce);
       force.add(springForce);
       
-      // Visual feedback for membrane hit
       if (this.time.now - this.lastMembraneHit > 200) {
         this.lastMembraneHit = this.time.now;
         this.createMembraneRipple(playerPos);
       }
     }
     
-    // No organelle collision forces - player can move freely through organelles
-    
     return force;
   }
 
   private createMembraneRipple(position: Phaser.Math.Vector2) {
-    // Create a ripple effect at the membrane contact point
     const ripple = this.add.circle(position.x, position.y, 20, 0x66ccff, 0.3);
     ripple.setDepth(2);
     
@@ -409,38 +348,216 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateCameraSmoothing() {
-    // Set smooth camera target to follow player
     this.cameraSmoothTarget.set(this.player.x, this.player.y);
     
-    // Get current camera center
     const currentCenterX = this.cameras.main.scrollX + this.cameras.main.width / 2;
     const currentCenterY = this.cameras.main.scrollY + this.cameras.main.height / 2;
     
-    // Lerp camera towards target
     const newCenterX = Phaser.Math.Linear(currentCenterX, this.cameraSmoothTarget.x, this.cameraLerpSpeed);
     const newCenterY = Phaser.Math.Linear(currentCenterY, this.cameraSmoothTarget.y, this.cameraLerpSpeed);
     
-    // Apply camera position
     this.cameras.main.centerOn(newCenterX, newCenterY);
+  }
+
+  // Hex Grid System
+  private initializeHexGrid(): void {
+    console.log('Initializing hex grid...');
+    
+    this.hexGrid = new HexGrid(this.hexSize, this.cellCenter.x, this.cellCenter.y);
+    this.hexGrid.generateTiles(this.gridRadius);
+    
+    const maxDistance = this.cellRadius - this.hexSize;
+    this.hexGrid.filterTilesInCircle(this.cellCenter.x, this.cellCenter.y, maxDistance);
+    
+    console.log(`Hex Grid initialized:
+      - Tiles: ${this.hexGrid.getTileCount()}
+      - Hex size: ${this.hexSize}
+      - Grid radius: ${this.gridRadius}
+      - Cell radius: ${this.cellRadius}
+      - Max distance: ${maxDistance}
+      - Cell center: (${this.cellCenter.x}, ${this.cellCenter.y})`);
+    
+    // Test coordinate conversion and neighbors
+    const testTiles = this.hexGrid.getAllTiles().slice(0, 3);
+    testTiles.forEach((tile, i) => {
+      const neighbors = this.hexGrid.getNeighbors(tile.coord);
+      console.log(`Tile ${i}: coord(${tile.coord.q},${tile.coord.r}) world(${Math.round(tile.worldPos.x)},${Math.round(tile.worldPos.y)}) neighbors: ${neighbors.length}`);
+    });
+    
+    // Test center tile conversion
+    const centerTile = this.hexGrid.getTile({ q: 0, r: 0 });
+    if (centerTile) {
+      const backToHex = this.hexGrid.worldToHex(centerTile.worldPos.x, centerTile.worldPos.y);
+      console.log(`Center tile test: original(0,0) -> world(${Math.round(centerTile.worldPos.x)}, ${Math.round(centerTile.worldPos.y)}) -> back to hex(${backToHex.q}, ${backToHex.r})`);
+    }
+    
+    console.log('Hex grid initialization complete!');
+  }
+
+  private initializeHexGraphics(): void {
+    this.hexGraphics = this.add.graphics();
+    this.hexGraphics.setDepth(1.5); // Above background, below organelles
+    this.hexGraphics.setVisible(this.showHexGrid);
+    this.renderHexGrid();
+  }
+
+  private renderHexGrid(): void {
+    if (!this.hexGrid || !this.hexGraphics) return;
+    
+    this.hexGraphics.clear();
+    this.hexGraphics.lineStyle(1, 0x88ddff, 0.3);
+    
+    const tiles = this.hexGrid.getAllTiles();
+    this.hexGraphics.beginPath();
+    
+    for (const tile of tiles) {
+      this.addHexagonToPath(tile.worldPos.x, tile.worldPos.y, this.hexSize);
+    }
+    
+    this.hexGraphics.strokePath();
+  }
+
+  private addHexagonToPath(x: number, y: number, size: number): void {
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i;
+      const px = x + size * Math.cos(angle);
+      const py = y + size * Math.sin(angle);
+      
+      if (i === 0) {
+        this.hexGraphics.moveTo(px, py);
+      } else {
+        this.hexGraphics.lineTo(px, py);
+      }
+    }
+    this.hexGraphics.closePath();
+  }
+
+  private toggleHexGrid(): void {
+    this.showHexGrid = !this.showHexGrid;
+    if (this.hexGraphics) {
+      this.hexGraphics.setVisible(this.showHexGrid);
+    }
+    console.log(`Hex grid ${this.showHexGrid ? 'shown' : 'hidden'}`);
+  }
+
+  // Hex Interaction System
+  private initializeHexInteraction(): void {
+    this.hexInteractionGraphics = this.add.graphics();
+    this.hexInteractionGraphics.setDepth(1.6); // Above hex grid, below organelles
+    
+    this.input.on('pointermove', this.onPointerMove, this);
+    this.input.on('pointerdown', this.onPointerDown, this);
+  }
+
+  private updateHexInteraction(): void {
+    this.renderHexInteractionHighlights();
+    this.updateTileInfoPanel();
+  }
+
+  private onPointerMove(pointer: Phaser.Input.Pointer): void {
+    if (!this.hexGrid) return;
+    
+    const worldX = pointer.worldX;
+    const worldY = pointer.worldY;
+    const tile = this.hexGrid.getTileAtWorld(worldX, worldY);
+    
+    this.hoveredTile = tile || null;
+  }
+
+  private onPointerDown(pointer: Phaser.Input.Pointer): void {
+    if (!this.hexGrid) return;
+    
+    if (pointer.leftButtonDown()) {
+      const worldX = pointer.worldX;
+      const worldY = pointer.worldY;
+      const tile = this.hexGrid.getTileAtWorld(worldX, worldY);
+      
+      this.selectedTile = tile || null;
+      
+      if (tile) {
+        console.log(`Clicked: mouse world(${Math.round(worldX)}, ${Math.round(worldY)}) -> hex(${tile.coord.q}, ${tile.coord.r}) at world(${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`);
+      } else {
+        console.log(`Clicked: mouse world(${Math.round(worldX)}, ${Math.round(worldY)}) -> no hex found`);
+      }
+    }
+  }
+
+  private renderHexInteractionHighlights(): void {
+    if (!this.hexInteractionGraphics) return;
+    
+    this.hexInteractionGraphics.clear();
+    
+    // Selected tile highlight
+    if (this.selectedTile) {
+      this.hexInteractionGraphics.fillStyle(0x66ffcc, 0.2);
+      this.hexInteractionGraphics.lineStyle(2, 0x66ffcc, 0.8);
+      this.drawHexagonHighlight(this.selectedTile.worldPos.x, this.selectedTile.worldPos.y, this.hexSize);
+    }
+    
+    // Hovered tile highlight
+    if (this.hoveredTile && this.hoveredTile !== this.selectedTile) {
+      this.hexInteractionGraphics.fillStyle(0x88ddff, 0.1);
+      this.hexInteractionGraphics.lineStyle(1, 0x88ddff, 0.5);
+      this.drawHexagonHighlight(this.hoveredTile.worldPos.x, this.hoveredTile.worldPos.y, this.hexSize);
+    }
+  }
+
+  private drawHexagonHighlight(x: number, y: number, size: number): void {
+    const points: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i;
+      const px = x + size * Math.cos(angle);
+      const py = y + size * Math.sin(angle);
+      points.push(px, py);
+    }
+    
+    this.hexInteractionGraphics.beginPath();
+    this.hexInteractionGraphics.moveTo(points[0], points[1]);
+    for (let i = 2; i < points.length; i += 2) {
+      this.hexInteractionGraphics.lineTo(points[i], points[i + 1]);
+    }
+    this.hexInteractionGraphics.closePath();
+    this.hexInteractionGraphics.fillPath();
+    this.hexInteractionGraphics.strokePath();
+  }
+
+  // Tile Info Debug Panel
+  private initializeTileInfoPanel(): void {
+    this.tileInfoPanel = this.add.text(14, 50, "", {
+      fontFamily: "monospace",
+      fontSize: "12px",
+      color: "#88ddff",
+      backgroundColor: "#000000",
+      padding: { x: 8, y: 4 },
+      stroke: "#444444",
+      strokeThickness: 1,
+    });
+    
+    this.tileInfoPanel.setDepth(1001);
+    this.tileInfoPanel.setScrollFactor(0);
+    this.tileInfoPanel.setVisible(false);
+  }
+
+  private updateTileInfoPanel(): void {
+    if (!this.tileInfoPanel) return;
+    
+    if (this.selectedTile) {
+      const tile = this.selectedTile;
+      const speciesCount = Object.keys(tile.data).length; // Will show 0 for now, species data in Milestone 2
+      
+      const info = [
+        `Hex Tile Info:`,
+        `Coord: (${tile.coord.q}, ${tile.coord.r})`,
+        `World: (${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`,
+        `Species: ${speciesCount} (placeholder)`
+      ].join('\n');
+      
+      this.tileInfoPanel.setText(info);
+      this.tileInfoPanel.setVisible(true);
+    } else {
+      this.tileInfoPanel.setVisible(false);
+    }
   }
 
 }
 
-/*
-MILESTONE 0 — PLAYTEST CHECKLIST
-✅ Spawn → player appears in cell center
-✅ Move → WASD movement works smoothly  
-✅ Dash → SPACE triggers dash with visual feedback
-✅ Push membrane → player can approach membrane boundary
-✅ Bounce back → elastic forces push player away from membrane
-✅ Enter former organelle areas → player can move through station areas freely
-✅ No keys do anything except movement/dash → only WASD and SPACE are active
-✅ No damage → player cannot die or lose HP
-✅ No pickups → no resource orbs exist in the world
-✅ No build prompts → no construction or routing systems active
-✅ No errors → console shows no runtime warnings or errors
-✅ HUD shows controls only → simple "WASD: Move | SPACE: Dash | Movement Prototype"
-✅ Resize works → window resize maintains visual fidelity
-
-Status: COMPLETE - Clean movement sandbox with elastic boundaries only
-*/

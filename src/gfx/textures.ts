@@ -1,16 +1,3 @@
-/*
-MILESTONE 0 — FUNCTIONALITY AUDIT
-Current Systems in cell-proto:
-
-GRAPHICS/TEXTURES MODULE:
-Grid texture generation - KEEP (background visuals)
-Cell membrane texture generation - KEEP (core membrane visuals)
-Ring texture generation - KEEP (player visual feedback)
-Rounded rectangle generation - REMOVE (was for UI tooltips/panels)
-
-Status: Mostly keep - core visual functions for movement prototype
-*/
-
 import Phaser from "phaser";
 
 export function makeGridTexture(
@@ -25,7 +12,7 @@ export function makeGridTexture(
   ctx.fillStyle = `#${bg.toString(16).padStart(6, "0")}`;
   ctx.fillRect(0, 0, w, h);
 
-  // minor lines every 16 px, major every 64 px
+  // Minor lines every 16px, major every 64px
   ctx.strokeStyle = `#${minor.toString(16).padStart(6, "0")}`; ctx.globalAlpha = 0.5;
   for (let x = 0; x < w; x += 16) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
   for (let y = 0; y < h; y += 16) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
@@ -91,7 +78,7 @@ export function makeStationTexture(scene: Phaser.Scene, kind: "Nucleus" | "Ribos
     gfx.lineBetween(size/2-12, size/2, size/2+12, size/2);
     gfx.lineBetween(size/2, size/2-12, size/2, size/2+12);
   } else if (kind === "Chaperone") {
-    // Draw a repair/wrench-like symbol
+    // Repair/wrench-like symbol
     gfx.strokeEllipse(size/2, size/2, 20, 12);
     gfx.strokeRect(size/2-3, size/2-6, 6, 12);
     gfx.strokeCircle(size/2-8, size/2-4, 3);

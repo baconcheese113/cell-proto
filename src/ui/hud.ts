@@ -1,21 +1,5 @@
-/*
-MILESTONE 0 — FUNCTIONALITY AUDIT
-Current Systems in cell-proto:
-
-HUD MODULE:
-Resource displays (ATP, AA, NT, mRNA, etc.) - REMOVE
-Objectives panel - REMOVE
-Cooldown displays - REMOVE
-Stress/HP meters - REMOVE
-Complex HUD context types - REMOVE
-
-Target: Replace with minimal movement controls display only
-Status: Major simplification needed - only show "WASD to move, SPACE to dash"
-*/
-
 import Phaser from "phaser";
 
-// Simplified HUD context - only needs message for prototype feedback
 export type HudCtx = {
   message?: string;
 };
@@ -26,7 +10,6 @@ export function addHud(scene: Phaser.Scene) {
   hudText?.destroy(); 
   hudText = null;
 
-  // Simple controls display
   hudText = scene.add.text(14, 12, "", {
     fontFamily: "monospace",
     fontSize: "14px",
@@ -38,7 +21,7 @@ export function addHud(scene: Phaser.Scene) {
 export function setHud(scene: Phaser.Scene, ctx: HudCtx) {
   if (!hudText) addHud(scene);
 
-  const controls = "WASD: Move  |  SPACE: Dash  |  Movement Prototype";
+  const controls = "WASD: Move  |  SPACE: Dash  |  G: Toggle Hex Grid  |  Movement Prototype";
   const message = ctx.message ? `\n${ctx.message}` : "";
   
   hudText!.setText(controls + message);
