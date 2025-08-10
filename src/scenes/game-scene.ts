@@ -2,8 +2,13 @@ import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture, makeStationTexture } from "../gfx/textures";
 import { HexGrid } from "../hex/hex-grid";
+import { getAllSpecies } from "../species/species-registry";
+import { DiffusionSystem } from "../species/diffusion-system";
+import { HeatmapSystem } from "../species/heatmap-system";
+import { PassiveEffectsSystem } from "../species/passive-effects-system";
+import { ConservationTracker } from "../species/conservation-tracker";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "H" | "LEFT" | "RIGHT" | "P" | "T", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -31,6 +36,22 @@ export class GameScene extends Phaser.Scene {
   private selectedTile: any = null; // HexTile | null
   private hexInteractionGraphics!: Phaser.GameObjects.Graphics;
   private tileInfoPanel!: Phaser.GameObjects.Text;
+  private debugInfoPanel!: Phaser.GameObjects.Text;
+
+  // Species diffusion system - Task 3
+  private diffusionSystem!: DiffusionSystem;
+  private diffusionTimeAccumulator = 0;
+  private diffusionTimestep = 1/30; // 30 Hz diffusion rate
+
+  // Heatmap visualization - Task 5
+  private heatmapSystem!: HeatmapSystem;
+
+  // Passive effects system - Task 6
+  private passiveEffectsSystem!: PassiveEffectsSystem;
+
+  // Conservation tracking - Task 8
+  private conservationTracker!: ConservationTracker;
+  private conservationPanel!: Phaser.GameObjects.Text;
 
   // Station visuals (legacy organelles kept as decoration)
   private nucleusLabel!: Phaser.GameObjects.Text;
@@ -143,6 +164,18 @@ export class GameScene extends Phaser.Scene {
       ENTER: this.input.keyboard!.addKey("ENTER"),
       SPACE: this.input.keyboard!.addKey("SPACE"),
       G: this.input.keyboard!.addKey("G"),
+      I: this.input.keyboard!.addKey("I"),
+      C: this.input.keyboard!.addKey("C"),
+      ONE: this.input.keyboard!.addKey("ONE"),
+      TWO: this.input.keyboard!.addKey("TWO"),
+      THREE: this.input.keyboard!.addKey("THREE"),
+      FOUR: this.input.keyboard!.addKey("FOUR"),
+      FIVE: this.input.keyboard!.addKey("FIVE"),
+      H: this.input.keyboard!.addKey("H"),
+      LEFT: this.input.keyboard!.addKey("LEFT"),
+      RIGHT: this.input.keyboard!.addKey("RIGHT"),
+      P: this.input.keyboard!.addKey("P"),
+      T: this.input.keyboard!.addKey("T"),
     };
 
     // Initialize systems
@@ -151,6 +184,11 @@ export class GameScene extends Phaser.Scene {
     this.initializeHexGraphics();
     this.initializeHexInteraction();
     this.initializeTileInfoPanel();
+    this.initializeDiffusionSystem();
+    this.initializeHeatmapSystem();
+    this.initializePassiveEffectsSystem();
+    this.initializeConservationTracker();
+    this.initializeDebugInfo();
     setHud(this, { message: "" });
 
     // Window resize handling
@@ -187,6 +225,11 @@ export class GameScene extends Phaser.Scene {
       if (this.hexGrid) {
         this.hexGrid.updateCenter(this.cellCenter.x, this.cellCenter.y);
         this.renderHexGrid();
+        
+        // Reinitialize diffusion system buffers after grid change
+        if (this.diffusionSystem) {
+          this.diffusionSystem.reinitialize();
+        }
       }
     });
   }
@@ -197,12 +240,49 @@ export class GameScene extends Phaser.Scene {
       this.toggleHexGrid();
     }
 
+    // Handle heatmap controls - Task 5
+    if (Phaser.Input.Keyboard.JustDown(this.keys.H)) {
+      this.heatmapSystem.toggle();
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.LEFT)) {
+      this.heatmapSystem.prevSpecies();
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.RIGHT)) {
+      this.heatmapSystem.nextSpecies();
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.P)) {
+      // Toggle passive effects
+      const firstEffect = this.passiveEffectsSystem.getAllEffects()[0];
+      const newState = !firstEffect?.enabled;
+      this.passiveEffectsSystem.setAllEffectsEnabled(newState);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.T)) {
+      // Toggle conservation tracking / pause simulation
+      this.conservationTracker.togglePause();
+      this.updateConservationPanel();
+    }
+
+    // Debug species controls - Task 4
+    this.handleDebugControls();
+
     // Update hex interaction
     this.updateHexInteraction();
 
     // Core movement system
     const deltaSeconds = this.game.loop.delta / 1000;
     this.updateMovement(deltaSeconds);
+    
+    // Update diffusion system - Task 3 (only if not paused)
+    if (!this.conservationTracker.isPausedState()) {
+      this.updateDiffusion(deltaSeconds);
+    }
+    
+    // Update heatmap - Task 5
+    this.heatmapSystem.update();
+    
+    // Update conservation tracking - Task 8
+    this.conservationTracker.update();
+    this.updateConservationPanel();
   }
 
   private updateMovement(deltaSeconds: number) {
@@ -362,6 +442,14 @@ export class GameScene extends Phaser.Scene {
   // Hex Grid System
   private initializeHexGrid(): void {
     console.log('Initializing hex grid...');
+    
+    // Task 1: Log species registry
+    console.log('Species Registry:');
+    const allSpecies = getAllSpecies();
+    allSpecies.forEach(species => {
+      console.log(`  ${species.id}: ${species.label} (diffusion: ${species.diffusionCoefficient})`);
+    });
+    console.log(`Total species: ${allSpecies.length}`);
     
     this.hexGrid = new HexGrid(this.hexSize, this.cellCenter.x, this.cellCenter.y);
     this.hexGrid.generateTiles(this.gridRadius);
@@ -543,20 +631,170 @@ export class GameScene extends Phaser.Scene {
     
     if (this.selectedTile) {
       const tile = this.selectedTile;
-      const speciesCount = Object.keys(tile.data).length; // Will show 0 for now, species data in Milestone 2
+      const concentrations = tile.concentrations;
       
       const info = [
         `Hex Tile Info:`,
         `Coord: (${tile.coord.q}, ${tile.coord.r})`,
         `World: (${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`,
-        `Species: ${speciesCount} (placeholder)`
-      ].join('\n');
+        `Species Concentrations:`
+      ];
       
-      this.tileInfoPanel.setText(info);
+      // Show all species concentrations
+      for (const speciesId in concentrations) {
+        const concentration = concentrations[speciesId];
+        info.push(`  ${speciesId}: ${concentration.toFixed(2)}`);
+      }
+      
+      this.tileInfoPanel.setText(info.join('\n'));
       this.tileInfoPanel.setVisible(true);
     } else {
       this.tileInfoPanel.setVisible(false);
     }
+  }
+
+  // Debug Info Panel - Task 4
+  
+  private initializeDebugInfo(): void {
+    const debugText = [
+      "DEBUG CONTROLS:",
+      "G - Toggle hex grid",
+      "H - Toggle heatmap",
+      "← → - Cycle species",
+      "P - Toggle passive effects",
+      "T - Pause/show conservation",
+      "Click tile to select",
+      "C - Clear selected tile",
+      "1 - Inject ATP",
+      "2 - Inject AA", 
+      "3 - Inject NT",
+      "4 - Inject ROS",
+      "5 - Inject GLUCOSE"
+    ].join('\n');
+
+    this.debugInfoPanel = this.add.text(14, 200, debugText, {
+      fontFamily: "monospace",
+      fontSize: "10px",
+      color: "#88ddff",
+      backgroundColor: "#000000",
+      padding: { x: 6, y: 4 },
+      stroke: "#444444",
+      strokeThickness: 1,
+    });
+    
+    this.debugInfoPanel.setDepth(1001);
+    this.debugInfoPanel.setScrollFactor(0);
+  }
+
+  // Conservation Tracking - Task 8
+  
+  private initializeConservationTracker(): void {
+    this.conservationTracker = new ConservationTracker(this.hexGrid, this.passiveEffectsSystem);
+    
+    this.conservationPanel = this.add.text(14, 350, "", {
+      fontFamily: "monospace",
+      fontSize: "10px",
+      color: "#ffcc88",
+      backgroundColor: "#000000",
+      padding: { x: 6, y: 4 },
+      stroke: "#444444",
+      strokeThickness: 1,
+    });
+    
+    this.conservationPanel.setDepth(1001);
+    this.conservationPanel.setScrollFactor(0);
+    this.conservationPanel.setVisible(false);
+    
+    console.log('Conservation tracker initialized');
+  }
+
+  private updateConservationPanel(): void {
+    if (!this.conservationPanel || !this.conservationTracker) return;
+    
+    const isPaused = this.conservationTracker.isPausedState();
+    if (isPaused) {
+      const report = this.conservationTracker.getSummaryReport();
+      this.conservationPanel.setText(report.join('\n'));
+      this.conservationPanel.setVisible(true);
+    } else {
+      this.conservationPanel.setVisible(false);
+    }
+  }
+
+  // Heatmap System - Task 5
+  
+  private initializeHeatmapSystem(): void {
+    this.heatmapSystem = new HeatmapSystem(this, this.hexGrid, this.hexSize);
+    console.log('Heatmap system initialized');
+  }
+
+  // Passive Effects System - Task 6
+  
+  private initializePassiveEffectsSystem(): void {
+    this.passiveEffectsSystem = new PassiveEffectsSystem(this.hexGrid);
+    console.log('Passive effects system initialized');
+    
+    const effects = this.passiveEffectsSystem.getActiveSummary();
+    console.log('Active passive effects:', effects);
+  }
+
+  // Diffusion System - Task 3
+  
+  private initializeDiffusionSystem(): void {
+    this.diffusionSystem = new DiffusionSystem(this.hexGrid);
+    console.log('Diffusion system initialized');
+  }
+
+  private updateDiffusion(deltaSeconds: number): void {
+    this.diffusionTimeAccumulator += deltaSeconds;
+    
+    // Run diffusion at fixed timestep
+    while (this.diffusionTimeAccumulator >= this.diffusionTimestep) {
+      // Apply passive effects before diffusion
+      this.passiveEffectsSystem.step(this.diffusionTimestep);
+      
+      // Then run diffusion
+      this.diffusionSystem.step();
+      this.diffusionTimeAccumulator -= this.diffusionTimestep;
+    }
+  }
+
+  // Debug Controls - Task 4
+  
+  private handleDebugControls(): void {
+    if (!this.selectedTile) return;
+
+    // Clear all species on selected tile
+    if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
+      this.hexGrid.clearConcentrations(this.selectedTile.coord);
+      console.log(`Cleared all species on tile (${this.selectedTile.coord.q}, ${this.selectedTile.coord.r})`);
+    }
+
+    // Inject species using number keys 1-5
+    const injectionAmount = 20; // Modest amount to inject
+    
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
+      this.injectSpecies('ATP', injectionAmount);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
+      this.injectSpecies('AA', injectionAmount);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) {
+      this.injectSpecies('NT', injectionAmount);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) {
+      this.injectSpecies('ROS', injectionAmount);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) {
+      this.injectSpecies('GLUCOSE', injectionAmount);
+    }
+  }
+
+  private injectSpecies(speciesId: string, amount: number): void {
+    if (!this.selectedTile) return;
+    
+    this.hexGrid.addConcentration(this.selectedTile.coord, speciesId, amount);
+    console.log(`Injected ${amount} ${speciesId} into tile (${this.selectedTile.coord.q}, ${this.selectedTile.coord.r})`);
   }
 
 }

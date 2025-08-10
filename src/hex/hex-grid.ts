@@ -1,10 +1,10 @@
 /*
 Hex Grid System for Cell Prototype
-Milestone 1: Lightweight hex grid with axial coordinates, world positioning, 
-and data containers ready for species in Milestone 2.
+Milestone 2: Extended hex grid with species concentration support.
 */
 
 import Phaser from "phaser";
+import { createEmptyConcentrations } from "../species/species-registry";
 
 // Axial coordinate system for hex grid
 export interface HexCoord {
@@ -12,11 +12,11 @@ export interface HexCoord {
   r: number;  // row
 }
 
-// Tile data container - will hold species data in Milestone 2
+// Tile data container with species concentrations
 export interface HexTile {
   coord: HexCoord;
   worldPos: Phaser.Math.Vector2;
-  data: Record<string, any>; // Will hold species counts in Milestone 2
+  concentrations: Record<string, number>; // Species ID -> concentration value
 }
 
 // Main hex grid class
@@ -43,7 +43,7 @@ export class HexGrid {
         const tile: HexTile = {
           coord,
           worldPos: worldPos.clone(),
-          data: {} // Empty for now, will hold species in Milestone 2
+          concentrations: createEmptyConcentrations() // Initialize all species to 0
         };
         this.tiles.set(this.coordToKey(coord), tile);
       }
@@ -139,6 +139,56 @@ export class HexGrid {
     for (const tile of this.tiles.values()) {
       tile.worldPos.x += deltaX;
       tile.worldPos.y += deltaY;
+    }
+  }
+
+  // Species concentration helpers - Task 2
+  
+  /**
+   * Get concentration of a species on a tile
+   */
+  getConcentration(coord: HexCoord, speciesId: string): number {
+    const tile = this.getTile(coord);
+    return tile?.concentrations[speciesId] ?? 0;
+  }
+
+  /**
+   * Set concentration of a species on a tile
+   */
+  setConcentration(coord: HexCoord, speciesId: string, value: number): void {
+    const tile = this.getTile(coord);
+    if (tile && tile.concentrations.hasOwnProperty(speciesId)) {
+      tile.concentrations[speciesId] = Math.max(0, value); // Ensure non-negative
+    }
+  }
+
+  /**
+   * Add to concentration of a species on a tile
+   */
+  addConcentration(coord: HexCoord, speciesId: string, delta: number): void {
+    const tile = this.getTile(coord);
+    if (tile && tile.concentrations.hasOwnProperty(speciesId)) {
+      tile.concentrations[speciesId] = Math.max(0, tile.concentrations[speciesId] + delta);
+    }
+  }
+
+  /**
+   * Get all concentrations for a tile
+   */
+  getAllConcentrations(coord: HexCoord): Record<string, number> {
+    const tile = this.getTile(coord);
+    return tile ? { ...tile.concentrations } : {};
+  }
+
+  /**
+   * Clear all concentrations on a tile (set to zero)
+   */
+  clearConcentrations(coord: HexCoord): void {
+    const tile = this.getTile(coord);
+    if (tile) {
+      for (const speciesId in tile.concentrations) {
+        tile.concentrations[speciesId] = 0;
+      }
     }
   }
 
