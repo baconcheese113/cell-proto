@@ -199,6 +199,48 @@ export class OrganelleSystem {
   }
 
   /**
+   * Get set of all occupied tile keys (for blueprint placement validation)
+   */
+  public getOccupiedTiles(): Set<string> {
+    return new Set(this.organellesByTile.keys());
+  }
+
+  /**
+   * Create and place a new organelle dynamically (for blueprint completion)
+   */
+  public createOrganelle(config: Omit<OrganelleConfig, 'footprint'> & { footprint: string }, coord: HexCoord): boolean {
+    console.log(`🏭 OrganelleSystem.createOrganelle called: type="${config.type}", coord=(${coord.q}, ${coord.r}), footprint="${config.footprint}"`);
+    
+    // Convert footprint string to actual footprint object
+    const footprint = (ORGANELLE_FOOTPRINTS as any)[config.footprint];
+    if (!footprint) {
+      console.warn(`Unknown footprint type: ${config.footprint}`);
+      return false;
+    }
+
+    const fullConfig: OrganelleConfig = {
+      ...config,
+      footprint
+    };
+
+    const organelleData = {
+      id: config.id,
+      type: config.type,
+      coord,
+      config: fullConfig
+    };
+
+    console.log(`🔧 About to call addOrganelle with:`, organelleData);
+    this.addOrganelle(organelleData);
+    
+    // Verify the organelle was actually added
+    const verifyOrganelle = this.getOrganelleAtTile(coord);
+    console.log(`🔍 Verification - organelle at (${coord.q}, ${coord.r}):`, verifyOrganelle ? verifyOrganelle.config.label : 'NOT FOUND');
+    
+    return true;
+  }
+
+  /**
    * Get organelles by type
    */
   public getOrganellesByType(type: string): Organelle[] {

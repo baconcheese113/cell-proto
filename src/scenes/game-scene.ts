@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture } from "../gfx/textures";
-import { HexGrid } from "../hex/hex-grid";
+import { HexGrid, type HexCoord } from "../hex/hex-grid";
 import { getAllSpecies } from "../species/species-registry";
 import { DiffusionSystem } from "../species/diffusion-system";
 import { HeatmapSystem } from "../species/heatmap-system";
@@ -11,8 +11,12 @@ import { OrganelleSystem } from "../organelles/organelle-system";
 import { OrganelleRenderer } from "../organelles/organelle-renderer";
 import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 import { PlayerInventorySystem } from "../player/player-inventory";
+import { BlueprintSystem } from "../construction/blueprint-system";
+import { BuildPaletteUI } from "../construction/build-palette-ui";
+import { BlueprintRenderer } from "../construction/blueprint-renderer";
+import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -59,6 +63,13 @@ export class GameScene extends Phaser.Scene {
 
   // Player inventory system - Milestone 4 Task 1
   private playerInventory!: PlayerInventorySystem;
+
+  // Blueprint system - Milestone 5
+  private blueprintSystem!: BlueprintSystem;
+  private buildPalette!: BuildPaletteUI;
+  private blueprintRenderer!: BlueprintRenderer;
+  private selectedRecipeId: string | null = null;
+  private isInBuildMode: boolean = false;
 
   // Movement mechanics
   private dashCooldown = 0;
@@ -135,6 +146,8 @@ export class GameScene extends Phaser.Scene {
       V: this.input.keyboard!.addKey("V"),
       Q: this.input.keyboard!.addKey("Q"),
       E: this.input.keyboard!.addKey("E"),
+      B: this.input.keyboard!.addKey("B"),
+      X: this.input.keyboard!.addKey("X"),
     };
 
     // Initialize systems
@@ -149,6 +162,7 @@ export class GameScene extends Phaser.Scene {
     this.initializeConservationTracker();
     this.initializeOrganelleSystem();
     this.initializePlayerInventory();
+    this.initializeBlueprintSystem();
     this.initializeDebugInfo();
     
     // Initialize HUD with current information
@@ -223,6 +237,9 @@ export class GameScene extends Phaser.Scene {
     // Debug species controls - Task 4
     this.handleDebugControls();
 
+    // Blueprint system input handling - Milestone 5
+    this.handleBlueprintInput();
+
     // Update hex interaction
     this.updateHexInteraction();
 
@@ -233,10 +250,19 @@ export class GameScene extends Phaser.Scene {
     // Update diffusion system - Task 3 (only if not paused)
     if (!this.conservationTracker.isPausedState()) {
       this.updateDiffusion(deltaSeconds);
+      
+      // Update blueprint construction - Milestone 5
+      this.blueprintSystem.processConstruction(this.game.loop.delta);
     }
     
     // Update heatmap - Task 5
     this.heatmapSystem.update();
+    
+    // Update blueprint rendering - Milestone 5 Task 5
+    this.blueprintRenderer.render();
+    
+    // Update build palette position to maintain fixed screen location
+    this.buildPalette.updatePosition();
     
     // Update HUD with current information
     this.updateHUD();
@@ -524,6 +550,28 @@ export class GameScene extends Phaser.Scene {
       const worldY = pointer.worldY;
       const tile = this.hexGrid.getTileAtWorld(worldX, worldY);
       
+      // Priority 1: Blueprint placement in build mode
+      if (this.isInBuildMode && this.selectedRecipeId && tile) {
+        const result = this.blueprintSystem.placeBlueprint(
+          this.selectedRecipeId,
+          tile.coord.q,
+          tile.coord.r
+        );
+
+        if (result.success) {
+          console.log(`Placed ${this.selectedRecipeId} blueprint at (${tile.coord.q}, ${tile.coord.r})`);
+          
+          // Exit build mode after successful placement
+          this.isInBuildMode = false;
+          this.selectedRecipeId = null;
+          this.buildPalette.hide();
+        } else {
+          console.warn(`Failed to place blueprint: ${result.error}`);
+        }
+        return; // Don't do normal tile selection
+      }
+      
+      // Priority 2: Normal tile selection
       this.selectedTile = tile || null;
       
       if (tile) {
@@ -539,18 +587,48 @@ export class GameScene extends Phaser.Scene {
     
     this.hexInteractionGraphics.clear();
     
-    // Selected tile highlight
-    if (this.selectedTile) {
+    // Blueprint preview in build mode
+    if (this.isInBuildMode && this.selectedRecipeId && this.hoveredTile) {
+      this.renderBlueprintPreview();
+    }
+    
+    // Selected tile highlight (only if not in build mode)
+    if (this.selectedTile && !this.isInBuildMode) {
       this.hexInteractionGraphics.fillStyle(0x66ffcc, 0.2);
       this.hexInteractionGraphics.lineStyle(2, 0x66ffcc, 0.8);
       this.drawHexagonHighlight(this.selectedTile.worldPos.x, this.selectedTile.worldPos.y, this.hexSize);
     }
     
-    // Hovered tile highlight
-    if (this.hoveredTile && this.hoveredTile !== this.selectedTile) {
+    // Hovered tile highlight (only if not in build mode)
+    if (this.hoveredTile && this.hoveredTile !== this.selectedTile && !this.isInBuildMode) {
       this.hexInteractionGraphics.fillStyle(0x88ddff, 0.1);
       this.hexInteractionGraphics.lineStyle(1, 0x88ddff, 0.5);
       this.drawHexagonHighlight(this.hoveredTile.worldPos.x, this.hoveredTile.worldPos.y, this.hexSize);
+    }
+  }
+
+  private renderBlueprintPreview(): void {
+    if (!this.selectedRecipeId || !this.hoveredTile) return;
+    
+    const validation = this.blueprintSystem.validatePlacement(
+      this.selectedRecipeId,
+      this.hoveredTile.coord.q,
+      this.hoveredTile.coord.r
+    );
+    
+    // Use red for invalid, green for valid
+    const color = validation.isValid ? 0x00ff00 : 0xff0000;
+    const alpha = validation.isValid ? 0.3 : 0.2;
+    
+    this.hexInteractionGraphics.fillStyle(color, alpha);
+    this.hexInteractionGraphics.lineStyle(2, color, 0.8);
+    
+    // Draw all footprint tiles
+    for (const tile of validation.footprintTiles) {
+      const hexTile = this.hexGrid.getTile({ q: tile.q, r: tile.r });
+      if (hexTile) {
+        this.drawHexagonHighlight(hexTile.worldPos.x, hexTile.worldPos.y, this.hexSize);
+      }
     }
   }
 
@@ -607,6 +685,24 @@ export class GameScene extends Phaser.Scene {
       const organelle = this.organelleSystem.getOrganelleAtTile(tile.coord);
       if (organelle) {
         info.push(...this.organelleSystem.getOrganelleInfo(tile.coord));
+        info.push(''); // Add spacing
+      }
+      
+      // Check for blueprint on this tile
+      const blueprint = this.blueprintSystem.getBlueprintAtTile(tile.coord.q, tile.coord.r);
+      if (blueprint) {
+        const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
+        info.push(`🔨 Blueprint: ${recipe?.label}`);
+        
+        // Show progress for each species requirement
+        for (const [speciesId, requiredAmount] of Object.entries(recipe?.buildCost || {})) {
+          const currentProgress = blueprint.progress[speciesId] || 0;
+          const percent = Math.round((currentProgress / requiredAmount) * 100);
+          const status = currentProgress >= requiredAmount ? '✅' : '⏳';
+          info.push(`  ${status} ${speciesId}: ${currentProgress.toFixed(1)}/${requiredAmount} (${percent}%)`);
+        }
+        
+        info.push(`Press X to cancel (50% refund)`);
         info.push(''); // Add spacing
       }
       
@@ -709,6 +805,94 @@ export class GameScene extends Phaser.Scene {
     console.log('Player inventory system initialized');
   }
 
+  // Blueprint System - Milestone 5
+  
+  private initializeBlueprintSystem(): void {
+    // Initialize blueprint system with reference to organelle occupied tiles
+    this.blueprintSystem = new BlueprintSystem(
+      this.hexGrid, 
+      () => this.organelleSystem.getOccupiedTiles(),
+      (organelleType: string, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord)
+    );
+    
+    // Initialize build palette UI
+    this.buildPalette = new BuildPaletteUI(this, 350, 200);
+    this.buildPalette.onRecipeSelected = (recipeId: string) => {
+      this.selectedRecipeId = recipeId;
+      this.isInBuildMode = true;
+      console.log(`Entered build mode with recipe: ${recipeId}`);
+    };
+    
+    // Initialize blueprint renderer
+    this.blueprintRenderer = new BlueprintRenderer(this, this.blueprintSystem, this.hexSize);
+    
+    console.log('Blueprint system initialized');
+  }
+
+  private spawnOrganelleFromBlueprint(organelleType: string, coord: HexCoord): void {
+    console.log(`🔧 spawnOrganelleFromBlueprint called: type="${organelleType}", coord=(${coord.q}, ${coord.r})`);
+    
+    // Map blueprint completion types to actual organelle configs
+    const organelleConfigMap: Record<string, any> = {
+      'ribosome-hub': {
+        id: `ribosome-${Date.now()}`,
+        type: 'ribosome-hub',
+        label: 'Ribosome Hub',
+        color: 0x39b3a6,
+        size: this.hexSize * 0.6,
+        footprint: 'SINGLE',
+        throughputCap: 15,
+        priority: 5
+      },
+      'proto-er': {
+        id: `er-${Date.now()}`,
+        type: 'proto-er',
+        label: 'ER Patch',
+        color: 0x4a90e2,
+        size: this.hexSize * 0.5,
+        footprint: 'PROTO_ER_BLOB',
+        throughputCap: 25,
+        priority: 3
+      },
+      'golgi': {
+        id: `golgi-${Date.now()}`,
+        type: 'golgi',
+        label: 'Golgi Patch',
+        color: 0xf5a623,
+        size: this.hexSize * 0.5,
+        footprint: 'MEDIUM_DISK',
+        throughputCap: 20,
+        priority: 4
+      },
+      'peroxisome': {
+        id: `peroxisome-${Date.now()}`,
+        type: 'peroxisome',
+        label: 'Peroxisome',
+        color: 0x7ed321,
+        size: this.hexSize * 0.4,
+        footprint: 'RIBOSOME_HUB_SMALL',
+        throughputCap: 18,
+        priority: 2
+      }
+    };
+
+    const config = organelleConfigMap[organelleType];
+    if (config) {
+      console.log(`📍 Creating organelle with config:`, config);
+      const success = this.organelleSystem.createOrganelle(config, coord);
+      console.log(`🏗️ Organelle creation result: ${success}`);
+      console.log(`✅ Spawned ${config.label} at (${coord.q}, ${coord.r})`);
+      
+      // Force an update of the tile info panel if this tile is selected
+      if (this.selectedTile && this.selectedTile.coord.q === coord.q && this.selectedTile.coord.r === coord.r) {
+        console.log(`🔄 Selected tile matches spawned organelle, updating info panel`);
+        this.updateTileInfoPanel();
+      }
+    } else {
+      console.warn(`Unknown organelle type for blueprint completion: ${organelleType}`);
+    }
+  }
+
   private updateHUD(): void {
     const heatmapInfo = this.heatmapSystem.getCurrentSpeciesInfo();
     const heatmapStatus = `Heatmap: ${heatmapInfo.label} (${heatmapInfo.index}/${heatmapInfo.total})`;
@@ -718,7 +902,14 @@ export class GameScene extends Phaser.Scene {
     const loadBar = this.createLoadBar(loadRatio);
     const inventoryStatus = `Inventory: ${loadBar} ${this.playerInventory.getCurrentLoad().toFixed(0)}/${this.playerInventory.getMaxCapacity()}`;
     
-    const message = `${heatmapStatus}  |  ${inventoryStatus}  |  Q: Scoop Current Species  |  E: Drop Current Species`;
+    // Blueprint status (Task 10 UX polish)
+    let blueprintStatus = '';
+    if (this.isInBuildMode && this.selectedRecipeId) {
+      const recipe = CONSTRUCTION_RECIPES.getRecipe(this.selectedRecipeId);
+      blueprintStatus = ` | 🔨 Building: ${recipe?.label}`;
+    }
+    
+    const message = `${heatmapStatus}  |  ${inventoryStatus}${blueprintStatus}  |  Q: Scoop Current Species  |  E: Drop Current Species  |  B: Build Menu  |  X: Cancel Blueprint`;
     
     setHud(this, { message });
   }
@@ -832,12 +1023,42 @@ export class GameScene extends Phaser.Scene {
     this.handleTileInteractions();
   }
 
+  // Blueprint System Input Handling - Milestone 5
+  
+  private handleBlueprintInput(): void {
+    // Toggle build palette with B key
+    if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
+      this.buildPalette.toggle();
+      
+      // Exit build mode when closing palette
+      if (!this.buildPalette.getIsVisible()) {
+        this.isInBuildMode = false;
+        this.selectedRecipeId = null;
+      }
+    }
+
+    // X key to cancel blueprint
+    if (Phaser.Input.Keyboard.JustDown(this.keys.X) && this.hoveredTile) {
+      const blueprint = this.blueprintSystem.getBlueprintAtTile(
+        this.hoveredTile.coord.q,
+        this.hoveredTile.coord.r
+      );
+
+      if (blueprint) {
+        const success = this.blueprintSystem.cancelBlueprint(blueprint.id, 0.5);
+        if (success) {
+          console.log(`🗑️ Cancelled blueprint with 50% refund`);
+        }
+      }
+    }
+  }
+
   /**
    * Get the hex coordinate of the tile the player is currently standing on
    */
   private getPlayerHexCoord(): { q: number; r: number } | null {
     const coord = this.hexGrid.worldToHex(this.player.x, this.player.y);
-    console.log(`DEBUG: Player world pos (${this.player.x.toFixed(1)}, ${this.player.y.toFixed(1)}) -> hex coord (${coord?.q}, ${coord?.r})`);
+    // console.log(`DEBUG: Player world pos (${this.player.x.toFixed(1)}, ${this.player.y.toFixed(1)}) -> hex coord (${coord?.q}, ${coord?.r})`);
     return coord;
   }
 
@@ -895,6 +1116,33 @@ export class GameScene extends Phaser.Scene {
    */
   private dropCurrentSpecies(coord: { q: number; r: number }): void {
     const currentSpecies = this.heatmapSystem.getCurrentSpecies();
+    
+    // Check if there's a blueprint at this tile
+    const blueprint = this.blueprintSystem.getBlueprintAtTile(coord.q, coord.r);
+    
+    if (blueprint) {
+      // Try to contribute to blueprint first
+      const playerHas = this.playerInventory.getAmount(currentSpecies);
+      
+      if (playerHas > 0) {
+        const contributed = this.blueprintSystem.addPlayerContribution(
+          blueprint.id, 
+          currentSpecies, 
+          playerHas
+        );
+        
+        if (contributed) {
+          // Remove from player inventory
+          this.playerInventory.take(currentSpecies, playerHas);
+          console.log(`Contributed ${playerHas.toFixed(2)} ${currentSpecies} to blueprint ${blueprint.id}`);
+          
+          // TODO: Show "+X to build" toast (Task 4)
+          return;
+        }
+      }
+    }
+    
+    // Normal drop onto tile if no blueprint or contribution failed
     const result = this.playerInventory.dropOntoTile(this.hexGrid, coord, currentSpecies);
     
     if (result.dropped > 0) {
