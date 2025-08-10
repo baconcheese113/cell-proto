@@ -9,6 +9,7 @@ import type { HexCoord } from "../hex/hex-grid";
 import { HexGrid } from "../hex/hex-grid";
 import { ORGANELLE_FOOTPRINTS, getFootprintTiles, type OrganelleFootprint } from "./organelle-footprints";
 import { getOrganelleIOProfile, type OrganelleIOProfile } from "./organelle-io-profiles";
+import { getStarterOrganelleDefinitions, definitionToConfig } from "./organelle-registry";
 
 export interface OrganelleConfig {
   // Basic properties
@@ -57,56 +58,26 @@ export class OrganelleSystem {
    * Initialize the starter set of organelles at fixed positions
    */
   private initializeStarterOrganelles(): void {
-    // Nucleus - central command, near center (large multi-hex footprint)
-    this.addOrganelle({
-      id: 'nucleus-1',
-      type: 'nucleus',
-      coord: { q: -2, r: 1 }, // Slightly off-center
-      config: {
-        id: 'nucleus',
-        type: 'nucleus',
-        label: 'Nucleus',
-        color: 0x3779c2,
-        size: 1.2,
-        footprint: ORGANELLE_FOOTPRINTS['NUCLEUS_LARGE_DISK'],
-        throughputCap: 5,
-        priority: 1 // Highest priority
+    // Use centralized organelle registry for starter organelles
+    const starterDefinitions = getStarterOrganelleDefinitions();
+    
+    for (const definition of starterDefinitions) {
+      if (definition.starterPlacement) {
+        const config = definitionToConfig(definition, definition.starterPlacement.instanceId);
+        // Convert footprint string to actual footprint object for addOrganelle
+        const fullConfig = {
+          ...config,
+          footprint: ORGANELLE_FOOTPRINTS[definition.footprint]
+        };
+        
+        this.addOrganelle({
+          id: definition.starterPlacement.instanceId,
+          type: definition.type,
+          coord: definition.starterPlacement.coord,
+          config: fullConfig
+        });
       }
-    });
-
-    // Free-ribosome hub - protein synthesis (small cluster)
-    this.addOrganelle({
-      id: 'ribosome-hub-1',
-      type: 'ribosome-hub',
-      coord: { q: 2, r: -1 }, // Right side
-      config: {
-        id: 'ribosome-hub',
-        type: 'ribosome-hub',
-        label: 'Ribosome Hub',
-        color: 0x39b3a6,
-        size: 1.0,
-        footprint: ORGANELLE_FOOTPRINTS['RIBOSOME_HUB_SMALL'],
-        throughputCap: 3,
-        priority: 2
-      }
-    });
-
-    // Proto-ER patch - cargo processing (elongated blob)
-    this.addOrganelle({
-      id: 'proto-er-1',
-      type: 'proto-er',
-      coord: { q: -1, r: 3 }, // Lower left
-      config: {
-        id: 'proto-er',
-        type: 'proto-er',
-        label: 'Proto-ER',
-        color: 0xd07de0,
-        size: 0.8,
-        footprint: ORGANELLE_FOOTPRINTS['PROTO_ER_BLOB'],
-        throughputCap: 2,
-        priority: 3 // Lowest priority
-      }
-    });
+    }
 
     console.log(`Organelle system initialized with ${this.organelles.size} starter organelles`);
     this.logOrganellePlacements();

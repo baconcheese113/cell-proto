@@ -1,14 +1,12 @@
 // Organelle footprint definitions for multi-hex placement
-export interface HexCoordinate {
-  q: number;
-  r: number;
-}
+import type { HexCoord } from "../hex/hex-grid";
 
+// Use the standardized HexCoord type instead of duplicate HexCoordinate
 export interface OrganelleFootprint {
   name: string;
-  tiles: HexCoordinate[];
+  tiles: HexCoord[];
   // Center offset relative to the primary tile (usually 0,0)
-  centerOffset: HexCoordinate;
+  centerOffset: HexCoord;
 }
 
 // Predefined footprint shapes
@@ -73,7 +71,7 @@ export const ORGANELLE_FOOTPRINTS: Record<string, OrganelleFootprint> = {
 };
 
 // Helper functions for footprint operations
-export function getFootprintTiles(footprint: OrganelleFootprint, centerQ: number, centerR: number): HexCoordinate[] {
+export function getFootprintTiles(footprint: OrganelleFootprint, centerQ: number, centerR: number): HexCoord[] {
   return footprint.tiles.map(tile => ({
     q: centerQ + tile.q,
     r: centerR + tile.r
@@ -106,7 +104,7 @@ export function isFootprintValidAt(
   return true;
 }
 
-export function getFootprintCenter(footprint: OrganelleFootprint, placementQ: number, placementR: number): HexCoordinate {
+export function getFootprintCenter(footprint: OrganelleFootprint, placementQ: number, placementR: number): HexCoord {
   return {
     q: placementQ + footprint.centerOffset.q,
     r: placementR + footprint.centerOffset.r

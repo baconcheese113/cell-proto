@@ -15,6 +15,7 @@ import { BlueprintSystem } from "../construction/blueprint-system";
 import { BuildPaletteUI } from "../construction/build-palette-ui";
 import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
+import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
 
 type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X", Phaser.Input.Keyboard.Key>;
 
@@ -832,52 +833,10 @@ export class GameScene extends Phaser.Scene {
   private spawnOrganelleFromBlueprint(organelleType: string, coord: HexCoord): void {
     console.log(`🔧 spawnOrganelleFromBlueprint called: type="${organelleType}", coord=(${coord.q}, ${coord.r})`);
     
-    // Map blueprint completion types to actual organelle configs
-    const organelleConfigMap: Record<string, any> = {
-      'ribosome-hub': {
-        id: `ribosome-${Date.now()}`,
-        type: 'ribosome-hub',
-        label: 'Ribosome Hub',
-        color: 0x39b3a6,
-        size: this.hexSize * 0.6,
-        footprint: 'SINGLE',
-        throughputCap: 15,
-        priority: 5
-      },
-      'proto-er': {
-        id: `er-${Date.now()}`,
-        type: 'proto-er',
-        label: 'ER Patch',
-        color: 0x4a90e2,
-        size: this.hexSize * 0.5,
-        footprint: 'PROTO_ER_BLOB',
-        throughputCap: 25,
-        priority: 3
-      },
-      'golgi': {
-        id: `golgi-${Date.now()}`,
-        type: 'golgi',
-        label: 'Golgi Patch',
-        color: 0xf5a623,
-        size: this.hexSize * 0.5,
-        footprint: 'MEDIUM_DISK',
-        throughputCap: 20,
-        priority: 4
-      },
-      'peroxisome': {
-        id: `peroxisome-${Date.now()}`,
-        type: 'peroxisome',
-        label: 'Peroxisome',
-        color: 0x7ed321,
-        size: this.hexSize * 0.4,
-        footprint: 'RIBOSOME_HUB_SMALL',
-        throughputCap: 18,
-        priority: 2
-      }
-    };
-
-    const config = organelleConfigMap[organelleType];
-    if (config) {
+    // Use centralized organelle registry instead of hardcoded mapping
+    const definition = getOrganelleDefinition(organelleType);
+    if (definition) {
+      const config = definitionToConfig(definition);
       console.log(`📍 Creating organelle with config:`, config);
       const success = this.organelleSystem.createOrganelle(config, coord);
       console.log(`🏗️ Organelle creation result: ${success}`);
