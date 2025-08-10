@@ -1,3 +1,16 @@
+/*
+MILESTONE 0 — FUNCTIONALITY AUDIT
+Current Systems in cell-proto:
+
+MAIN ENTRY MODULE:
+Phaser game initialization - KEEP (core framework)
+Scene configuration - KEEP (game scene only)
+Physics configuration - KEEP (needed for movement)
+Scale/resize handling - KEEP (responsive gameplay)
+
+Status: Keep as-is - minimal and focused
+*/
+
 import Phaser from "phaser";
 import { GameScene } from "./scenes/game-scene";
 

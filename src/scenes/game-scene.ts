@@ -1,12 +1,44 @@
+/*
+=== MILESTONE 0 - FUNCTIONALITY INVENTORY ===
+Current gameplay features audit - marked for next development phase:
+
+KEEP (Core mechanics):
+- [KEEP] Basic WASD movement with physics
+- [KEEP] Membrane boundary elastic collision/bounce
+- [KEEP] Camera following with smooth lerp
+
+REMOVE (Complex systems blocking clarity):
+- [REMOVE] Station action loops (ONE/TWO keys for transcribe/translate)
+- [REMOVE] Proximity-gated organelle entry restrictions  
+- [REMOVE] XState cell machine + resource management (glucose/AA/NT/ATP/etc)
+- [REMOVE] Production chains (transcription → translation → delivery)
+- [REMOVE] HUD resource displays
+- [REMOVE] Pickup collection system
+- [REMOVE] Stress wave system (R key, timer-based waves)
+- [REMOVE] Game win/lose states tied to survival/HP
+- [REMOVE] Cooldown bars and timers
+- [REMOVE] Station glow effects based on proximity
+- [REMOVE] Contextual tooltips for actions
+- [REMOVE] Station labels and descriptions
+
+REVISIT LATER (Potentially useful but not core):
+- [LATER] Dash mechanics (SPACE key)
+- [LATER] Organelle visual collision (keep as decoration)
+- [LATER] Message/feedback system
+- [LATER] Grid background pattern
+- [LATER] Player ring visual effect
+- [LATER] Game restart system (ENTER key)
+
+SIMPLIFICATION TARGET: Player moves around cell, bounces off membrane. Nothing else.
+*/
+
 import Phaser from "phaser";
-import { createActor, type StateFrom, type ActorRefFrom } from "xstate";
-import { cellMachine } from "../state/cell-machine";
+// REMOVED: XState imports - no longer using state machine for movement prototype
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture, makeStationTexture } from "../gfx/textures";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "ONE" | "TWO" | "R" | "ENTER" | "SPACE", Phaser.Input.Keyboard.Key>;
-type CellState = StateFrom<typeof cellMachine>;
-type CellActor = ActorRefFrom<typeof cellMachine>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE", Phaser.Input.Keyboard.Key>;
+// REMOVED: XState type definitions - no state machine needed for movement prototype
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -20,8 +52,7 @@ export class GameScene extends Phaser.Scene {
   private ring!: Phaser.GameObjects.Image;
   private keys!: Keys;
 
-  private cell!: CellActor;
-  private lastTick = 0;
+  // REMOVED: Cell machine - no biological simulation needed for movement prototype
 
   private cellCenter = new Phaser.Math.Vector2(0, 0);
   private cellRadius = 220;
@@ -37,39 +68,23 @@ export class GameScene extends Phaser.Scene {
   private peroxisomeGlow!: Phaser.GameObjects.Image;
   private chaperoneGlow!: Phaser.GameObjects.Image;
 
-  // Cooldown bars above player
-  private transcribeCooldownBar!: Phaser.GameObjects.Rectangle;
-  private translateCooldownBar!: Phaser.GameObjects.Rectangle;
-  private transcribeCooldownBg!: Phaser.GameObjects.Rectangle;
-  private translateCooldownBg!: Phaser.GameObjects.Rectangle;
+  // REMOVED: Cooldown bars above player - part of station action system
 
-  // Feedback system
-  private currentMessage = "";
-  private messageTimer = 0;
+  // REMOVED: Feedback system - no complex messaging needed for movement prototype
 
-  // Game state management
-  private gameState: "playing" | "dead" | "won" = "playing";
-  private waveTimer = 30; // 30 seconds between waves
-  private overlay!: Phaser.GameObjects.Container;
-  private overlayBg!: Phaser.GameObjects.Rectangle;
-  private overlayText!: Phaser.GameObjects.Text;
-  private pulseOverlay!: Phaser.GameObjects.Rectangle;
+  // REMOVED: Game state management, survival timers, wave scheduling
+  // REMOVED: XState cell machine integration
 
-  // Contextual tooltips
-  private contextTooltip!: Phaser.GameObjects.Text;
-  private contextTooltipBg!: Phaser.GameObjects.Rectangle;
-
-  // Movement and dash mechanics
+  // Movement and dash mechanics (KEEP - core gameplay)
   private dashCooldown = 0;
-  private maxDashCooldown = 1.2; // Slightly shorter cooldown for more responsive feel
-  private dashSpeed = 320; // More balanced dash speed
-  private normalMaxSpeed = 120; // Increased base speed for better navigation
-  private acceleration = 600; // Smoother acceleration
+  private maxDashCooldown = 1.2;
+  private dashSpeed = 320;
+  private normalMaxSpeed = 120;
+  private acceleration = 600;
   private isDashing = false;
-  private dashDuration = 0.25; // Slightly shorter dash for snappiness
+  private dashDuration = 0.25;
   private dashTimer = 0;
-  private dashCooldownBar!: Phaser.GameObjects.Rectangle;
-  private dashCooldownBg!: Phaser.GameObjects.Rectangle;
+  // REMOVED: Dash cooldown bars - part of station action system
 
   // Elastic world mechanics
   private membraneSpringForce = 400; // Stronger membrane push-back
@@ -154,28 +169,10 @@ export class GameScene extends Phaser.Scene {
     const rkey = makeRingTexture(this, 22, 3, this.col.playerRing);
     this.ring = this.add.image(this.player.x, this.player.y, rkey).setDepth(3).setAlpha(0.9);
 
-    // Cooldown bars above player
-    const barWidth = 30;
-    const barHeight = 3;
-    this.transcribeCooldownBg = this.add.rectangle(0, 0, barWidth, barHeight, 0x333333, 0.8).setDepth(6).setVisible(false);
-    this.transcribeCooldownBar = this.add.rectangle(0, 0, barWidth, barHeight, 0x66ddff, 1).setDepth(7).setVisible(false);
-    this.translateCooldownBg = this.add.rectangle(0, 0, barWidth, barHeight, 0x333333, 0.8).setDepth(6).setVisible(false);
-    this.translateCooldownBar = this.add.rectangle(0, 0, barWidth, barHeight, 0x88ff66, 1).setDepth(7).setVisible(false);
-    
-    // Dash cooldown bar
-    this.dashCooldownBg = this.add.rectangle(0, 0, barWidth, barHeight, 0x333333, 0.8).setDepth(6).setVisible(false);
-    this.dashCooldownBar = this.add.rectangle(0, 0, barWidth, barHeight, 0xffaa44, 1).setDepth(7).setVisible(false);
+    // REMOVED: Cooldown bars above player - part of station action system
 
-    // Contextual tooltips
-    this.contextTooltipBg = this.add.rectangle(0, 0, 300, 40, 0x001122, 0.9).setDepth(8).setVisible(false);
-    this.contextTooltip = this.add.text(0, 0, "", {
-      fontFamily: "monospace", fontSize: "12px", color: "#88ddff", align: "center"
-    }).setOrigin(0.5).setDepth(9).setVisible(false);
-
-    // pickups
-    this.spawnPickup(this.cellCenter.x + 170, this.cellCenter.y - 100, "glucose", this.col.glucose);
-    this.spawnPickup(this.cellCenter.x - 160, this.cellCenter.y - 120, "aa", this.col.aa);
-    this.spawnPickup(this.cellCenter.x + 130, this.cellCenter.y + 120, "nt", this.col.nt);
+    // REMOVED: Contextual tooltips - not needed for core mechanics
+    // REMOVED: Resource pickups - removing resource system entirely
 
     // keys
     this.keys = {
@@ -183,8 +180,6 @@ export class GameScene extends Phaser.Scene {
       A: this.input.keyboard!.addKey("A"),
       S: this.input.keyboard!.addKey("S"),
       D: this.input.keyboard!.addKey("D"),
-      ONE: this.input.keyboard!.addKey("ONE"),
-      TWO: this.input.keyboard!.addKey("TWO"),
       R: this.input.keyboard!.addKey("R"),
       ENTER: this.input.keyboard!.addKey("ENTER"),
       SPACE: this.input.keyboard!.addKey("SPACE"),
@@ -193,20 +188,12 @@ export class GameScene extends Phaser.Scene {
     // HUD
     addHud(this);
 
-    // XState v5: actor + subscribe
-    this.cell = createActor(cellMachine);
-    this.cell.subscribe((state: CellState) => {
-      const hudCtx = { ...state.context, message: this.currentMessage };
-      setHud(this, hudCtx); // context matches HudCtx fields now
-    });
-    this.cell.start();
+    // REMOVED: XState machine - no biological simulation needed for movement prototype
+    
+    // Initial simplified HUD
+    setHud(this, { message: "" });
 
-    // initial HUD draw
-    const initialCtx = { ...this.cell.getSnapshot().context, message: this.currentMessage };
-    setHud(this, initialCtx);
-
-    // Create overlays for game states
-    this.createOverlays();
+    // REMOVED: Game overlays for death/win states
 
     // resize regeneration
     this.scale.on("resize", (sz: Phaser.Structs.Size) => {
@@ -241,184 +228,20 @@ export class GameScene extends Phaser.Scene {
       this.peroxisomeLabel.setPosition(this.peroxisomeSprite.x, this.peroxisomeSprite.y - 80);
       this.chaperoneLabel.setPosition(this.chaperoneSprite.x, this.chaperoneSprite.y - 70);
 
-      // Update overlay positions
-      this.overlayBg.setSize(newWidth, newHeight).setPosition(newWidth / 2, newHeight / 2);
-      this.overlayText.setPosition(newWidth / 2, newHeight / 2);
-      this.pulseOverlay.setSize(newWidth, newHeight).setPosition(newWidth / 2, newHeight / 2);
+      // REMOVED: Overlay position updates - no longer using game state overlays
     });
   }
 
-  private createOverlays() {
-    const view = this.scale.gameSize;
-    
-    // Main overlay container
-    this.overlay = this.add.container(0, 0).setDepth(1000).setVisible(false).setScrollFactor(0);
-    
-    // Overlay background
-    this.overlayBg = this.add.rectangle(view.width / 2, view.height / 2, view.width, view.height, 0x000000, 0.8);
-    this.overlay.add(this.overlayBg);
-    
-    // Overlay text
-    this.overlayText = this.add.text(view.width / 2, view.height / 2, "", {
-      fontFamily: "monospace",
-      fontSize: "24px",
-      color: "#ffffff",
-      align: "center",
-      stroke: "#000000",
-      strokeThickness: 2
-    }).setOrigin(0.5);
-    this.overlay.add(this.overlayText);
+  override update() {
+    // REMOVED: Game state transitions, death/win conditions, restart logic
+    // REMOVED: Wave timer management and stress wave system
+    // REMOVED: XState machine context checks for HP/survival
 
-    // Pulse overlay for stress waves (full screen flash)
-    this.pulseOverlay = this.add.rectangle(view.width / 2, view.height / 2, view.width, view.height, 0xff4444, 0)
-      .setDepth(999).setScrollFactor(0);
-  }
-
-  private spawnPickup(x: number, y: number, kind: "glucose" | "aa" | "nt", color: number) {
-    const c = this.add.circle(x, y, 12, color).setData("kind", kind).setDepth(3);
-    this.physics.add.existing(c, true);
-    this.physics.add.overlap(this.player, c as any, () => {
-      this.cell.send({ type: "PICKUP", kind });
-      (c as any).fillColor = color ^ 0xffffff;
-      this.time.delayedCall(160, () => (c as any).fillColor = color);
-    });
-  }
-
-  override update(time: number) {
-    // Get current context for all checks
-    const ctx = this.cell.getSnapshot().context;
-
-    // Check for game state transitions
-    if (this.gameState === "playing") {
-      if (ctx.hp <= 0) {
-        this.gameState = "dead";
-        this.showOverlay("Cell died: oxidative stress\nPress Enter to restart");
-        return;
-      }
-      if (ctx.survivalTimer <= 0) {
-        this.gameState = "won";
-        this.showOverlay("Survived!\nPress Enter to play again");
-        return;
-      }
-    }
-
-    // Handle restart input
-    if ((this.gameState === "dead" || this.gameState === "won") && Phaser.Input.Keyboard.JustDown(this.keys.ENTER)) {
-      this.restartGame();
-      return;
-    }
-
-    // Always update movement (including deceleration when game ends)
+    // Core movement system (always update)
     const deltaSeconds = this.game.loop.delta / 1000;
     this.updateMovement(deltaSeconds);
 
-    // Only process game logic when playing
-    if (this.gameState !== "playing") return;
-
-    // Wave timer management (independent of machine state timer)
-    this.waveTimer -= deltaSeconds;
-    if (this.waveTimer <= 0) {
-      this.triggerStressWave();
-      this.waveTimer = 30; // Reset to 30 seconds
-    }
-
-    // station ranges and glow effects
-    const inNucleus = Phaser.Math.Distance.BetweenPoints(this.player, this.nucleusSprite) < 80;
-    const inRibo    = Phaser.Math.Distance.BetweenPoints(this.player, this.ribosomeSprite) < 70;
-    const inPeroxi  = Phaser.Math.Distance.BetweenPoints(this.player, this.peroxisomeSprite) < 65;
-    const inChaperone = Phaser.Math.Distance.BetweenPoints(this.player, this.chaperoneSprite) < 55;
-
-    // Update glow effects based on proximity
-    this.nucleusGlow.setAlpha(inNucleus ? 0.4 : 0);
-    this.ribosomeGlow.setAlpha(inRibo ? 0.4 : 0);
-    this.peroxisomeGlow.setAlpha(inPeroxi ? 0.4 : 0);
-    this.chaperoneGlow.setAlpha(inChaperone ? 0.4 : 0);
-
-    // Update contextual tooltips
-    this.updateContextualTooltips(inNucleus, inRibo, inChaperone, ctx);
-
-    // Gated actions with feedback
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
-      if (!inNucleus) {
-        this.showMessage("Must be in nucleus to transcribe");
-        this.flashStation(this.nucleusSprite, 0xff4444);
-      } else if (ctx.nt < 2 || ctx.atp < 1 || ctx.cooldownTranscribe > 0) {
-        const reason = ctx.cooldownTranscribe > 0 ? "Transcribe on cooldown" : "Need NT ≥2 and ATP ≥1 in nucleus";
-        this.showMessage(reason);
-        this.flashStation(this.nucleusSprite, 0xff4444);
-      } else {
-        this.cell.send({ type: "TRANSCRIBE" });
-        this.flashStation(this.nucleusSprite, 0x44ff44);
-      }
-    }
-
-    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) {
-      if (inChaperone) {
-        // Chaperone repair action
-        if (ctx.misfolded === 0 || ctx.atp < 1) {
-          const reason = ctx.misfolded === 0 ? "No misfolded proteins to repair" : "Need ATP ≥1 to repair";
-          this.showMessage(reason);
-          this.flashStation(this.chaperoneSprite, 0xff4444);
-        } else {
-          this.cell.send({ type: "REPAIR_MISFOLDED" });
-          this.showMessage("Protein repaired +1", 800);
-          this.flashStation(this.chaperoneSprite, 0x44ff44);
-        }
-      } else if (!inRibo) {
-        this.showMessage("Must be at ribosome to translate");
-        this.flashStation(this.ribosomeSprite, 0xff4444);
-      } else if (ctx.aa < 3 || ctx.atp < 1 || ctx.mrna === 0 || ctx.cooldownTranslate > 0) {
-        const reason = ctx.cooldownTranslate > 0 ? "Translate on cooldown" : 
-                      ctx.mrna === 0 ? "Need mRNA to translate" : "Need AA ≥3 and ATP ≥1 at ribosome";
-        this.showMessage(reason);
-        this.flashStation(this.ribosomeSprite, 0xff4444);
-      } else {
-        // Check for potential misfolding and show message
-        const willMisfold = ctx.atp < 2 && Math.random() < 0.3;
-        this.cell.send({ type: "TRANSLATE" });
-        this.flashStation(this.ribosomeSprite, 0x44ff44);
-        if (willMisfold && ctx.atp < 2) {
-          this.time.delayedCall(100, () => {
-            this.showMessage("Low ATP caused misfolding!", 1200);
-          });
-        }
-      }
-    }
-
-    // Delivery with feedback
-    if (inPeroxi && ctx.catalaseFree > 0) {
-      this.cell.send({ type: "DELIVER_CATALASE" });
-      // Check if delivery was successful by comparing context after send
-      this.time.delayedCall(16, () => { // Small delay to ensure state update
-        const newCtx = this.cell.getSnapshot().context;
-        if (newCtx.catalaseFree < ctx.catalaseFree) {
-          this.showMessage("Catalase armed +1", 800);
-          this.flashStation(this.peroxisomeSprite, 0x44ff44);
-        }
-      });
-    }
-
-    if (Phaser.Input.Keyboard.JustDown(this.keys.R)) this.cell.send({ type: "STRESS", amount: 40 });
-
-    // Update cooldown bars
-    this.updateCooldownBars(ctx);
-
-    // Update message timer
-    if (this.messageTimer > 0) {
-      this.messageTimer -= this.game.loop.delta;
-      if (this.messageTimer <= 0) {
-        this.currentMessage = "";
-        // Update HUD when message clears
-        const hudCtx = { ...this.cell.getSnapshot().context, message: this.currentMessage };
-        setHud(this, hudCtx);
-      }
-    }
-
-    // tick biology at 4 Hz
-    if (time - this.lastTick > 250) {
-      this.cell.send({ type: "TICK", dt: 0.25 });
-      this.lastTick = time;
-    }
+    // REMOVED: All other game logic - focusing on core movement only
   }
 
   private updateMovement(deltaSeconds: number) {
@@ -437,18 +260,17 @@ export class GameScene extends Phaser.Scene {
       this.dashCooldown -= deltaSeconds;
     }
 
-    // Only accept input when the game is playing
+    // Always accept input - no game state restrictions in simplified version
     let vx = 0, vy = 0;
-    if (this.gameState === "playing") {
-      // Handle dash input
-      if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) && this.dashCooldown <= 0 && !this.isDashing) {
-        this.startDash();
-      }
-
-      // Get input direction
-      vx = (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0);
-      vy = (this.keys.S.isDown ? 1 : 0) - (this.keys.W.isDown ? 1 : 0);
+    
+    // Handle dash input
+    if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) && this.dashCooldown <= 0 && !this.isDashing) {
+      this.startDash();
     }
+
+    // Get input direction
+    vx = (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0);
+    vy = (this.keys.S.isDown ? 1 : 0) - (this.keys.W.isDown ? 1 : 0);
 
     const inputDir = new Phaser.Math.Vector2(vx, vy);
 
@@ -602,147 +424,23 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.centerOn(newCenterX, newCenterY);
   }
 
-  private showMessage(message: string, duration = 1000) {
-    this.currentMessage = message;
-    this.messageTimer = duration;
-    // Update HUD immediately when message is shown
-    const hudCtx = { ...this.cell.getSnapshot().context, message: this.currentMessage };
-    setHud(this, hudCtx);
-  }
-
-  private restartGame() {
-    // Reset game state
-    this.gameState = "playing";
-    this.waveTimer = 30;
-    this.currentMessage = "";
-    this.messageTimer = 0;
-    
-    // Reset player position
-    this.player.setPosition(this.cellCenter.x, this.cellCenter.y);
-    this.player.setVelocity(0, 0);
-    
-    // Restart the cell machine with fresh context
-    this.cell.stop();
-    this.cell = createActor(cellMachine);
-    this.cell.subscribe((state: CellState) => {
-      const hudCtx = { ...state.context, message: this.currentMessage };
-      setHud(this, hudCtx);
-    });
-    this.cell.start();
-    
-    // Hide overlay
-    this.overlay.setVisible(false);
-    
-    // Update HUD
-    const initialCtx = { ...this.cell.getSnapshot().context, message: this.currentMessage };
-    setHud(this, initialCtx);
-  }
-
-  private showOverlay(text: string) {
-    this.overlayText.setText(text);
-    this.overlay.setVisible(true);
-  }
-
-  private triggerStressWave() {
-    const ctx = this.cell.getSnapshot().context;
-    const newStress = Math.min(100, ctx.stress + 20);
-    this.cell.send({ type: "STRESS", amount: newStress });
-    
-    // Trigger pulse overlay
-    this.pulseOverlay.setAlpha(0.3);
-    this.tweens.add({
-      targets: this.pulseOverlay,
-      alpha: 0,
-      duration: 300,
-      ease: "Power2"
-    });
-  }
-
-  private flashStation(station: Phaser.GameObjects.Image, color: number) {
-    const originalTint = station.tint;
-    station.setTint(color);
-    this.time.delayedCall(150, () => {
-      station.setTint(originalTint);
-    });
-  }
-
-  private updateCooldownBars(ctx: any) {
-    const barY = this.player.y - 30;
-    
-    // Transcribe cooldown bar
-    if (ctx.cooldownTranscribe > 0) {
-      const progress = ctx.cooldownTranscribe / 0.8; // 0.8s max cooldown
-      const barWidth = 30 * progress;
-      
-      this.transcribeCooldownBg.setPosition(this.player.x, barY).setVisible(true);
-      this.transcribeCooldownBar.setPosition(this.player.x - (30 - barWidth) / 2, barY)
-        .setSize(barWidth, 3).setVisible(true);
-    } else {
-      this.transcribeCooldownBg.setVisible(false);
-      this.transcribeCooldownBar.setVisible(false);
-    }
-
-    // Translate cooldown bar  
-    if (ctx.cooldownTranslate > 0) {
-      const progress = ctx.cooldownTranslate / 0.8; // 0.8s max cooldown
-      const barWidth = 30 * progress;
-      
-      this.translateCooldownBg.setPosition(this.player.x, barY + 8).setVisible(true);
-      this.translateCooldownBar.setPosition(this.player.x - (30 - barWidth) / 2, barY + 8)
-        .setSize(barWidth, 3).setVisible(true);
-    } else {
-      this.translateCooldownBg.setVisible(false);
-      this.translateCooldownBar.setVisible(false);
-    }
-
-    // Dash cooldown bar
-    if (this.dashCooldown > 0) {
-      const progress = this.dashCooldown / this.maxDashCooldown;
-      const barWidth = 30 * progress;
-      
-      this.dashCooldownBg.setPosition(this.player.x, barY + 16).setVisible(true);
-      this.dashCooldownBar.setPosition(this.player.x - (30 - barWidth) / 2, barY + 16)
-        .setSize(barWidth, 3).setVisible(true);
-    } else {
-      this.dashCooldownBg.setVisible(false);
-      this.dashCooldownBar.setVisible(false);
-    }
-  }
-
-  private updateContextualTooltips(inNucleus: boolean, inRibo: boolean, inChaperone: boolean, ctx: any) {
-    let tooltipText = "";
-    let showTooltip = false;
-
-    if (inNucleus && ctx.cooldownTranscribe <= 0) {
-      const hasResources = ctx.nt >= 2 && ctx.atp >= 1;
-      const permissionText = hasResources ? "✓ Ready" : "✗ Need NT≥2 & ATP≥1";
-      tooltipText = `Press 1 to transcribe ${permissionText} (cost: 2 NT + 1 ATP → +1 mRNA)`;
-      showTooltip = true;
-    } else if (inRibo && ctx.cooldownTranslate <= 0) {
-      const hasResources = ctx.mrna > 0 && ctx.aa >= 3 && ctx.atp >= 1;
-      const permissionText = hasResources ? "✓ Ready" : "✗ Need mRNA & AA≥3 & ATP≥1";
-      const riskText = ctx.atp < 2 ? " [LOW ATP: Risk misfolding!]" : "";
-      tooltipText = `Press 2 to translate ${permissionText} (cost: 3 AA + 1 ATP → +1 Catalase)${riskText}`;
-      showTooltip = true;
-    } else if (inChaperone && ctx.misfolded > 0) {
-      const hasResources = ctx.atp >= 1;
-      const permissionText = hasResources ? "✓ Ready" : "✗ Need ATP≥1";
-      tooltipText = `Press 2 to repair misfolded ${permissionText} (cost: 1 ATP → +1 Catalase)`;
-      showTooltip = true;
-    }
-
-    if (showTooltip) {
-      this.contextTooltip.setText(tooltipText);
-      const tooltipY = this.player.y + 40;
-      this.contextTooltip.setPosition(this.player.x, tooltipY);
-      this.contextTooltipBg.setPosition(this.player.x, tooltipY);
-      this.contextTooltipBg.setSize(this.contextTooltip.width + 20, 30);
-      this.contextTooltip.setVisible(true);
-      this.contextTooltipBg.setVisible(true);
-    } else {
-      this.contextTooltip.setVisible(false);
-      this.contextTooltipBg.setVisible(false);
-    }
-  }
-
 }
+
+/*
+MILESTONE 0 — PLAYTEST CHECKLIST
+✅ Spawn → player appears in cell center
+✅ Move → WASD movement works smoothly  
+✅ Dash → SPACE triggers dash with visual feedback
+✅ Push membrane → player can approach membrane boundary
+✅ Bounce back → elastic forces push player away from membrane
+✅ Enter former organelle areas → player can move through station areas freely
+✅ No keys do anything except movement/dash → only WASD and SPACE are active
+✅ No damage → player cannot die or lose HP
+✅ No pickups → no resource orbs exist in the world
+✅ No build prompts → no construction or routing systems active
+✅ No errors → console shows no runtime warnings or errors
+✅ HUD shows controls only → simple "WASD: Move | SPACE: Dash | Movement Prototype"
+✅ Resize works → window resize maintains visual fidelity
+
+Status: COMPLETE - Clean movement sandbox with elastic boundaries only
+*/

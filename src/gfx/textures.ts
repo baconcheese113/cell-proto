@@ -1,3 +1,16 @@
+/*
+MILESTONE 0 — FUNCTIONALITY AUDIT
+Current Systems in cell-proto:
+
+GRAPHICS/TEXTURES MODULE:
+Grid texture generation - KEEP (background visuals)
+Cell membrane texture generation - KEEP (core membrane visuals)
+Ring texture generation - KEEP (player visual feedback)
+Rounded rectangle generation - REMOVE (was for UI tooltips/panels)
+
+Status: Mostly keep - core visual functions for movement prototype
+*/
+
 import Phaser from "phaser";
 
 export function makeGridTexture(
