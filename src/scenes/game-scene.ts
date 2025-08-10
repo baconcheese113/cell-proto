@@ -11,7 +11,7 @@ import { OrganelleSystem } from "../organelles/organelle-system";
 import { OrganelleRenderer } from "../organelles/organelle-renderer";
 import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "H" | "LEFT" | "RIGHT" | "P" | "T", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -29,7 +29,7 @@ export class GameScene extends Phaser.Scene {
   private hexSize = 16; // Tunable hex tile size
   private gridRadius = 12; // Tunable number of hex rings
   private hexGraphics!: Phaser.GameObjects.Graphics;
-  private showHexGrid = false;
+  private showHexGrid = true;
   private hoveredTile: any = null; // HexTile | null
   private selectedTile: any = null; // HexTile | null
   private hexInteractionGraphics!: Phaser.GameObjects.Graphics;
@@ -122,6 +122,7 @@ export class GameScene extends Phaser.Scene {
       THREE: this.input.keyboard!.addKey("THREE"),
       FOUR: this.input.keyboard!.addKey("FOUR"),
       FIVE: this.input.keyboard!.addKey("FIVE"),
+      SIX: this.input.keyboard!.addKey("SIX"),
       H: this.input.keyboard!.addKey("H"),
       LEFT: this.input.keyboard!.addKey("LEFT"),
       RIGHT: this.input.keyboard!.addKey("RIGHT"),
@@ -141,7 +142,9 @@ export class GameScene extends Phaser.Scene {
     this.initializeConservationTracker();
     this.initializeOrganelleSystem();
     this.initializeDebugInfo();
-    setHud(this, { message: "" });
+    
+    // Initialize HUD with current information
+    this.updateHUD();
 
     // Window resize handling
     this.scale.on("resize", (sz: Phaser.Structs.Size) => {
@@ -226,6 +229,9 @@ export class GameScene extends Phaser.Scene {
     
     // Update heatmap - Task 5
     this.heatmapSystem.update();
+    
+    // Update HUD with current information
+    this.updateHUD();
     
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
@@ -688,6 +694,15 @@ export class GameScene extends Phaser.Scene {
     console.log('Organelle system initialized');
   }
 
+  private updateHUD(): void {
+    const heatmapInfo = this.heatmapSystem.getCurrentSpeciesInfo();
+    const heatmapStatus = `Heatmap: ${heatmapInfo.label} (${heatmapInfo.index}/${heatmapInfo.total})`;
+    
+    const message = `${heatmapStatus}  |  Keys 1-6: Inject ATP,AA,NT,ROS,GLUCOSE,PRE_MRNA  |  H: Cycle Species  |  P: Pause`;
+    
+    setHud(this, { message });
+  }
+
   private updateConservationPanel(): void {
     if (!this.conservationPanel || !this.conservationTracker) return;
     
@@ -705,7 +720,9 @@ export class GameScene extends Phaser.Scene {
   
   private initializeHeatmapSystem(): void {
     this.heatmapSystem = new HeatmapSystem(this, this.hexGrid, this.hexSize);
-    console.log('Heatmap system initialized');
+    // Start with heatmap visible
+    this.heatmapSystem.toggle();
+    console.log('Heatmap system initialized and visible');
   }
 
   // Passive Effects System - Task 6
@@ -753,7 +770,7 @@ export class GameScene extends Phaser.Scene {
       console.log(`Cleared all species on tile (${this.selectedTile.coord.q}, ${this.selectedTile.coord.r})`);
     }
 
-    // Inject species using number keys 1-5
+    // Inject species using number keys 1-6
     const injectionAmount = 20; // Modest amount to inject
     
     if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
@@ -770,6 +787,9 @@ export class GameScene extends Phaser.Scene {
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) {
       this.injectSpecies('GLUCOSE', injectionAmount);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.SIX)) {
+      this.injectSpecies('PRE_MRNA', injectionAmount);
     }
   }
 
