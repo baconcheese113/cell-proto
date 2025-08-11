@@ -215,8 +215,8 @@ export class MembraneExchangeSystem {
     }
 
     // Debug output (throttled)
-    if (Math.random() < 0.001) {
-      console.log(`${protein.label}: ${direction === 'in' ? '+' : '-'}${actualFlux.toFixed(3)} ${speciesId}`);
+    if (Math.random() < 0.01) { // More frequent debug output to test
+      console.log(`🚛 ${protein.label}: ${direction === 'in' ? '+' : '-'}${actualFlux.toFixed(3)} ${speciesId} (rate: ${ratePerTick}/tick)`);
     }
   }
 
@@ -334,7 +334,8 @@ export class MembraneExchangeSystem {
     
     if (!installed) return null;
     
-    return MEMBRANE_PROTEIN_REGISTRY.getProtein(installed.proteinId) || null;
+    const protein = MEMBRANE_PROTEIN_REGISTRY.getProtein(installed.proteinId);
+    return protein || null;
   }
 
   /**

@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
-import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture } from "../gfx/textures";
+import { makeGridTexture, makeCellTexture } from "../gfx/textures";
 import { HexGrid, type HexCoord, type HexTile } from "../hex/hex-grid";
 import { getAllSpecies, type SpeciesId } from "../species/species-registry";
 import { DiffusionSystem } from "../species/diffusion-system";
@@ -18,41 +18,28 @@ import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
-import { getAllMembraneProteins } from "../membrane/membrane-protein-registry";
-import { getFootprintTiles } from "../organelles/organelle-footprints";
 
-// Milestone 7 Task 1: Data types for orders & transcripts
-type ProteinId = 'GLUT' | 'AA_TRANSPORTER' | 'NT_TRANSPORTER' | 'ROS_EXPORTER' | 'SECRETION_PUMP' | 'GROWTH_FACTOR_RECEPTOR';
+// New modular components
+import { Player } from "../actors/player";
+import { TileActionController } from "../controllers/tile-action-controller";
+// Consolidated system architecture
+import { CellProduction } from "../systems/cell-production";
+import { CellTransport } from "../systems/cell-transport";
+import { CellOverlays } from "../systems/cell-overlays";
+import type { WorldRefs, InstallOrder, Transcript } from "../core/world-refs";
 
-interface InstallOrder {
-  id: string;
-  proteinId: ProteinId;
-  destHex: HexCoord;
-  createdAt: number; // timestamp for priority/aging
-}
-
-interface Transcript {
-  id: string;
-  proteinId: ProteinId;
-  atHex: HexCoord;
-  ttlSeconds: number;
-  worldPos: Phaser.Math.Vector2; // for smooth movement rendering
-  isCarried: boolean; // true if player is carrying it
-  moveAccumulator: number; // accumulated movement distance for discrete hex movement
-  destHex?: HexCoord; // original destination from install order
-  state: 'traveling' | 'processing_at_er' | 'packaged_for_transport' | 'installing_at_membrane';
-  processingTimer: number; // time remaining for current state
-}
-
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
   private cellSprite!: Phaser.GameObjects.Image;
 
-  private player!: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
-  private ring!: Phaser.GameObjects.Image;
+  // NEW: Modular player actor
+  private playerActor!: Player;
   private keys!: Keys;
+
+  // NEW: Modular controllers and systems
+  private tileActionController!: TileActionController;
 
   private cellCenter = new Phaser.Math.Vector2(0, 0);
   private cellRadius = 220;
@@ -80,8 +67,6 @@ export class GameScene extends Phaser.Scene {
 
   // Species diffusion system - Task 3
   private diffusionSystem!: DiffusionSystem;
-  private diffusionTimeAccumulator = 0;
-  private diffusionTimestep = 1/30; // 30 Hz diffusion rate
 
   // Heatmap visualization - Task 5
   private heatmapSystem!: HeatmapSystem;
@@ -122,23 +107,14 @@ export class GameScene extends Phaser.Scene {
   private carriedTranscripts: Transcript[] = []; // transcripts carried by player (max 1-2)
   private nextOrderId = 1;
   private nextTranscriptId = 1;
-  private isInProteinRequestMode = false; // Task 2: flag for protein selection menu
 
-  // Movement mechanics
-  private dashCooldown = 0;
-  private maxDashCooldown = 1.2;
-  private dashSpeed = 320;
-  private normalMaxSpeed = 120;
-  private acceleration = 600;
-  private isDashing = false;
-  private dashDuration = 0.25;
-  private dashTimer = 0;
+  // NOTE: Movement mechanics now handled by Player actor
+  // NOTE: Membrane physics now handled by Player actor
 
-  // Membrane physics
-  private membraneSpringForce = 400;
-  private cameraLerpSpeed = 0.08;
-  private cameraSmoothTarget = new Phaser.Math.Vector2(0, 0);
-  private lastMembraneHit = 0;
+  // Consolidated system architecture - NEW
+  private cellProduction!: CellProduction;
+  private cellTransport!: CellTransport;
+  private cellOverlays!: CellOverlays;
 
   private col = {
     bg: 0x0b0f14, gridMinor: 0x10141d, gridMajor: 0x182131,
@@ -167,12 +143,74 @@ export class GameScene extends Phaser.Scene {
     const cellKey = makeCellTexture(this, this.cellRadius * 2 + this.membraneThickness * 2, this.membraneThickness, this.col.cellFill, this.col.membrane);
     this.cellSprite = this.add.image(this.cellCenter.x, this.cellCenter.y, cellKey).setDepth(1);
 
-    // Player
-    const pkey = makeDotTexture(this, 16, this.col.player);
-    this.player = this.physics.add.sprite(this.cellCenter.x, this.cellCenter.y, pkey).setDepth(4);
-    this.player.setCircle(8).setMaxVelocity(this.normalMaxSpeed).setDamping(true).setDrag(0.7);
-    const rkey = makeRingTexture(this, 22, 3, this.col.playerRing);
-    this.ring = this.add.image(this.player.x, this.player.y, rkey).setDepth(3).setAlpha(0.9);
+    // Initialize hex grid FIRST (required by Player)
+    this.initializeHexGrid();
+    this.initializeHexGraphics();
+
+    // NEW: Create modular Player actor (after hex grid is initialized)
+    this.playerActor = new Player({
+      scene: this,
+      x: this.cellCenter.x,
+      y: this.cellCenter.y,
+      normalMaxSpeed: 120,
+      acceleration: 600,
+      dashSpeed: 320,
+      dashDuration: 0.25,
+      maxDashCooldown: 1.2,
+      playerColor: this.col.player,
+      ringColor: this.col.playerRing,
+      cellCenter: this.cellCenter,
+      cellRadius: this.cellRadius
+    }, this.hexGrid);
+
+    // Initialize all other systems...
+    this.initializeOrganelleSystem();
+    this.initializePlayerInventory();
+    this.initializeDebugInfo();
+    this.initializeHeatmapSystem();
+    this.initializePassiveEffectsSystem();
+    this.initializeDiffusionSystem();
+    this.initializeMembraneExchangeSystem();
+    this.initializeConservationTracker();
+
+    // NEW: After all systems initialized, create transcript systems and WorldRefs 
+    
+    // Create a temporary WorldRefs for system initialization (without transcript systems)
+    const baseWorldRefs = {
+      hexGrid: this.hexGrid,
+      playerInventory: this.playerInventory,
+      organelleSystem: this.organelleSystem,
+      organelleRenderer: this.organelleRenderer,
+      blueprintSystem: this.blueprintSystem,
+      membraneExchangeSystem: this.membraneExchangeSystem,
+      diffusionSystem: this.diffusionSystem,
+      passiveEffectsSystem: this.passiveEffectsSystem,
+      heatmapSystem: this.heatmapSystem,
+      conservationTracker: this.conservationTracker,
+      installOrders: this.installOrders,
+      transcripts: this.transcripts,
+      carriedTranscripts: this.carriedTranscripts,
+      nextOrderId: this.nextOrderId,
+      nextTranscriptId: this.nextTranscriptId,
+      showToast: (message: string) => this.showToast(message),
+      refreshTileInfo: () => this.updateTileInfoPanel()
+    };
+
+    // Now create complete WorldRefs with all systems (old individual systems removed)
+    const worldRefs: WorldRefs = {
+      ...baseWorldRefs
+    };
+
+    // Create modular controllers and systems
+    this.tileActionController = new TileActionController({
+      scene: this,
+      worldRefs
+    });
+
+    // Initialize consolidated systems - NEW ARCHITECTURE
+    this.cellProduction = new CellProduction(this, worldRefs);
+    this.cellTransport = new CellTransport(this, worldRefs);
+    this.cellOverlays = new CellOverlays(this, worldRefs);
 
     // Input keys
     this.keys = {
@@ -204,21 +242,18 @@ export class GameScene extends Phaser.Scene {
       X: this.input.keyboard!.addKey("X"),
       M: this.input.keyboard!.addKey("M"),
       F: this.input.keyboard!.addKey("F"),
+      Y: this.input.keyboard!.addKey("Y"),
     };
 
     // Initialize systems
     addHud(this);
-    this.initializeHexGrid();
-    this.initializeHexGraphics();
     this.initializeHexInteraction();
     this.initializeTileInfoPanel();
-    this.initializeDiffusionSystem();
     this.initializeHeatmapSystem();
     this.initializePassiveEffectsSystem();
     this.initializeConservationTracker();
     this.initializeOrganelleSystem();
     this.initializePlayerInventory();
-    this.initializeMembraneExchangeSystem();
     this.initializeBlueprintSystem(); // After membrane exchange system
     this.initializeDebugInfo();
     this.initializeTranscriptSystem(); // Milestone 7 Task 1
@@ -268,6 +303,13 @@ export class GameScene extends Phaser.Scene {
         this.updateProteinGlyphs();
       }
     });
+
+    // Setup shutdown handler for consolidated systems
+    this.events.once('shutdown', () => {
+      this.cellProduction?.destroy();
+      this.cellTransport?.destroy();
+      this.cellOverlays?.destroy();
+    });
   }
 
   override update() {
@@ -302,33 +344,44 @@ export class GameScene extends Phaser.Scene {
       this.conservationTracker.togglePause();
       this.updateConservationPanel();
     }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.Y)) {
+      // System status debug - show consolidated system info
+      this.printSystemStatus();
+    }
 
     // Debug species controls - Task 4
     this.handleDebugControls();
 
-    // Blueprint system input handling - Milestone 5
-    this.handleBlueprintInput();
+    // NEW: Modular input handling through tile action controller
+    // (Handles build mode, protein requests, etc.)
+    this.tileActionController.handleInput(this.keys, this.currentTileRef);
+    
+    // CRITICAL: Restore essential build system functionality that was lost
+    this.handleEssentialBuildInput();
 
-    // Milestone 6: Membrane protein interaction handling - Task 7
-    this.handleMembraneProteinInput();
-
-    // Milestone 7 Task 6: Transcript pickup/carry mechanics
+    // Milestone 7 Task 6: Transcript pickup/carry mechanics (still manual for now)
     this.handleTranscriptInput();
 
     // Update hex interaction
     this.updateHexInteraction();
 
-    // Core movement system
+    // NEW: MODULAR UPDATE SYSTEM
     const deltaSeconds = this.game.loop.delta / 1000;
-    this.updateMovement(deltaSeconds);
+    
+    // Use modular player actor for movement
+    this.playerActor.update(deltaSeconds, this.keys);
     
     // Milestone 6 Task 1: Update current tile tracking
     this.updateCurrentTile();
     
-    // Update diffusion system - Task 3 (only if not paused)
+    // Use modular tile action controller for input handling
+    this.tileActionController.handleInput(this.keys, this.currentTileRef);
+    
+    // NOTE: Consolidated systems (CellProduction, CellTransport, CellOverlays) 
+    // are now automatically updated by Phaser's lifecycle via SystemObject
+    
+    // Manual updates for systems not yet consolidated:
     if (!this.conservationTracker.isPausedState()) {
-      this.updateDiffusion(deltaSeconds);
-      
       // Update blueprint construction - Milestone 5
       this.blueprintSystem.processConstruction(this.game.loop.delta);
     }
@@ -339,8 +392,7 @@ export class GameScene extends Phaser.Scene {
     // Update blueprint rendering - Milestone 5 Task 5
     this.blueprintRenderer.render();
     
-    // Milestone 7 Task 7: Render transcript dots
-    this.renderTranscripts();
+    // NOTE: Transcript rendering now handled by CellProduction system
     
     // Update build palette position to maintain fixed screen location
     this.buildPalette.updatePosition();
@@ -351,83 +403,6 @@ export class GameScene extends Phaser.Scene {
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
     this.updateConservationPanel();
-    
-    // Milestone 7 Task 3: Process nucleus transcription
-    if (!this.conservationTracker.isPausedState()) {
-      this.updateNucleusTranscription(deltaSeconds);
-      // Task 4: Update transcript TTL and decay
-      this.updateTranscriptDecay(deltaSeconds);
-      // Task 5: Route transcripts toward ER
-      this.updateTranscriptRouting(deltaSeconds);
-    }
-  }
-
-  private updateMovement(deltaSeconds: number) {
-    // Update dash timers
-    if (this.dashTimer > 0) {
-      this.dashTimer -= deltaSeconds;
-      if (this.dashTimer <= 0) {
-        this.isDashing = false;
-        this.player.setMaxVelocity(this.normalMaxSpeed);
-        this.ring.setScale(1).setAlpha(0.9);
-      }
-    }
-
-    if (this.dashCooldown > 0) {
-      this.dashCooldown -= deltaSeconds;
-    }
-
-    let vx = 0, vy = 0;
-    
-    // Handle dash input
-    if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) && this.dashCooldown <= 0 && !this.isDashing) {
-      this.startDash();
-    }
-
-    // Get input direction
-    vx = (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0);
-    vy = (this.keys.S.isDown ? 1 : 0) - (this.keys.W.isDown ? 1 : 0);
-
-    const inputDir = new Phaser.Math.Vector2(vx, vy);
-    const elasticForce = this.calculateElasticForces();
-    
-    if (inputDir.lengthSq() > 0) {
-      inputDir.normalize();
-      
-      let baseAcceleration = this.acceleration;
-      
-      if (this.isDashing) {
-        baseAcceleration *= 2.5;
-      } else {
-        const currentSpeed = this.player.body.velocity.length();
-        const speedRatio = currentSpeed / this.normalMaxSpeed;
-        baseAcceleration *= (1 - speedRatio * 0.3);
-      }
-      
-      const inputForce = inputDir.scale(baseAcceleration);
-      const totalForce = inputForce.add(elasticForce);
-      this.player.setAcceleration(totalForce.x, totalForce.y);
-    } else {
-      const currentVel = this.player.body.velocity;
-      const deceleration = 600;
-      
-      let totalForce = elasticForce.clone();
-      
-      if (currentVel.lengthSq() > 0) {
-        const decelDir = currentVel.clone().normalize().scale(-deceleration);
-        totalForce.add(decelDir);
-        
-        if (currentVel.lengthSq() < 100) {
-          this.player.setVelocity(0, 0);
-          totalForce.set(0, 0);
-        }
-      }
-      
-      this.player.setAcceleration(totalForce.x, totalForce.y);
-    }
-
-    this.updateCameraSmoothing();
-    this.ring.setPosition(this.player.x, this.player.y);
   }
 
   /**
@@ -485,92 +460,6 @@ export class GameScene extends Phaser.Scene {
       this.toastText.setVisible(false);
     });
     this.toastText.setData('timer', timer);
-  }
-
-  private startDash() {
-    this.isDashing = true;
-    this.dashTimer = this.dashDuration;
-    this.dashCooldown = this.maxDashCooldown;
-    
-    this.player.setMaxVelocity(this.dashSpeed);
-    
-    // Visual feedback
-    this.ring.setScale(1.8).setAlpha(1).setTint(0xffdd44);
-    this.tweens.add({
-      targets: this.ring,
-      scale: 1,
-      alpha: 0.9,
-      duration: this.dashDuration * 1000,
-      ease: "Back.easeOut"
-    });
-    
-    this.time.delayedCall(this.dashDuration * 1000, () => {
-      this.ring.setTint(0xffffff);
-    });
-
-    this.cameras.main.shake(80, 0.008);
-    
-    const originalZoom = this.cameras.main.zoom;
-    this.cameras.main.setZoom(originalZoom * 1.05);
-    this.tweens.add({
-      targets: this.cameras.main,
-      zoom: originalZoom,
-      duration: this.dashDuration * 800,
-      ease: "Power2"
-    });
-  }
-
-  private calculateElasticForces(): Phaser.Math.Vector2 {
-    const force = new Phaser.Math.Vector2(0, 0);
-    const playerPos = new Phaser.Math.Vector2(this.player.x, this.player.y);
-    
-    const distanceFromCenter = Phaser.Math.Distance.BetweenPoints(playerPos, this.cellCenter);
-    const maxDistance = this.cellRadius - this.player.width / 2;
-    
-    if (distanceFromCenter > maxDistance) {
-      const penetration = distanceFromCenter - maxDistance;
-      const directionToCenter = new Phaser.Math.Vector2(
-        this.cellCenter.x - playerPos.x,
-        this.cellCenter.y - playerPos.y
-      ).normalize();
-      
-      const springForce = directionToCenter.scale(penetration * this.membraneSpringForce);
-      force.add(springForce);
-      
-      if (this.time.now - this.lastMembraneHit > 200) {
-        this.lastMembraneHit = this.time.now;
-        this.createMembraneRipple(playerPos);
-      }
-    }
-    
-    return force;
-  }
-
-  private createMembraneRipple(position: Phaser.Math.Vector2) {
-    const ripple = this.add.circle(position.x, position.y, 20, 0x66ccff, 0.3);
-    ripple.setDepth(2);
-    
-    this.tweens.add({
-      targets: ripple,
-      scaleX: 3,
-      scaleY: 3,
-      alpha: 0,
-      duration: 300,
-      ease: "Power2",
-      onComplete: () => ripple.destroy()
-    });
-  }
-
-  private updateCameraSmoothing() {
-    this.cameraSmoothTarget.set(this.player.x, this.player.y);
-    
-    const currentCenterX = this.cameras.main.scrollX + this.cameras.main.width / 2;
-    const currentCenterY = this.cameras.main.scrollY + this.cameras.main.height / 2;
-    
-    const newCenterX = Phaser.Math.Linear(currentCenterX, this.cameraSmoothTarget.x, this.cameraLerpSpeed);
-    const newCenterY = Phaser.Math.Linear(currentCenterY, this.cameraSmoothTarget.y, this.cameraLerpSpeed);
-    
-    this.cameras.main.centerOn(newCenterX, newCenterY);
   }
 
   // Hex Grid System
@@ -864,9 +753,18 @@ export class GameScene extends Phaser.Scene {
 
   private toggleHexGrid(): void {
     this.showHexGrid = !this.showHexGrid;
+    
+    // Toggle background grid texture
+    if (this.grid) {
+      this.grid.setVisible(this.showHexGrid);
+    }
+    
+    // Toggle hex line graphics
     if (this.hexGraphics) {
       this.hexGraphics.setVisible(this.showHexGrid);
     }
+    
+    // Toggle organelle renderer
     if (this.organelleRenderer) {
       this.organelleRenderer.setVisible(this.showHexGrid);
     }
@@ -1083,6 +981,7 @@ export class GameScene extends Phaser.Scene {
         
         // Check for installed membrane proteins (new system)
         const installedProtein = this.membraneExchangeSystem.getInstalledProtein(tile.coord);
+        
         if (installedProtein) {
           info.push(`🔬 Installed: ${installedProtein.label}`);
           
@@ -1212,82 +1111,6 @@ export class GameScene extends Phaser.Scene {
     
     console.log('Transcript system initialized');
   }
-
-  /**
-   * Milestone 7 Task 7: Render transcript dots
-   * Show transcripts as colored dots with TTL-based alpha
-   */
-  private renderTranscripts(): void {
-    this.transcriptGraphics.clear();
-    
-    // Protein type to color mapping
-    const proteinColors: Record<ProteinId, number> = {
-      'GLUT': 0xFFFF00,              // Yellow - glucose transporter
-      'AA_TRANSPORTER': 0x00FF00,    // Green - amino acid transporter  
-      'NT_TRANSPORTER': 0x0088FF,    // Blue - nucleotide transporter
-      'ROS_EXPORTER': 0xFF4444,      // Red - ROS exporter
-      'SECRETION_PUMP': 0xFF88FF,    // Magenta - secretion pump
-      'GROWTH_FACTOR_RECEPTOR': 0x888888 // Gray - growth factor receptor
-    };
-    
-    for (const transcript of this.transcripts.values()) {
-      // Skip carried transcripts (they'll be rendered near player)
-      if (transcript.isCarried) continue;
-      
-      const color = proteinColors[transcript.proteinId] || 0xFFFFFF;
-      
-      // Calculate alpha based on TTL (fade as it approaches expiration)
-      const maxTTL = 15; // seconds
-      const alphaFactor = Math.max(0.3, Math.min(1.0, transcript.ttlSeconds / maxTTL));
-      
-      // Draw transcript dot
-      this.transcriptGraphics.fillStyle(color, alphaFactor);
-      this.transcriptGraphics.fillCircle(
-        transcript.worldPos.x,
-        transcript.worldPos.y,
-        4 // radius
-      );
-      
-      // Add a subtle pulse effect for recently created transcripts
-      if (transcript.ttlSeconds > maxTTL * 0.8) {
-        const pulseScale = 1 + 0.3 * Math.sin(Date.now() * 0.01);
-        this.transcriptGraphics.fillStyle(color, 0.3);
-        this.transcriptGraphics.fillCircle(
-          transcript.worldPos.x,
-          transcript.worldPos.y,
-          4 * pulseScale
-        );
-      }
-    }
-    
-    // Render carried transcripts near player with a different visual
-    if (this.carriedTranscripts.length > 0) {
-      const playerX = this.player.x;
-      const playerY = this.player.y;
-      
-      for (let i = 0; i < this.carriedTranscripts.length; i++) {
-        const transcript = this.carriedTranscripts[i];
-        const color = proteinColors[transcript.proteinId] || 0xFFFFFF;
-        
-        // Position carried transcripts in a small orbit around player
-        const angle = (i / this.carriedTranscripts.length) * Math.PI * 2;
-        const orbitRadius = 12;
-        const x = playerX + Math.cos(angle) * orbitRadius;
-        const y = playerY + Math.sin(angle) * orbitRadius;
-        
-        // Update carried transcript world position for consistency
-        transcript.worldPos.set(x, y);
-        
-        // Draw with a distinct border to show it's carried
-        this.transcriptGraphics.lineStyle(1, 0xFFFFFF, 0.8);
-        this.transcriptGraphics.fillStyle(color, 0.9);
-        this.transcriptGraphics.fillCircle(x, y, 3);
-        this.transcriptGraphics.strokeCircle(x, y, 3);
-      }
-    }
-  }
-
-  // Conservation Tracking - Task 8
   
   private initializeConservationTracker(): void {
     this.conservationTracker = new ConservationTracker(this.hexGrid, this.passiveEffectsSystem);
@@ -1475,26 +1298,6 @@ export class GameScene extends Phaser.Scene {
     console.log('Membrane exchange system initialized');
   }
 
-  private updateDiffusion(deltaSeconds: number): void {
-    this.diffusionTimeAccumulator += deltaSeconds;
-    
-    // Run diffusion at fixed timestep
-    while (this.diffusionTimeAccumulator >= this.diffusionTimestep) {
-      // Apply passive effects before organelle processing
-      this.passiveEffectsSystem.step(this.diffusionTimestep);
-      
-      // Process organelles (consume/produce species)
-      this.organelleSystem.update(this.diffusionTimestep);
-      
-      // Milestone 6 Task 4: Apply membrane exchange after organelles
-      this.membraneExchangeSystem.processExchange(this.diffusionTimestep * 1000); // Convert to milliseconds
-      
-      // Then run diffusion
-      this.diffusionSystem.step();
-      this.diffusionTimeAccumulator -= this.diffusionTimestep;
-    }
-  }
-
   // Debug Controls - Task 4
   
   private handleDebugControls(): void {
@@ -1575,21 +1378,25 @@ export class GameScene extends Phaser.Scene {
 
   // Blueprint System Input Handling - Milestone 5
   
-  private handleBlueprintInput(): void {
-    // Toggle build palette with B key
+  /**
+   * Handle essential build input that was lost in modular refactor
+   */
+  private handleEssentialBuildInput(): void {
+    // Toggle build palette with B key for non-membrane tiles
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
-      // Milestone 7 Task 2: Check if standing on membrane tile for protein requests
+      // Check if standing on membrane tile for protein installation
       if (this.currentTileRef && this.hexGrid.isMembraneCoord(this.currentTileRef.coord)) {
-        this.handleProteinRequestMenu();
+        this.handleMembraneProteinRequest();
         return;
       }
       
       // Regular build palette for non-membrane tiles
       this.buildPalette.toggle();
       
-      // Milestone 6 Task 4: When opening build palette, filter based on current tile
+      // When opening build palette, filter based on current tile
       if (this.buildPalette.getIsVisible()) {
         this.updateBuildPaletteFilter();
+        this.isInBuildMode = true;
       }
       
       // Exit build mode when closing palette
@@ -1601,7 +1408,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Milestone 6 Task 2: X key to cancel blueprint (uses current tile)
+    // X key to cancel blueprint
     if (Phaser.Input.Keyboard.JustDown(this.keys.X)) {
       if (!this.currentTileRef) {
         this.showToast("Stand on a valid tile to cancel blueprints");
@@ -1621,7 +1428,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Milestone 6 Task 2: ENTER key to place blueprint (uses current tile)
+    // ENTER key to place blueprint
     if (Phaser.Input.Keyboard.JustDown(this.keys.ENTER)) {
       if (this.isInBuildMode && this.selectedRecipeId) {
         if (!this.currentTileRef) {
@@ -1651,44 +1458,35 @@ export class GameScene extends Phaser.Scene {
       }
     }
   }
-
-  private handleMembraneProteinInput(): void {
-    // Detect exactly which protein key was pressed (capture once!)
-    let pressed: 'ONE'|'TWO'|'THREE'|'FOUR'|'FIVE'|'SIX'|null = null;
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) pressed = 'ONE';
-    else if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) pressed = 'TWO';
-    else if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) pressed = 'THREE';
-    else if (Phaser.Input.Keyboard.JustDown(this.keys.FOUR)) pressed = 'FOUR';
-    else if (Phaser.Input.Keyboard.JustDown(this.keys.FIVE)) pressed = 'FIVE';
-    else if (Phaser.Input.Keyboard.JustDown(this.keys.SIX)) pressed = 'SIX';
-
-    if (!pressed) return;
-
-    // Milestone 7 Task 2: Handle protein requests instead of direct installation
-    if (this.isInProteinRequestMode) {
-      let proteinId: ProteinId | null = null;
-      switch (pressed) {
-        case 'ONE': proteinId = 'GLUT'; break;
-        case 'TWO': proteinId = 'AA_TRANSPORTER'; break;
-        case 'THREE': proteinId = 'NT_TRANSPORTER'; break;
-        case 'FOUR': proteinId = 'ROS_EXPORTER'; break;
-        case 'FIVE': proteinId = 'SECRETION_PUMP'; break;
-        case 'SIX': proteinId = 'GROWTH_FACTOR_RECEPTOR'; break;
-      }
-      
-      if (proteinId) {
-        this.handleProteinSelection(proteinId);
-      }
+  
+  /**
+   * Handle membrane protein request using the proper transcript workflow
+   */
+  private handleMembraneProteinRequest(): void {
+    if (!this.currentTileRef) return;
+    
+    const coord = this.currentTileRef.coord;
+    
+    // Check if this membrane tile has a built transporter or receptor
+    const organelle = this.organelleSystem.getOrganelleAtTile(coord);
+    const hasBuiltStructure = organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
+    
+    if (!hasBuiltStructure) {
+      this.showToast("No built transporter/receptor here. Build one first with ENTER key.");
       return;
     }
-
-    // Milestone 7 Task 10: Remove direct install paths - show message about new flow
-    this.showToast("Use B menu on membrane tiles to request proteins (new flow!)");
     
-    // The old direct installation code is now disabled for Milestone 7
-    console.log("🚫 Direct protein installation disabled - use request flow instead");
+    // Check if protein already installed
+    if (this.membraneExchangeSystem.hasInstalledProtein(coord)) {
+      const installedProtein = this.membraneExchangeSystem.getInstalledProtein(coord);
+      this.showToast(`${installedProtein?.label || 'Unknown protein'} already installed`);
+      return;
+    }
+    
+    // Activate protein request mode directly
+    this.tileActionController.activateProteinRequestMode();
   }
-
+  
   /**
    * Milestone 7 Task 6: Transcript pickup/carry mechanics
    * Handle R key for pickup/drop and Shift+R key for carry management
@@ -1824,9 +1622,8 @@ export class GameScene extends Phaser.Scene {
    * Get the hex coordinate of the tile the player is currently standing on
    */
   private getPlayerHexCoord(): { q: number; r: number } | null {
-    const coord = this.hexGrid.worldToHex(this.player.x, this.player.y);
-    // console.log(`DEBUG: Player world pos (${this.player.x.toFixed(1)}, ${this.player.y.toFixed(1)}) -> hex coord (${coord?.q}, ${coord?.r})`);
-    return coord;
+    // NEW: Use player actor for position
+    return this.playerActor.getHexCoord();
   }
 
   /**
@@ -1932,6 +1729,11 @@ export class GameScene extends Phaser.Scene {
       }
     }
     
+    // Check for manual vesicle installation on membrane tiles
+    if (this.tryManualVesicleInstallation(coord, currentSpecies)) {
+      return; // Installation handled
+    }
+    
     // Normal drop onto tile if no blueprint or contribution failed
     const result = this.playerInventory.dropOntoTile(this.hexGrid, coord, currentSpecies);
     
@@ -1942,6 +1744,48 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Try to manually install a vesicle on a membrane tile
+   * Returns true if installation was attempted (success or failure)
+   */
+  private tryManualVesicleInstallation(coord: HexCoord, speciesId: SpeciesId): boolean {
+    // Check if we're dropping on a membrane tile
+    if (!this.hexGrid.isMembraneCoord(coord)) {
+      return false; // Not a membrane tile
+    }
+
+    // Check if the species is a vesicle (contains protein)
+    if (!speciesId.startsWith('VESICLE_')) {
+      return false; // Not a vesicle
+    }
+
+    // Extract protein ID from vesicle ID (e.g., "VESICLE_GLUT1" -> "GLUT1")
+    const proteinId = speciesId.replace('VESICLE_', '');
+    
+    // Check if player has any of this vesicle
+    const available = this.playerInventory.getAmount(speciesId);
+    if (available <= 0) {
+      console.log(`No ${speciesId} in inventory to install`);
+      return true; // We handled it (even if failed)
+    }
+
+    // Try to install the protein
+    const installed = this.membraneExchangeSystem.installMembraneProtein(coord, proteinId);
+    
+    if (installed) {
+      // Consume one vesicle from inventory
+      const consumed = this.playerInventory.drop(speciesId, 1);
+      console.log(`Manually installed ${proteinId} protein from ${consumed} vesicle(s) at (${coord.q}, ${coord.r})`);
+      
+      // Refresh UI to show the newly installed protein
+      this.updateTileInfoPanel();
+    } else {
+      console.log(`Failed to install ${proteinId} protein at (${coord.q}, ${coord.r}) - tile may be occupied`);
+    }
+    
+    return true; // We handled the drop attempt
+  }
+
   private injectSpecies(speciesId: SpeciesId, amount: number): void {
     const playerCoord = this.getPlayerHexCoord();
     if (!playerCoord) return;
@@ -1950,130 +1794,6 @@ export class GameScene extends Phaser.Scene {
     console.log(`Injected ${amount} ${speciesId} into tile (${playerCoord.q}, ${playerCoord.r})`);
   }
 
-  // Milestone 7 Task 1: Helper methods for orders & transcripts
-
-  /**
-   * Milestone 7 Task 2: Handle protein request menu for membrane tiles
-   */
-  private handleProteinRequestMenu(): void {
-    if (!this.currentTileRef) return;
-    
-    // Check if organelle is already installed on this tile
-    const existingOrganelle = this.organelleSystem.getOrganelleAtTile(this.currentTileRef.coord);
-    if (!existingOrganelle || (existingOrganelle.type !== 'transporter' && existingOrganelle.type !== 'receptor')) {
-      this.showToast("Need to build a transporter or receptor first");
-      return;
-    }
-    
-    // Check if protein already installed
-    const existingProtein = this.membraneExchangeSystem.getInstalledProtein(this.currentTileRef.coord);
-    if (existingProtein) {
-      this.showToast("Protein already installed on this tile");
-      return;
-    }
-    
-    // Check if order already pending
-    const pendingOrders = this.getOrdersForHex(this.currentTileRef.coord);
-    if (pendingOrders.length > 0) {
-      this.showToast("Protein order already pending for this tile");
-      return;
-    }
-    
-    // Show protein selection toast
-    this.showToast("Choose protein: 1=GLUT 2=AA_TRANS 3=NT_TRANS 4=ROS_EXP 5=SECRETE 6=GROWTH", 5000);
-    
-    // Set flag to listen for number keys
-    this.isInProteinRequestMode = true;
-  }
-
-  /**
-   * Handle protein selection from numbered keys
-   */
-  private handleProteinSelection(proteinId: ProteinId): void {
-    if (!this.currentTileRef || !this.isInProteinRequestMode) return;
-    
-    // Create the order
-    const order = this.createInstallOrder(proteinId, this.currentTileRef.coord);
-    this.showToast(`Requested ${proteinId} for tile (${order.destHex.q}, ${order.destHex.r})`);
-    
-    // Exit protein request mode
-    this.isInProteinRequestMode = false;
-    
-    console.log(`🧬 Created protein order: ${proteinId} for tile (${order.destHex.q}, ${order.destHex.r})`);
-  }
-
-  /**
-   * Create a new install order
-   */
-  private createInstallOrder(proteinId: ProteinId, destHex: HexCoord): InstallOrder {
-    const order: InstallOrder = {
-      id: `order_${this.nextOrderId++}`,
-      proteinId,
-      destHex: { ...destHex },
-      createdAt: this.time.now
-    };
-    this.installOrders.set(order.id, order);
-    return order;
-  }
-
-  /**
-   * Remove an install order
-   */
-  private removeInstallOrder(orderId: string): boolean {
-    return this.installOrders.delete(orderId);
-  }
-
-  /**
-   * Get orders for a specific destination hex
-   */
-  private getOrdersForHex(hex: HexCoord): InstallOrder[] {
-    return Array.from(this.installOrders.values()).filter(
-      order => order.destHex.q === hex.q && order.destHex.r === hex.r
-    );
-  }
-
-  /**
-   * Check if there's already an order for a protein at a hex
-   */
-  private hasOrderForProteinAtHex(proteinId: ProteinId, hex: HexCoord): boolean {
-    return this.getOrdersForHex(hex).some(order => order.proteinId === proteinId);
-  }
-
-  /**
-   * Create a new transcript
-   */
-  private createTranscript(proteinId: ProteinId, atHex: HexCoord, ttlSeconds: number = 15, destHex?: HexCoord): Transcript {
-    const worldPos = this.hexGrid.hexToWorld(atHex);
-    const transcript: Transcript = {
-      id: `transcript_${this.nextTranscriptId++}`,
-      proteinId,
-      atHex: { ...atHex },
-      ttlSeconds,
-      worldPos: worldPos.clone(),
-      isCarried: false,
-      moveAccumulator: 0,
-      destHex: destHex ? { ...destHex } : undefined,
-      state: 'traveling',
-      processingTimer: 0
-    };
-    this.transcripts.set(transcript.id, transcript);
-    return transcript;
-  }
-
-  /**
-   * Remove a transcript
-   */
-  private removeTranscript(transcriptId: string): boolean {
-    const transcript = this.transcripts.get(transcriptId);
-    if (transcript?.isCarried) {
-      // Remove from carried array too
-      const index = this.carriedTranscripts.findIndex(t => t.id === transcriptId);
-      if (index >= 0) {
-        this.carriedTranscripts.splice(index, 1);
-      }
-    }
-    return this.transcripts.delete(transcriptId);
-  }
 
   /**
    * Get transcripts at a specific hex
@@ -2086,360 +1806,6 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
-  /**
-   * Move transcript to a new hex
-   */
-  private moveTranscript(transcriptId: string, newHex: HexCoord): boolean {
-    const transcript = this.transcripts.get(transcriptId);
-    if (!transcript || transcript.isCarried) return false;
-    
-    transcript.atHex = { ...newHex };
-    transcript.worldPos = this.hexGrid.hexToWorld(newHex).clone();
-    return true;
-  }
-
-  /**
-   * Milestone 7 Task 3: Nucleus transcription system
-   * Process pending install orders at nucleus organelles, consuming NT/ATP to produce transcripts
-   */
-  private updateNucleusTranscription(deltaSeconds: number): void {
-    // Find all nucleus organelles
-    const nucleusOrganelles = this.organelleSystem.getAllOrganelles()
-      .filter(org => org.type === 'nucleus' && org.isActive);
-    
-    if (nucleusOrganelles.length === 0 || this.installOrders.size === 0) return;
-    
-    // Production rates and costs
-    const TRANSCRIPTS_PER_SECOND = 0.5; // Maximum production rate per nucleus
-    const NT_COST_PER_TRANSCRIPT = 2;   // Nucleotides consumed per transcript
-    const ATP_COST_PER_TRANSCRIPT = 1;  // ATP consumed per transcript
-    const TRANSCRIPT_TTL = 15;          // Transcript lifespan in seconds
-    
-    // Process each nucleus
-    for (const nucleus of nucleusOrganelles) {
-      console.log(`🧬 Processing nucleus at (${nucleus.coord.q}, ${nucleus.coord.r})`);
-      
-      // Get footprint tiles for this nucleus using imported function
-      const footprintTiles = getFootprintTiles(
-        nucleus.config.footprint,
-        nucleus.coord.q,
-        nucleus.coord.r
-      );
-      
-      console.log(`🧬 Nucleus footprint has ${footprintTiles.length} tiles`);
-      
-      // Calculate production budget for this tick
-      const maxTranscriptsThisTick = TRANSCRIPTS_PER_SECOND * deltaSeconds;
-      let producedThisTick = 0;
-      
-      // Get oldest pending orders to prioritize them
-      const pendingOrders = Array.from(this.installOrders.values())
-        .sort((a, b) => a.createdAt - b.createdAt);
-      
-      console.log(`🧬 Processing ${pendingOrders.length} pending orders`);
-      
-      // Try to produce transcripts for orders
-      for (const order of pendingOrders) {
-        if (producedThisTick >= maxTranscriptsThisTick) break;
-        
-        // Check if we have enough resources across nucleus footprint
-        let totalNT = 0;
-        let totalATP = 0;
-        
-        for (const tileCoord of footprintTiles) {
-          const tile = this.hexGrid.getTile(tileCoord);
-          if (tile) {
-            totalNT += tile.concentrations['NT'] || 0;
-            totalATP += tile.concentrations['ATP'] || 0;
-          }
-        }
-        
-        console.log(`🧬 Available resources: NT=${totalNT.toFixed(1)}, ATP=${totalATP.toFixed(1)} (need NT=${NT_COST_PER_TRANSCRIPT}, ATP=${ATP_COST_PER_TRANSCRIPT})`);
-        
-        // Check if we have enough resources for this transcript
-        if (totalNT >= NT_COST_PER_TRANSCRIPT && totalATP >= ATP_COST_PER_TRANSCRIPT) {
-          // Consume resources from nucleus tiles
-          let ntToConsume = NT_COST_PER_TRANSCRIPT;
-          let atpToConsume = ATP_COST_PER_TRANSCRIPT;
-          
-          for (const tileCoord of footprintTiles) {
-            const tile = this.hexGrid.getTile(tileCoord);
-            if (!tile) continue;
-            
-            // Consume NT
-            if (ntToConsume > 0) {
-              const ntAvailable = tile.concentrations['NT'] || 0;
-              const ntTaken = Math.min(ntToConsume, ntAvailable);
-              tile.concentrations['NT'] = ntAvailable - ntTaken;
-              ntToConsume -= ntTaken;
-            }
-            
-            // Consume ATP
-            if (atpToConsume > 0) {
-              const atpAvailable = tile.concentrations['ATP'] || 0;
-              const atpTaken = Math.min(atpToConsume, atpAvailable);
-              tile.concentrations['ATP'] = atpAvailable - atpTaken;
-              atpToConsume -= atpTaken;
-            }
-            
-            if (ntToConsume <= 0 && atpToConsume <= 0) break;
-          }
-          
-          // Create transcript at nucleus center with destination info
-          this.createTranscript(order.proteinId, nucleus.coord, TRANSCRIPT_TTL, order.destHex);
-          
-          // Remove the completed order
-          this.removeInstallOrder(order.id);
-          
-          producedThisTick++;
-          
-          console.log(`🧬 ✅ Successfully produced ${order.proteinId} transcript!`);
-          
-          // Show toast for successful transcription
-          this.showToast(`Nucleus produced ${order.proteinId} transcript`);
-        } else {
-          console.log(`🧬 ❌ Insufficient resources for ${order.proteinId} transcript`);
-        }
-      }
-    }
-  }
-
-  /**
-   * Milestone 7 Task 4: Transcript TTL & decay system
-   * Decrease transcript TTL over time and remove expired transcripts
-   */
-  private updateTranscriptDecay(deltaSeconds: number): void {
-    const expiredTranscripts: string[] = [];
-    
-    // Update TTL for all transcripts
-    for (const [transcriptId, transcript] of this.transcripts.entries()) {
-      // Only decay if transcript is not being carried
-      if (!transcript.isCarried) {
-        transcript.ttlSeconds -= deltaSeconds;
-        
-        // Mark for removal if expired
-        if (transcript.ttlSeconds <= 0) {
-          expiredTranscripts.push(transcriptId);
-        }
-      }
-    }
-    
-    // Remove expired transcripts
-    for (const transcriptId of expiredTranscripts) {
-      const transcript = this.transcripts.get(transcriptId);
-      if (transcript) {
-        // Show warning for important expired transcripts
-        if (transcript.ttlSeconds <= -1) { // Only show once per transcript
-          this.showToast(`${transcript.proteinId} transcript expired!`);
-        }
-        
-        // Remove from carried list if player was carrying it
-        const carriedIndex = this.carriedTranscripts.findIndex(t => t.id === transcriptId);
-        if (carriedIndex >= 0) {
-          this.carriedTranscripts.splice(carriedIndex, 1);
-        }
-        
-        // Remove from transcripts map
-        this.transcripts.delete(transcriptId);
-      }
-    }
-  }
-
-  /**
-   * Milestone 7 Task 5: Enhanced transcript routing & processing system
-   * Handles multi-stage transcript lifecycle with realistic timing
-   */
-  private updateTranscriptRouting(deltaSeconds: number): void {
-    // Processing times for each stage
-    const ER_PROCESSING_TIME = 3.0;    // seconds to process at ER
-    const TRANSPORT_SPEED = 1.5;       // hexes per second for vesicle transport
-    const INSTALLATION_TIME = 2.0;     // seconds to install at membrane
-    
-    // Find all ER organelles (proto-er type)
-    const erOrganelles = this.organelleSystem.getAllOrganelles()
-      .filter(org => org.type === 'proto-er' && org.isActive);
-    
-    if (erOrganelles.length === 0) return; // No ER to route to
-    
-    const TRANSCRIPT_MOVE_SPEED = 0.5; // hexes per second for initial routing
-    
-    // Process each transcript based on its current state
-    for (const transcript of this.transcripts.values()) {
-      if (transcript.isCarried) continue; // Skip carried transcripts
-      
-      switch (transcript.state) {
-        case 'traveling':
-          this.processTranscriptTravel(transcript, erOrganelles, TRANSCRIPT_MOVE_SPEED, deltaSeconds);
-          break;
-          
-        case 'processing_at_er':
-          this.processTranscriptAtER(transcript, ER_PROCESSING_TIME, deltaSeconds);
-          break;
-          
-        case 'packaged_for_transport':
-          this.processVesicleTransport(transcript, TRANSPORT_SPEED, deltaSeconds);
-          break;
-          
-        case 'installing_at_membrane':
-          this.processMembraneInstallation(transcript, INSTALLATION_TIME, deltaSeconds);
-          break;
-      }
-    }
-  }
-
-  /**
-   * Handle transcript traveling to ER
-   */
-  private processTranscriptTravel(transcript: Transcript, erOrganelles: any[], moveSpeed: number, deltaSeconds: number): void {
-    // Find nearest ER organelle
-    let nearestER = null;
-    let shortestDistance = Infinity;
-    
-    for (const er of erOrganelles) {
-      const distance = this.calculateHexDistance(transcript.atHex, er.coord);
-      if (distance < shortestDistance) {
-        shortestDistance = distance;
-        nearestER = er;
-      }
-    }
-    
-    if (!nearestER) return;
-    
-    // Check if arrived at ER
-    if (shortestDistance <= 1) {
-      transcript.state = 'processing_at_er';
-      transcript.processingTimer = 0;
-      console.log(`� ${transcript.proteinId} transcript arrived at ER - starting processing`);
-      this.showToast(`${transcript.proteinId} being processed at ER...`);
-      return;
-    }
-    
-    // Move toward ER
-    const moveVector = this.calculateHexMovementVector(transcript.atHex, nearestER.coord);
-    if (!moveVector) return;
-    
-    const moveDistance = moveSpeed * deltaSeconds;
-    transcript.moveAccumulator += moveDistance;
-    
-    if (transcript.moveAccumulator >= 1.0) {
-      const targetHex = {
-        q: transcript.atHex.q + Math.sign(moveVector.q),
-        r: transcript.atHex.r + Math.sign(moveVector.r)
-      };
-      
-      const targetTile = this.hexGrid.getTile(targetHex);
-      if (targetTile) {
-        const occupyingTranscripts = this.getTranscriptsAtHex(targetHex);
-        if (occupyingTranscripts.length === 0) {
-          this.moveTranscript(transcript.id, targetHex);
-          transcript.moveAccumulator = 0;
-        }
-      }
-    }
-  }
-
-  /**
-   * Handle transcript processing at ER
-   */
-  private processTranscriptAtER(transcript: Transcript, processingTime: number, deltaSeconds: number): void {
-    transcript.processingTimer += deltaSeconds;
-    
-    if (transcript.processingTimer >= processingTime) {
-      transcript.state = 'packaged_for_transport';
-      transcript.processingTimer = 0;
-      transcript.moveAccumulator = 0;
-      console.log(`📦 ✅ ${transcript.proteinId} processing complete - packaging for transport`);
-      this.showToast(`${transcript.proteinId} packaged - transporting to membrane`);
-    }
-  }
-
-  /**
-   * Handle vesicle transport to destination membrane
-   */
-  private processVesicleTransport(transcript: Transcript, transportSpeed: number, deltaSeconds: number): void {
-    if (!transcript.destHex) {
-      // No specific destination - find nearest membrane
-      const membraneTiles = this.hexGrid.getMembraneTiles();
-      if (membraneTiles.length > 0) {
-        let nearest = membraneTiles[0].coord;
-        let shortestDistance = this.calculateHexDistance(transcript.atHex, nearest);
-        
-        for (const tile of membraneTiles) {
-          const distance = this.calculateHexDistance(transcript.atHex, tile.coord);
-          if (distance < shortestDistance) {
-            shortestDistance = distance;
-            nearest = tile.coord;
-          }
-        }
-        transcript.destHex = nearest;
-      }
-    }
-    
-    if (!transcript.destHex) return;
-    
-    const distance = this.calculateHexDistance(transcript.atHex, transcript.destHex);
-    
-    // Check if arrived at destination
-    if (distance <= 0) {
-      transcript.state = 'installing_at_membrane';
-      transcript.processingTimer = 0;
-      console.log(`� ${transcript.proteinId} vesicle arrived - starting membrane installation`);
-      this.showToast(`Installing ${transcript.proteinId} at membrane...`);
-      return;
-    }
-    
-    // Move toward destination
-    const moveVector = this.calculateHexMovementVector(transcript.atHex, transcript.destHex);
-    if (!moveVector) return;
-    
-    const moveDistance = transportSpeed * deltaSeconds;
-    transcript.moveAccumulator += moveDistance;
-    
-    if (transcript.moveAccumulator >= 1.0) {
-      const targetHex = {
-        q: transcript.atHex.q + Math.sign(moveVector.q),
-        r: transcript.atHex.r + Math.sign(moveVector.r)
-      };
-      
-      const targetTile = this.hexGrid.getTile(targetHex);
-      if (targetTile) {
-        this.moveTranscript(transcript.id, targetHex);
-        transcript.moveAccumulator = 0;
-      }
-    }
-  }
-
-  /**
-   * Handle final membrane installation
-   */
-  private processMembraneInstallation(transcript: Transcript, installationTime: number, deltaSeconds: number): void {
-    transcript.processingTimer += deltaSeconds;
-    
-    if (transcript.processingTimer >= installationTime) {
-      // Install the protein
-      if (transcript.destHex) {
-        const hasProtein = this.membraneExchangeSystem.hasInstalledProtein(transcript.destHex);
-        
-        if (!hasProtein) {
-          const success = this.membraneExchangeSystem.installMembraneProtein(transcript.destHex, transcript.proteinId);
-          
-          if (success) {
-            console.log(`� ✅ ${transcript.proteinId} successfully installed at membrane (${transcript.destHex.q}, ${transcript.destHex.r})`);
-            this.showToast(`${transcript.proteinId} protein activated!`);
-            
-            // Remove the transcript (installation complete)
-            this.removeTranscript(transcript.id);
-            
-            // Update membrane debug visualization
-            this.renderMembraneDebug();
-          }
-        } else {
-          console.log(`� ⚠️ Membrane already occupied - removing transcript`);
-          this.removeTranscript(transcript.id);
-        }
-      }
-    }
-  }
 
   /**
    * Calculate distance between two hex coordinates
@@ -2448,16 +1814,37 @@ export class GameScene extends Phaser.Scene {
     return (Math.abs(hex1.q - hex2.q) + Math.abs(hex1.q + hex1.r - hex2.q - hex2.r) + Math.abs(hex1.r - hex2.r)) / 2;
   }
 
+
   /**
-   * Calculate movement vector from one hex to another
+   * Debug command: Print status of consolidated systems
    */
-  private calculateHexMovementVector(from: HexCoord, to: HexCoord): {q: number, r: number} | null {
-    const dq = to.q - from.q;
-    const dr = to.r - from.r;
+  private printSystemStatus(): void {
+    console.log("=== CONSOLIDATED SYSTEMS STATUS ===");
     
-    if (dq === 0 && dr === 0) return null; // Already at target
+    // CellProduction metrics
+    const transcriptCount = this.transcripts.size;
+    const orderCount = this.installOrders.size;
+    console.log(`🔬 CellProduction: ${transcriptCount} transcripts, ${orderCount} pending orders`);
     
-    return { q: dq, r: dr };
+    // CellTransport metrics  
+    const organelleCount = this.organelleSystem.getAllOrganelles().length;
+    const activeOrganelles = this.organelleSystem.getAllOrganelles().filter(o => o.isActive).length;
+    console.log(`🚚 CellTransport: ${activeOrganelles}/${organelleCount} organelles active`);
+    
+    // Species tracking
+    const conservationData = this.conservationTracker.getAllConservationData();
+    console.log(`📊 Species counts:`);
+    for (const data of conservationData) {
+      if (data.totalAmount > 0.01) { // Only show species with meaningful amounts
+        const changeSign = data.changeRate >= 0 ? '+' : '';
+        console.log(`  ${data.speciesId}: ${data.totalAmount.toFixed(1)} (${changeSign}${data.changeRate.toFixed(2)}/s)`);
+      }
+    }
+    
+    // System architecture info
+    console.log(`🏗️ Architecture: SystemObject lifecycle active, manual updates eliminated`);
+    
+    this.showToast("System status logged to console (F12)");
   }
 
 }
