@@ -8,10 +8,16 @@ This is a **cellular simulation game prototype** built with **TypeScript** and *
 - **Organelle placement and metabolic processing**
 - **Construction/building system with blueprints**
 - **Player inventory and resource management**
-- **Membrane transport system**
+- **Membrane transport system with protein-mediated exchange**
+- **Signal transduction pathways (receptor-mediated)**
 - **Real-time visualization and interactive debugging**
 
 The codebase is organized into modular systems following milestone-based development with comprehensive type safety using TypeScript union types.
+
+**Technology Stack:**
+- **Core**: TypeScript 5.8.3, Phaser 3.90.0, Vite 7.1.0
+- **Utilities**: chroma-js (color manipulation), seedrandom (deterministic randomization), simplex-noise (procedural generation)
+- **State Management**: XState 5.20.2 (finite state machines)
 
 ---
 
@@ -28,9 +34,10 @@ The codebase is organized into modular systems following milestone-based develop
 
 **Key Files:**
 - **`species-registry.ts`**: Core species definitions with strict typing
-  - **Union Type**: `SpeciesId` (11 species: ATP, AA, NT, ROS, GLUCOSE, PRE_MRNA, PROTEIN, CARGO, LIPID, H2O, CO2)
+  - **Union Type**: `SpeciesId` (13 species: ATP, AA, NT, ROS, GLUCOSE, PRE_MRNA, PROTEIN, CARGO, LIPID, H2O, CO2, SIGNAL, LIGAND_GROWTH)
   - **Species Data**: Each species has diffusion coefficients, concentration limits, colors
   - **Helper Functions**: `getAllSpeciesIds()`, `createEmptyConcentrations()`, etc.
+  - **New Species**: SIGNAL (intracellular signaling), LIGAND_GROWTH (external growth factors)
 
 - **`diffusion-system.ts`**: Chemical diffusion between hex tiles
   - **Two-buffer system** prevents order bias in diffusion calculations
@@ -86,6 +93,10 @@ The codebase is organized into modular systems following milestone-based develop
   - **Processing Rates**: Species throughput per simulation tick
   - **Priority System**: Execution order for resource competition
   - **Biological Accuracy**: Nucleus (transcription), Ribosomes (translation), ER (protein processing)
+  - **Signal-Driven Bonuses**: New feature allowing organelles to respond to SIGNAL species
+    - **Nucleus Enhancement**: Increased pre-mRNA production when SIGNAL is present
+    - **Coefficient System**: Configurable multipliers for signal effects
+    - **Max Bonus Caps**: Prevents runaway production from signal feedback
 
 - **`organelle-system.ts`**: Main organelle processing engine
   - **Priority-based Processing**: Lower priority number = higher priority
@@ -158,7 +169,16 @@ The codebase is organized into modular systems following milestone-based develop
   - **Flux Calculations**: Import/export rates based on transporter properties
   - **Membrane Constraints**: Only membrane tiles can have transporters
   - **Transport Statistics**: Track total imports and exports
+  - **Receptor System**: Growth factor receptors that convert external ligands to internal signals
   - **Future Integration**: Hooks for secretory pathway (ER → Golgi → membrane)
+
+- **`membrane-protein-registry.ts`**: Membrane protein definitions and behaviors
+  - **Protein Types**: Transporters (directional flux) and Receptors (ligand detection)
+  - **Transporter Proteins**: 5 types (GLUT, AA_TRANSPORTER, NT_TRANSPORTER, ROS_EXPORTER, SECRETION_PUMP)
+  - **Receptor Proteins**: Growth Factor Receptor (LIGAND_GROWTH → SIGNAL conversion)
+  - **Transport Directions**: Bidirectional import/export capabilities
+  - **Rate Specifications**: Species-specific transport rates per simulation tick
+  - **Visual Integration**: Color coding for different protein types
 
 #### 7. **Graphics System** (`gfx/`)
 **Purpose**: Visual assets and rendering utilities
@@ -184,7 +204,7 @@ The codebase is organized into modular systems following milestone-based develop
 **Purpose**: Main game orchestration and state management
 
 **Key Files:**
-- **`game-scene.ts`**: Central game loop and system coordination (1300+ lines)
+- **`game-scene.ts`**: Central game loop and system coordination (1500+ lines)
   - **System Integration**: Coordinates all subsystems
   - **Input Handling**: Player movement, selection, building
   - **Camera Management**: Follow player with membrane constraints
@@ -192,6 +212,8 @@ The codebase is organized into modular systems following milestone-based develop
   - **Visual Management**: Hex grid, heatmaps, selection highlights
   - **Debug Features**: Extensive debugging tools and visualizations
   - **State Management**: Build mode, selection state, inventory display
+  - **Membrane Visualization**: Debug overlays for membrane tiles and transporters
+  - **Signal Transduction**: Integration of receptor-mediated signaling pathways
 
 ---
 
@@ -214,6 +236,9 @@ The codebase is organized into modular systems following milestone-based develop
 - **Diffusion Physics**: Species-specific molecular diffusion rates
 - **Conservation Laws**: Mass tracking and conservation validation
 - **Membrane Biology**: Selective permeability and active transport
+- **Signal Transduction**: Growth factor receptors converting external ligands to internal signals
+- **Transcriptional Regulation**: Signal-driven enhancement of gene expression
+- **Membrane Protein Diversity**: Multiple transporter types with directional specificity
 
 ### Debugging Infrastructure
 - **Conservation Tracking**: Monitor total species amounts for simulation validity
@@ -244,10 +269,17 @@ The codebase is organized into modular systems following milestone-based develop
 ### Resource Flow:
 ```
 External Environment → Membrane Transporters → Hex Tiles → Organelles → Products
-                                              ↑
-                                         Player Inventory
-                                              ↓
-                                        Construction Blueprints
+        ↓                      ↑                              ↑
+External Ligands → Receptors → SIGNAL → Enhanced Organelle Activity
+                              ↑
+                         Player Inventory
+                              ↓
+                        Construction Blueprints
+```
+
+### Signal Transduction Flow:
+```
+LIGAND_GROWTH (external) → Growth Factor Receptor → SIGNAL (internal) → Nucleus Transcription Boost → Enhanced PRE_MRNA Production
 ```
 
 ### Information Flow:
@@ -262,12 +294,15 @@ External Environment → Membrane Transporters → Hex Tiles → Organelles → 
 
 ## Current Milestone Status
 
-The project appears to be implementing **Milestone 6** features:
+The project appears to be implementing **Milestone 6** features with advanced signal transduction capabilities:
 - ✅ **Membrane detection system** (automatic boundary identification)
 - ✅ **Membrane exchange system** (external resource transport)
+- ✅ **Membrane protein registry** (transporters and receptors)
 - ✅ **Membrane-specific construction** (transporters, receptors, ports)
 - ✅ **Build constraints** (membrane-only vs cytosol-only structures)
-- 🔄 **Future integrations** (secretory pathway, protein trafficking)
+- ✅ **Signal transduction pathways** (receptor-mediated signaling)
+- ✅ **Signal-driven organelle enhancement** (transcriptional regulation)
+- 🔄 **Future integrations** (secretory pathway, protein trafficking, additional signaling pathways)
 
 Previous milestones fully implemented:
 - ✅ **M1**: Basic hex grid and movement
@@ -275,6 +310,12 @@ Previous milestones fully implemented:
 - ✅ **M3**: Organelle system and metabolic processing
 - ✅ **M4**: Player inventory and resource management
 - ✅ **M5**: Construction and blueprint system
+
+**Recent Enhancements:**
+- **Advanced Species System**: Added SIGNAL and LIGAND_GROWTH for cellular communication
+- **Membrane Protein Diversity**: 6 distinct membrane proteins with specialized functions
+- **Signal-Responsive Organelles**: Dynamic enhancement of organelle activity based on signal levels
+- **Enhanced Biological Realism**: Growth factor signaling mimics real cellular behavior
 
 ---
 

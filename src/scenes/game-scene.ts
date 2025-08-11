@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture, makeDotTexture, makeRingTexture } from "../gfx/textures";
-import { HexGrid, type HexCoord } from "../hex/hex-grid";
+import { HexGrid, type HexCoord, type HexTile } from "../hex/hex-grid";
 import { getAllSpecies, type SpeciesId } from "../species/species-registry";
 import { DiffusionSystem } from "../species/diffusion-system";
 import { HeatmapSystem } from "../species/heatmap-system";
@@ -83,6 +83,13 @@ export class GameScene extends Phaser.Scene {
   private blueprintRenderer!: BlueprintRenderer;
   private selectedRecipeId: OrganelleType | null = null;
   private isInBuildMode: boolean = false;
+
+  // Milestone 6: Current tile tracking - Task 1
+  private currentTileRef: HexTile | null = null;
+  private currentTileLabel!: Phaser.GameObjects.Text;
+
+  // Milestone 6: Toast system - Task 2
+  private toastText!: Phaser.GameObjects.Text;
 
   // Movement mechanics
   private dashCooldown = 0;
@@ -278,6 +285,9 @@ export class GameScene extends Phaser.Scene {
     const deltaSeconds = this.game.loop.delta / 1000;
     this.updateMovement(deltaSeconds);
     
+    // Milestone 6 Task 1: Update current tile tracking
+    this.updateCurrentTile();
+    
     // Update diffusion system - Task 3 (only if not paused)
     if (!this.conservationTracker.isPausedState()) {
       this.updateDiffusion(deltaSeconds);
@@ -369,6 +379,63 @@ export class GameScene extends Phaser.Scene {
 
     this.updateCameraSmoothing();
     this.ring.setPosition(this.player.x, this.player.y);
+  }
+
+  /**
+   * Milestone 6 Task 1: Update current tile tracking
+   * Store the player's current tile each frame and update the debug label
+   */
+  private updateCurrentTile(): void {
+    const newCurrentTile = this.getPlayerHex();
+    const previousTile = this.currentTileRef;
+    this.currentTileRef = newCurrentTile;
+
+    // Update debug label
+    if (newCurrentTile) {
+      this.currentTileLabel.setText(`Current Tile: (${newCurrentTile.coord.q}, ${newCurrentTile.coord.r})`);
+    } else {
+      this.currentTileLabel.setText("Current Tile: outside grid");
+    }
+
+    // Milestone 6 Task 4 & 7: Update build palette filter when tile changes and handle menu state
+    const tileChanged = (!previousTile && newCurrentTile) || 
+                       (previousTile && !newCurrentTile) ||
+                       (previousTile && newCurrentTile && 
+                        (previousTile.coord.q !== newCurrentTile.coord.q || 
+                         previousTile.coord.r !== newCurrentTile.coord.r));
+
+    if (tileChanged) {
+      // Update build palette filter if it's open
+      if (this.buildPalette && this.buildPalette.getIsVisible()) {
+        this.updateBuildPaletteFilter();
+      }
+
+      // Task 7: Close menu if player moves off tile while menu is open
+      if (!newCurrentTile && this.buildPalette && this.buildPalette.getIsVisible()) {
+        this.buildPalette.hide();
+        this.isInBuildMode = false;
+        this.selectedRecipeId = null;
+      }
+    }
+  }
+
+  /**
+   * Milestone 6 Task 2: Show a temporary toast message
+   */
+  private showToast(message: string, duration: number = 2000): void {
+    this.toastText.setText(message);
+    this.toastText.setVisible(true);
+    
+    // Clear any existing toast timer
+    if (this.toastText.getData('timer')) {
+      this.toastText.getData('timer').remove();
+    }
+    
+    // Set new timer to hide toast
+    const timer = this.time.delayedCall(duration, () => {
+      this.toastText.setVisible(false);
+    });
+    this.toastText.setData('timer', timer);
   }
 
   private startDash() {
@@ -789,10 +856,8 @@ export class GameScene extends Phaser.Scene {
     
     this.hoveredTile = tile || null;
     
-    // Milestone 6 Task 6: Update build palette based on hovered tile type
-    if (this.buildPalette && this.isInBuildMode) {
-      this.updateBuildPaletteFilter();
-    }
+    // Milestone 6 Task 3: Mouse hover only for info, not for actions
+    // Removed build palette filter update - that's now based on current tile only
   }
 
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
@@ -803,30 +868,10 @@ export class GameScene extends Phaser.Scene {
       const worldY = pointer.worldY;
       const tile = this.hexGrid.getTileAtWorld(worldX, worldY);
       
-      // Priority 1: Blueprint placement in build mode
-      if (this.isInBuildMode && this.selectedRecipeId && tile) {
-        const result = this.blueprintSystem.placeBlueprint(
-          this.selectedRecipeId,
-          tile.coord.q,
-          tile.coord.r
-        );
-
-        if (result.success) {
-          console.log(`Placed ${this.selectedRecipeId} blueprint at (${tile.coord.q}, ${tile.coord.r})`);
-          
-          // Exit build mode after successful placement
-          this.isInBuildMode = false;
-          this.selectedRecipeId = null;
-          this.buildPalette.hide();
-          // Reset palette to show all recipes
-          this.buildPalette.rebuildPalette('all');
-        } else {
-          console.warn(`Failed to place blueprint: ${result.error}`);
-        }
-        return; // Don't do normal tile selection
-      }
+      // Milestone 6 Task 3: Mouse click only for tile selection (info), not actions
+      // Remove blueprint placement - that's now handled by ENTER key on current tile
       
-      // Priority 2: Normal tile selection
+      // Normal tile selection for info/inspection
       this.selectedTile = tile || null;
       
       if (tile) {
@@ -842,33 +887,55 @@ export class GameScene extends Phaser.Scene {
     
     this.hexInteractionGraphics.clear();
     
-    // Blueprint preview in build mode
-    if (this.isInBuildMode && this.selectedRecipeId && this.hoveredTile) {
+    // Milestone 6 Task 4: Current tile highlight (soft ring or pulse)
+    if (this.currentTileRef) {
+      this.hexInteractionGraphics.fillStyle(0xffcc00, 0.15); // Soft yellow fill
+      this.hexInteractionGraphics.lineStyle(2, 0xffcc00, 0.6); // Yellow ring
+      this.drawHexagonHighlight(this.currentTileRef.worldPos.x, this.currentTileRef.worldPos.y, this.hexSize);
+    }
+    
+    // Blueprint preview in build mode (now uses current tile)
+    if (this.isInBuildMode && this.selectedRecipeId && this.currentTileRef) {
       this.renderBlueprintPreview();
     }
     
-    // Selected tile highlight (only if not in build mode)
+    // Selected tile highlight (only if not in build mode and different from current tile)
     if (this.selectedTile && !this.isInBuildMode) {
-      this.hexInteractionGraphics.fillStyle(0x66ffcc, 0.2);
-      this.hexInteractionGraphics.lineStyle(2, 0x66ffcc, 0.8);
-      this.drawHexagonHighlight(this.selectedTile.worldPos.x, this.selectedTile.worldPos.y, this.hexSize);
+      const isDifferentFromCurrent = !this.currentTileRef || 
+        (this.selectedTile.coord.q !== this.currentTileRef.coord.q || 
+         this.selectedTile.coord.r !== this.currentTileRef.coord.r);
+      
+      if (isDifferentFromCurrent) {
+        this.hexInteractionGraphics.fillStyle(0x66ffcc, 0.2);
+        this.hexInteractionGraphics.lineStyle(2, 0x66ffcc, 0.8);
+        this.drawHexagonHighlight(this.selectedTile.worldPos.x, this.selectedTile.worldPos.y, this.hexSize);
+      }
     }
     
-    // Hovered tile highlight (only if not in build mode)
-    if (this.hoveredTile && this.hoveredTile !== this.selectedTile && !this.isInBuildMode) {
-      this.hexInteractionGraphics.fillStyle(0x88ddff, 0.1);
-      this.hexInteractionGraphics.lineStyle(1, 0x88ddff, 0.5);
-      this.drawHexagonHighlight(this.hoveredTile.worldPos.x, this.hoveredTile.worldPos.y, this.hexSize);
+    // Hovered tile highlight (only if not in build mode and different from current and selected)
+    if (this.hoveredTile && !this.isInBuildMode) {
+      const isDifferentFromCurrent = !this.currentTileRef || 
+        (this.hoveredTile.coord.q !== this.currentTileRef.coord.q || 
+         this.hoveredTile.coord.r !== this.currentTileRef.coord.r);
+      const isDifferentFromSelected = !this.selectedTile ||
+        (this.hoveredTile.coord.q !== this.selectedTile.coord.q || 
+         this.hoveredTile.coord.r !== this.selectedTile.coord.r);
+      
+      if (isDifferentFromCurrent && isDifferentFromSelected) {
+        this.hexInteractionGraphics.fillStyle(0x88ddff, 0.1);
+        this.hexInteractionGraphics.lineStyle(1, 0x88ddff, 0.5);
+        this.drawHexagonHighlight(this.hoveredTile.worldPos.x, this.hoveredTile.worldPos.y, this.hexSize);
+      }
     }
   }
 
   private renderBlueprintPreview(): void {
-    if (!this.selectedRecipeId || !this.hoveredTile) return;
+    if (!this.selectedRecipeId || !this.currentTileRef) return;
     
     const validation = this.blueprintSystem.validatePlacement(
       this.selectedRecipeId,
-      this.hoveredTile.coord.q,
-      this.hoveredTile.coord.r
+      this.currentTileRef.coord.q,
+      this.currentTileRef.coord.r
     );
     
     // Use red for invalid, green for valid
@@ -1029,6 +1096,11 @@ export class GameScene extends Phaser.Scene {
   
   private initializeDebugInfo(): void {
     const debugText = [
+      "B - Build menu",
+      "ENTER - Confirm build",
+      "X - Cancel blueprint",
+      "Q/E - Scoop/Drop",
+      "1-6 - Install proteins",
       "DEBUG CONTROLS:",
       "G - Toggle hex grid",
       "H - Toggle heatmap",
@@ -1036,16 +1108,9 @@ export class GameScene extends Phaser.Scene {
       "P - Toggle passive effects",
       "T - Pause/show conservation",
       "M - Toggle membrane debug",
-      "B - Toggle build menu",
       "F - Instant construction",
-      "X - Cancel blueprint",
-      "Click tile to select",
-      "C - Clear selected tile",
-      "1 - Inject ATP",
-      "2 - Inject AA", 
-      "3 - Inject NT",
-      "4 - Inject ROS",
-      "5 - Inject GLUCOSE"
+      "Click tile to inspect",
+      "C - Clear selected tile"
     ].join('\n');
 
     this.debugInfoPanel = this.add.text(14, 600, debugText, {
@@ -1060,6 +1125,34 @@ export class GameScene extends Phaser.Scene {
     
     this.debugInfoPanel.setDepth(1001);
     this.debugInfoPanel.setScrollFactor(0);
+
+    // Milestone 6 Task 1: Initialize current tile label
+    this.currentTileLabel = this.add.text(14, 14, "Current Tile: none", {
+      fontFamily: "monospace",
+      fontSize: "12px",
+      color: "#ffcc00",
+      backgroundColor: "#000000",
+      padding: { x: 6, y: 4 },
+      stroke: "#444444",
+      strokeThickness: 1,
+    });
+    this.currentTileLabel.setDepth(1002);
+    this.currentTileLabel.setScrollFactor(0);
+
+    // Milestone 6 Task 2: Initialize toast system
+    this.toastText = this.add.text(this.scale.width / 2, 100, "", {
+      fontFamily: "monospace",
+      fontSize: "14px",
+      color: "#ffaa00",
+      backgroundColor: "#000000",
+      padding: { x: 8, y: 6 },
+      stroke: "#444444",
+      strokeThickness: 1,
+    });
+    this.toastText.setOrigin(0.5, 0.5);
+    this.toastText.setDepth(1003);
+    this.toastText.setScrollFactor(0);
+    this.toastText.setVisible(false);
   }
 
   // Conservation Tracking - Task 8
@@ -1176,7 +1269,8 @@ export class GameScene extends Phaser.Scene {
       blueprintStatus = ` | 🔨 Building: ${recipe?.label}`;
     }
     
-    const message = `${heatmapStatus}  |  ${inventoryStatus}${blueprintStatus}  |  Q: Scoop Current Species  |  E: Drop Current Species  |  B: Build Menu  |  X: Cancel Blueprint`;
+    // Milestone 6 Task 8: Updated control hints for current-tile interaction
+    const message = `${heatmapStatus}  |  ${inventoryStatus}${blueprintStatus}  |  B: Build (current tile)  |  ENTER: Confirm Build  |  X: Cancel (current tile)  |  Q/E: Scoop/Drop (current tile)`;
     
     setHud(this, { message });
   }
@@ -1340,6 +1434,11 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
       this.buildPalette.toggle();
       
+      // Milestone 6 Task 4: When opening build palette, filter based on current tile
+      if (this.buildPalette.getIsVisible()) {
+        this.updateBuildPaletteFilter();
+      }
+      
       // Exit build mode when closing palette
       if (!this.buildPalette.getIsVisible()) {
         this.isInBuildMode = false;
@@ -1349,17 +1448,52 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // X key to cancel blueprint
-    if (Phaser.Input.Keyboard.JustDown(this.keys.X) && this.hoveredTile) {
+    // Milestone 6 Task 2: X key to cancel blueprint (uses current tile)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.X)) {
+      if (!this.currentTileRef) {
+        this.showToast("Stand on a valid tile to cancel blueprints");
+        return;
+      }
+
       const blueprint = this.blueprintSystem.getBlueprintAtTile(
-        this.hoveredTile.coord.q,
-        this.hoveredTile.coord.r
+        this.currentTileRef.coord.q,
+        this.currentTileRef.coord.r
       );
 
       if (blueprint) {
         const success = this.blueprintSystem.cancelBlueprint(blueprint.id, 0.5);
         if (success) {
           console.log(`🗑️ Cancelled blueprint with 50% refund`);
+        }
+      }
+    }
+
+    // Milestone 6 Task 2: ENTER key to place blueprint (uses current tile)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ENTER)) {
+      if (this.isInBuildMode && this.selectedRecipeId) {
+        if (!this.currentTileRef) {
+          this.showToast("Stand on a valid tile to build");
+          return;
+        }
+
+        const result = this.blueprintSystem.placeBlueprint(
+          this.selectedRecipeId,
+          this.currentTileRef.coord.q,
+          this.currentTileRef.coord.r
+        );
+
+        if (result.success) {
+          console.log(`Placed ${this.selectedRecipeId} blueprint at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
+          
+          // Exit build mode after successful placement
+          this.isInBuildMode = false;
+          this.selectedRecipeId = null;
+          this.buildPalette.hide();
+          // Reset palette to show all recipes
+          this.buildPalette.rebuildPalette('all');
+        } else {
+          this.showToast(`Failed to place blueprint: ${result.error}`);
+          console.warn(`Failed to place blueprint: ${result.error}`);
         }
       }
     }
@@ -1379,40 +1513,52 @@ export class GameScene extends Phaser.Scene {
 
     console.log("🎯 PROTEIN KEY PRESSED - handleMembraneProteinInput() called");
 
-    const playerCoord = this.getPlayerHexCoord();
-    if (!playerCoord) return;
+    // Milestone 6 Task 2: Use current tile instead of mouse position
+    if (!this.currentTileRef) {
+      this.showToast("Stand on a valid tile to install proteins");
+      return;
+    }
 
-    const organelle = this.organelleSystem.getOrganelleAtTile(playerCoord);
+    const organelle = this.organelleSystem.getOrganelleAtTile(this.currentTileRef.coord);
     const isValidOrganelle = !!organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
-    if (!isValidOrganelle) return;
+    if (!isValidOrganelle) {
+      this.showToast("Stand on a transporter or receptor to install proteins");
+      return;
+    }
 
     // Now branch on the captured key (do NOT call JustDown again)
     try {
       let ok = false;
       switch (pressed) {
-        case 'ONE': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'GLUT'); break;
-        case 'TWO': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'AA_TRANSPORTER'); break;
-        case 'THREE': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'NT_TRANSPORTER'); break;
-        case 'FOUR': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'ROS_EXPORTER'); break;
-        case 'FIVE': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'SECRETION_PUMP'); break;
-        case 'SIX': ok = this.membraneExchangeSystem.installMembraneProtein(playerCoord, 'GROWTH_FACTOR_RECEPTOR'); break;
+        case 'ONE': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'GLUT'); break;
+        case 'TWO': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'AA_TRANSPORTER'); break;
+        case 'THREE': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'NT_TRANSPORTER'); break;
+        case 'FOUR': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'ROS_EXPORTER'); break;
+        case 'FIVE': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'SECRETION_PUMP'); break;
+        case 'SIX': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'GROWTH_FACTOR_RECEPTOR'); break;
       }
-      if (ok) this.updateProteinGlyphs();
+      if (ok) {
+        this.updateProteinGlyphs();
+      } else {
+        this.showToast("Failed to install protein");
+      }
     } catch (e) {
       console.error("❌ Error during membrane protein installation:", e);
+      this.showToast("Error installing protein");
     }
   }
 
   /**
-   * Milestone 6 Task 6: Update build palette filter based on hovered tile
+   * Milestone 6 Task 4: Update build palette filter based on current tile (where player stands)
+   * This determines which recipes are available in the build menu
    */
   private updateBuildPaletteFilter(): void {
-    if (!this.hoveredTile) {
+    if (!this.currentTileRef) {
       this.buildPalette.rebuildPalette('all');
       return;
     }
 
-    const isMembraneTile = this.hexGrid.isMembraneCoord(this.hoveredTile.coord);
+    const isMembraneTile = this.hexGrid.isMembraneCoord(this.currentTileRef.coord);
     const filter = isMembraneTile ? 'membrane' : 'cytosol';
     this.buildPalette.rebuildPalette(filter);
   }
@@ -1427,20 +1573,43 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Handle tile interaction controls for player logistics
+   * Milestone 6 Task 1: Get the player's current hex tile
+   * Converts player world coords → axial/hex and returns the tile (or null if outside the grid)
+   */
+  private getPlayerHex(): HexTile | null {
+    const coord = this.getPlayerHexCoord();
+    if (!coord) return null;
+    return this.hexGrid.getTile(coord) || null;
+  }
+
+  /**
+   * Milestone 6 Task 1: Get read-only access to current tile
+   */
+  public getCurrentTile(): HexTile | null {
+    return this.currentTileRef;
+  }
+
+  /**
+   * Milestone 6 Task 2: Handle tile interaction controls for player logistics
+   * Updated to use current tile reference
    */
   private handleTileInteractions(): void {
-    const playerCoord = this.getPlayerHexCoord();
-    if (!playerCoord) return;
+    // Milestone 6 Task 2: Use current tile instead of calculating coordinates
+    if (!this.currentTileRef) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys.Q) || Phaser.Input.Keyboard.JustDown(this.keys.E)) {
+        this.showToast("Stand on a valid tile to scoop/drop");
+      }
+      return;
+    }
 
     // Q key - Scoop current heatmap species from player's tile
     if (Phaser.Input.Keyboard.JustDown(this.keys.Q)) {
-      this.scoopCurrentSpecies(playerCoord);
+      this.scoopCurrentSpecies(this.currentTileRef.coord);
     }
 
     // E key - Drop current heatmap species onto player's tile  
     if (Phaser.Input.Keyboard.JustDown(this.keys.E)) {
-      this.dropCurrentSpecies(playerCoord);
+      this.dropCurrentSpecies(this.currentTileRef.coord);
     }
   }
 
