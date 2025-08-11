@@ -19,6 +19,30 @@ import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
 import { getAllMembraneProteins } from "../membrane/membrane-protein-registry";
+import { getFootprintTiles } from "../organelles/organelle-footprints";
+
+// Milestone 7 Task 1: Data types for orders & transcripts
+type ProteinId = 'GLUT' | 'AA_TRANSPORTER' | 'NT_TRANSPORTER' | 'ROS_EXPORTER' | 'SECRETION_PUMP' | 'GROWTH_FACTOR_RECEPTOR';
+
+interface InstallOrder {
+  id: string;
+  proteinId: ProteinId;
+  destHex: HexCoord;
+  createdAt: number; // timestamp for priority/aging
+}
+
+interface Transcript {
+  id: string;
+  proteinId: ProteinId;
+  atHex: HexCoord;
+  ttlSeconds: number;
+  worldPos: Phaser.Math.Vector2; // for smooth movement rendering
+  isCarried: boolean; // true if player is carrying it
+  moveAccumulator: number; // accumulated movement distance for discrete hex movement
+  destHex?: HexCoord; // original destination from install order
+  state: 'traveling' | 'processing_at_er' | 'packaged_for_transport' | 'installing_at_membrane';
+  processingTimer: number; // time remaining for current state
+}
 
 type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F", Phaser.Input.Keyboard.Key>;
 
@@ -90,6 +114,15 @@ export class GameScene extends Phaser.Scene {
 
   // Milestone 6: Toast system - Task 2
   private toastText!: Phaser.GameObjects.Text;
+
+  // Milestone 7: Orders & Transcripts system - Task 1
+  private installOrders: Map<string, InstallOrder> = new Map(); // keyed by order.id
+  private transcripts: Map<string, Transcript> = new Map(); // keyed by transcript.id
+  private transcriptGraphics!: Phaser.GameObjects.Graphics; // for rendering transcript dots
+  private carriedTranscripts: Transcript[] = []; // transcripts carried by player (max 1-2)
+  private nextOrderId = 1;
+  private nextTranscriptId = 1;
+  private isInProteinRequestMode = false; // Task 2: flag for protein selection menu
 
   // Movement mechanics
   private dashCooldown = 0;
@@ -188,6 +221,7 @@ export class GameScene extends Phaser.Scene {
     this.initializeMembraneExchangeSystem();
     this.initializeBlueprintSystem(); // After membrane exchange system
     this.initializeDebugInfo();
+    this.initializeTranscriptSystem(); // Milestone 7 Task 1
     
     // Initialize protein glyphs by rendering membrane debug
     this.renderMembraneDebug();
@@ -278,6 +312,9 @@ export class GameScene extends Phaser.Scene {
     // Milestone 6: Membrane protein interaction handling - Task 7
     this.handleMembraneProteinInput();
 
+    // Milestone 7 Task 6: Transcript pickup/carry mechanics
+    this.handleTranscriptInput();
+
     // Update hex interaction
     this.updateHexInteraction();
 
@@ -302,6 +339,9 @@ export class GameScene extends Phaser.Scene {
     // Update blueprint rendering - Milestone 5 Task 5
     this.blueprintRenderer.render();
     
+    // Milestone 7 Task 7: Render transcript dots
+    this.renderTranscripts();
+    
     // Update build palette position to maintain fixed screen location
     this.buildPalette.updatePosition();
     
@@ -311,6 +351,15 @@ export class GameScene extends Phaser.Scene {
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
     this.updateConservationPanel();
+    
+    // Milestone 7 Task 3: Process nucleus transcription
+    if (!this.conservationTracker.isPausedState()) {
+      this.updateNucleusTranscription(deltaSeconds);
+      // Task 4: Update transcript TTL and decay
+      this.updateTranscriptDecay(deltaSeconds);
+      // Task 5: Route transcripts toward ER
+      this.updateTranscriptRouting(deltaSeconds);
+    }
   }
 
   private updateMovement(deltaSeconds: number) {
@@ -1127,7 +1176,7 @@ export class GameScene extends Phaser.Scene {
     this.debugInfoPanel.setScrollFactor(0);
 
     // Milestone 6 Task 1: Initialize current tile label
-    this.currentTileLabel = this.add.text(14, 14, "Current Tile: none", {
+    this.currentTileLabel = this.add.text(600, 5, "Current Tile: none", {
       fontFamily: "monospace",
       fontSize: "12px",
       color: "#ffcc00",
@@ -1153,6 +1202,89 @@ export class GameScene extends Phaser.Scene {
     this.toastText.setDepth(1003);
     this.toastText.setScrollFactor(0);
     this.toastText.setVisible(false);
+  }
+
+  // Milestone 7 Task 1: Initialize transcript system
+  private initializeTranscriptSystem(): void {
+    // Graphics for rendering transcript dots
+    this.transcriptGraphics = this.add.graphics();
+    this.transcriptGraphics.setDepth(3.5); // Above organelles, below player
+    
+    console.log('Transcript system initialized');
+  }
+
+  /**
+   * Milestone 7 Task 7: Render transcript dots
+   * Show transcripts as colored dots with TTL-based alpha
+   */
+  private renderTranscripts(): void {
+    this.transcriptGraphics.clear();
+    
+    // Protein type to color mapping
+    const proteinColors: Record<ProteinId, number> = {
+      'GLUT': 0xFFFF00,              // Yellow - glucose transporter
+      'AA_TRANSPORTER': 0x00FF00,    // Green - amino acid transporter  
+      'NT_TRANSPORTER': 0x0088FF,    // Blue - nucleotide transporter
+      'ROS_EXPORTER': 0xFF4444,      // Red - ROS exporter
+      'SECRETION_PUMP': 0xFF88FF,    // Magenta - secretion pump
+      'GROWTH_FACTOR_RECEPTOR': 0x888888 // Gray - growth factor receptor
+    };
+    
+    for (const transcript of this.transcripts.values()) {
+      // Skip carried transcripts (they'll be rendered near player)
+      if (transcript.isCarried) continue;
+      
+      const color = proteinColors[transcript.proteinId] || 0xFFFFFF;
+      
+      // Calculate alpha based on TTL (fade as it approaches expiration)
+      const maxTTL = 15; // seconds
+      const alphaFactor = Math.max(0.3, Math.min(1.0, transcript.ttlSeconds / maxTTL));
+      
+      // Draw transcript dot
+      this.transcriptGraphics.fillStyle(color, alphaFactor);
+      this.transcriptGraphics.fillCircle(
+        transcript.worldPos.x,
+        transcript.worldPos.y,
+        4 // radius
+      );
+      
+      // Add a subtle pulse effect for recently created transcripts
+      if (transcript.ttlSeconds > maxTTL * 0.8) {
+        const pulseScale = 1 + 0.3 * Math.sin(Date.now() * 0.01);
+        this.transcriptGraphics.fillStyle(color, 0.3);
+        this.transcriptGraphics.fillCircle(
+          transcript.worldPos.x,
+          transcript.worldPos.y,
+          4 * pulseScale
+        );
+      }
+    }
+    
+    // Render carried transcripts near player with a different visual
+    if (this.carriedTranscripts.length > 0) {
+      const playerX = this.player.x;
+      const playerY = this.player.y;
+      
+      for (let i = 0; i < this.carriedTranscripts.length; i++) {
+        const transcript = this.carriedTranscripts[i];
+        const color = proteinColors[transcript.proteinId] || 0xFFFFFF;
+        
+        // Position carried transcripts in a small orbit around player
+        const angle = (i / this.carriedTranscripts.length) * Math.PI * 2;
+        const orbitRadius = 12;
+        const x = playerX + Math.cos(angle) * orbitRadius;
+        const y = playerY + Math.sin(angle) * orbitRadius;
+        
+        // Update carried transcript world position for consistency
+        transcript.worldPos.set(x, y);
+        
+        // Draw with a distinct border to show it's carried
+        this.transcriptGraphics.lineStyle(1, 0xFFFFFF, 0.8);
+        this.transcriptGraphics.fillStyle(color, 0.9);
+        this.transcriptGraphics.fillCircle(x, y, 3);
+        this.transcriptGraphics.strokeCircle(x, y, 3);
+      }
+    }
   }
 
   // Conservation Tracking - Task 8
@@ -1243,6 +1375,12 @@ export class GameScene extends Phaser.Scene {
       console.log(`🏗️ Organelle creation result: ${success}`);
       console.log(`✅ Spawned ${config.label} at (${coord.q}, ${coord.r})`);
       
+      // Force visual update to show the new organelle immediately
+      if (success && this.organelleRenderer) {
+        this.organelleRenderer.update();
+        console.log(`🎨 Organelle renderer updated after spawning ${config.label}`);
+      }
+      
       // Force an update of the tile info panel if this tile is selected
       if (this.selectedTile && this.selectedTile.coord.q === coord.q && this.selectedTile.coord.r === coord.r) {
         console.log(`🔄 Selected tile matches spawned organelle, updating info panel`);
@@ -1269,8 +1407,16 @@ export class GameScene extends Phaser.Scene {
       blueprintStatus = ` | 🔨 Building: ${recipe?.label}`;
     }
     
-    // Milestone 6 Task 8: Updated control hints for current-tile interaction
-    const message = `${heatmapStatus}  |  ${inventoryStatus}${blueprintStatus}  |  B: Build (current tile)  |  ENTER: Confirm Build  |  X: Cancel (current tile)  |  Q/E: Scoop/Drop (current tile)`;
+    // Milestone 7 Task 8: Transcript and order status
+    const carriedCount = this.carriedTranscripts.length;
+    const totalTranscripts = this.transcripts.size;
+    const pendingOrders = this.installOrders.size;
+    const transcriptStatus = `Transcripts: ${carriedCount}/2 carried, ${totalTranscripts} total | Orders: ${pendingOrders} pending`;
+    
+    // Milestone 6 Task 8: Updated control hints for current-tile interaction  
+    // Milestone 7: Added transcript controls
+    const controls = `B: Build/Request | ENTER: Confirm | X: Cancel | Q/E: Scoop/Drop | R: Pickup/Drop transcript | Shift+R: Drop all transcripts`;
+    const message = `${heatmapStatus} | ${inventoryStatus}${blueprintStatus} | ${transcriptStatus} | ${controls}`;
     
     setHud(this, { message });
   }
@@ -1432,6 +1578,13 @@ export class GameScene extends Phaser.Scene {
   private handleBlueprintInput(): void {
     // Toggle build palette with B key
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
+      // Milestone 7 Task 2: Check if standing on membrane tile for protein requests
+      if (this.currentTileRef && this.hexGrid.isMembraneCoord(this.currentTileRef.coord)) {
+        this.handleProteinRequestMenu();
+        return;
+      }
+      
+      // Regular build palette for non-membrane tiles
       this.buildPalette.toggle();
       
       // Milestone 6 Task 4: When opening build palette, filter based on current tile
@@ -1511,40 +1664,144 @@ export class GameScene extends Phaser.Scene {
 
     if (!pressed) return;
 
-    console.log("🎯 PROTEIN KEY PRESSED - handleMembraneProteinInput() called");
-
-    // Milestone 6 Task 2: Use current tile instead of mouse position
-    if (!this.currentTileRef) {
-      this.showToast("Stand on a valid tile to install proteins");
-      return;
-    }
-
-    const organelle = this.organelleSystem.getOrganelleAtTile(this.currentTileRef.coord);
-    const isValidOrganelle = !!organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
-    if (!isValidOrganelle) {
-      this.showToast("Stand on a transporter or receptor to install proteins");
-      return;
-    }
-
-    // Now branch on the captured key (do NOT call JustDown again)
-    try {
-      let ok = false;
+    // Milestone 7 Task 2: Handle protein requests instead of direct installation
+    if (this.isInProteinRequestMode) {
+      let proteinId: ProteinId | null = null;
       switch (pressed) {
-        case 'ONE': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'GLUT'); break;
-        case 'TWO': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'AA_TRANSPORTER'); break;
-        case 'THREE': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'NT_TRANSPORTER'); break;
-        case 'FOUR': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'ROS_EXPORTER'); break;
-        case 'FIVE': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'SECRETION_PUMP'); break;
-        case 'SIX': ok = this.membraneExchangeSystem.installMembraneProtein(this.currentTileRef.coord, 'GROWTH_FACTOR_RECEPTOR'); break;
+        case 'ONE': proteinId = 'GLUT'; break;
+        case 'TWO': proteinId = 'AA_TRANSPORTER'; break;
+        case 'THREE': proteinId = 'NT_TRANSPORTER'; break;
+        case 'FOUR': proteinId = 'ROS_EXPORTER'; break;
+        case 'FIVE': proteinId = 'SECRETION_PUMP'; break;
+        case 'SIX': proteinId = 'GROWTH_FACTOR_RECEPTOR'; break;
       }
-      if (ok) {
-        this.updateProteinGlyphs();
+      
+      if (proteinId) {
+        this.handleProteinSelection(proteinId);
+      }
+      return;
+    }
+
+    // Milestone 7 Task 10: Remove direct install paths - show message about new flow
+    this.showToast("Use B menu on membrane tiles to request proteins (new flow!)");
+    
+    // The old direct installation code is now disabled for Milestone 7
+    console.log("🚫 Direct protein installation disabled - use request flow instead");
+  }
+
+  /**
+   * Milestone 7 Task 6: Transcript pickup/carry mechanics
+   * Handle R key for pickup/drop and Shift+R key for carry management
+   */
+  private handleTranscriptInput(): void {
+    // R key: Pick up or drop transcript at current tile
+    if (Phaser.Input.Keyboard.JustDown(this.keys.R)) {
+      // Check if SHIFT is held for "drop all" functionality
+      const shiftHeld = this.input.keyboard?.checkDown(this.input.keyboard.addKey('SHIFT'), 0);
+      
+      if (shiftHeld) {
+        this.handleDropAllTranscripts();
       } else {
-        this.showToast("Failed to install protein");
+        this.handleTranscriptPickupDrop();
       }
-    } catch (e) {
-      console.error("❌ Error during membrane protein installation:", e);
-      this.showToast("Error installing protein");
+    }
+  }
+
+  /**
+   * Handle pickup/drop of transcript at current tile
+   */
+  private handleTranscriptPickupDrop(): void {
+    const playerHex = this.getPlayerHexCoord();
+    if (!playerHex) return;
+    
+    const CARRY_CAPACITY = 2; // Maximum transcripts player can carry
+    
+    // Check if player is carrying transcripts at this location - drop one if so
+    if (this.carriedTranscripts.length > 0) {
+      const transcriptToDrop = this.carriedTranscripts[0];
+      transcriptToDrop.isCarried = false;
+      transcriptToDrop.atHex = { ...playerHex };
+      transcriptToDrop.worldPos = this.hexGrid.hexToWorld(playerHex).clone();
+      
+      // Remove from carried list
+      this.carriedTranscripts.splice(0, 1);
+      
+      // Check if dropped at ER organelle - if so, process immediately
+      this.checkAndProcessTranscriptAtER(transcriptToDrop);
+      
+      this.showToast(`Dropped ${transcriptToDrop.proteinId} transcript`);
+      return;
+    }
+    
+    // Check if there are transcripts at current location to pick up
+    const transcriptsAtLocation = this.getTranscriptsAtHex(playerHex);
+    if (transcriptsAtLocation.length === 0) {
+      this.showToast("No transcripts here to pick up");
+      return;
+    }
+    
+    // Check carrying capacity
+    if (this.carriedTranscripts.length >= CARRY_CAPACITY) {
+      this.showToast(`Already carrying ${CARRY_CAPACITY} transcripts (max capacity)`);
+      return;
+    }
+    
+    // Pick up first available transcript
+    const transcriptToPickup = transcriptsAtLocation[0];
+    transcriptToPickup.isCarried = true;
+    this.carriedTranscripts.push(transcriptToPickup);
+    
+    this.showToast(`Picked up ${transcriptToPickup.proteinId} transcript`);
+  }
+
+  /**
+   * Drop all carried transcripts at current location
+   */
+  private handleDropAllTranscripts(): void {
+    if (this.carriedTranscripts.length === 0) {
+      this.showToast("Not carrying any transcripts");
+      return;
+    }
+    
+    const playerHex = this.getPlayerHexCoord();
+    if (!playerHex) return;
+    
+    const droppedCount = this.carriedTranscripts.length;
+    
+    // Drop all carried transcripts
+    for (const transcript of this.carriedTranscripts) {
+      transcript.isCarried = false;
+      transcript.atHex = { ...playerHex };
+      transcript.worldPos = this.hexGrid.hexToWorld(playerHex).clone();
+      
+      // Check if dropped at ER organelle - if so, process immediately
+      this.checkAndProcessTranscriptAtER(transcript);
+    }
+    
+    // Clear carried list
+    this.carriedTranscripts.length = 0;
+    
+    this.showToast(`Dropped ${droppedCount} transcript${droppedCount === 1 ? '' : 's'}`);
+  }
+
+  /**
+   * Check if transcript is at ER organelle and process if so
+   */
+  private checkAndProcessTranscriptAtER(transcript: Transcript): void {
+    // Find all ER organelles
+    const erOrganelles = this.organelleSystem.getAllOrganelles()
+      .filter(org => org.type === 'proto-er' && org.isActive);
+    
+    // Check if transcript is at any ER organelle
+    for (const er of erOrganelles) {
+      const distance = this.calculateHexDistance(transcript.atHex, er.coord);
+      if (distance <= 1) { // At or adjacent to ER
+        console.log(`🏭 Manually dropped transcript at ER - starting processing`);
+        transcript.state = 'processing_at_er';
+        transcript.processingTimer = 0;
+        this.showToast(`${transcript.proteinId} being processed at ER...`);
+        return;
+      }
     }
   }
 
@@ -1691,6 +1948,516 @@ export class GameScene extends Phaser.Scene {
     
     this.hexGrid.addConcentration(playerCoord, speciesId, amount);
     console.log(`Injected ${amount} ${speciesId} into tile (${playerCoord.q}, ${playerCoord.r})`);
+  }
+
+  // Milestone 7 Task 1: Helper methods for orders & transcripts
+
+  /**
+   * Milestone 7 Task 2: Handle protein request menu for membrane tiles
+   */
+  private handleProteinRequestMenu(): void {
+    if (!this.currentTileRef) return;
+    
+    // Check if organelle is already installed on this tile
+    const existingOrganelle = this.organelleSystem.getOrganelleAtTile(this.currentTileRef.coord);
+    if (!existingOrganelle || (existingOrganelle.type !== 'transporter' && existingOrganelle.type !== 'receptor')) {
+      this.showToast("Need to build a transporter or receptor first");
+      return;
+    }
+    
+    // Check if protein already installed
+    const existingProtein = this.membraneExchangeSystem.getInstalledProtein(this.currentTileRef.coord);
+    if (existingProtein) {
+      this.showToast("Protein already installed on this tile");
+      return;
+    }
+    
+    // Check if order already pending
+    const pendingOrders = this.getOrdersForHex(this.currentTileRef.coord);
+    if (pendingOrders.length > 0) {
+      this.showToast("Protein order already pending for this tile");
+      return;
+    }
+    
+    // Show protein selection toast
+    this.showToast("Choose protein: 1=GLUT 2=AA_TRANS 3=NT_TRANS 4=ROS_EXP 5=SECRETE 6=GROWTH", 5000);
+    
+    // Set flag to listen for number keys
+    this.isInProteinRequestMode = true;
+  }
+
+  /**
+   * Handle protein selection from numbered keys
+   */
+  private handleProteinSelection(proteinId: ProteinId): void {
+    if (!this.currentTileRef || !this.isInProteinRequestMode) return;
+    
+    // Create the order
+    const order = this.createInstallOrder(proteinId, this.currentTileRef.coord);
+    this.showToast(`Requested ${proteinId} for tile (${order.destHex.q}, ${order.destHex.r})`);
+    
+    // Exit protein request mode
+    this.isInProteinRequestMode = false;
+    
+    console.log(`🧬 Created protein order: ${proteinId} for tile (${order.destHex.q}, ${order.destHex.r})`);
+  }
+
+  /**
+   * Create a new install order
+   */
+  private createInstallOrder(proteinId: ProteinId, destHex: HexCoord): InstallOrder {
+    const order: InstallOrder = {
+      id: `order_${this.nextOrderId++}`,
+      proteinId,
+      destHex: { ...destHex },
+      createdAt: this.time.now
+    };
+    this.installOrders.set(order.id, order);
+    return order;
+  }
+
+  /**
+   * Remove an install order
+   */
+  private removeInstallOrder(orderId: string): boolean {
+    return this.installOrders.delete(orderId);
+  }
+
+  /**
+   * Get orders for a specific destination hex
+   */
+  private getOrdersForHex(hex: HexCoord): InstallOrder[] {
+    return Array.from(this.installOrders.values()).filter(
+      order => order.destHex.q === hex.q && order.destHex.r === hex.r
+    );
+  }
+
+  /**
+   * Check if there's already an order for a protein at a hex
+   */
+  private hasOrderForProteinAtHex(proteinId: ProteinId, hex: HexCoord): boolean {
+    return this.getOrdersForHex(hex).some(order => order.proteinId === proteinId);
+  }
+
+  /**
+   * Create a new transcript
+   */
+  private createTranscript(proteinId: ProteinId, atHex: HexCoord, ttlSeconds: number = 15, destHex?: HexCoord): Transcript {
+    const worldPos = this.hexGrid.hexToWorld(atHex);
+    const transcript: Transcript = {
+      id: `transcript_${this.nextTranscriptId++}`,
+      proteinId,
+      atHex: { ...atHex },
+      ttlSeconds,
+      worldPos: worldPos.clone(),
+      isCarried: false,
+      moveAccumulator: 0,
+      destHex: destHex ? { ...destHex } : undefined,
+      state: 'traveling',
+      processingTimer: 0
+    };
+    this.transcripts.set(transcript.id, transcript);
+    return transcript;
+  }
+
+  /**
+   * Remove a transcript
+   */
+  private removeTranscript(transcriptId: string): boolean {
+    const transcript = this.transcripts.get(transcriptId);
+    if (transcript?.isCarried) {
+      // Remove from carried array too
+      const index = this.carriedTranscripts.findIndex(t => t.id === transcriptId);
+      if (index >= 0) {
+        this.carriedTranscripts.splice(index, 1);
+      }
+    }
+    return this.transcripts.delete(transcriptId);
+  }
+
+  /**
+   * Get transcripts at a specific hex
+   */
+  private getTranscriptsAtHex(hex: HexCoord): Transcript[] {
+    return Array.from(this.transcripts.values()).filter(
+      transcript => !transcript.isCarried && 
+                   transcript.atHex.q === hex.q && 
+                   transcript.atHex.r === hex.r
+    );
+  }
+
+  /**
+   * Move transcript to a new hex
+   */
+  private moveTranscript(transcriptId: string, newHex: HexCoord): boolean {
+    const transcript = this.transcripts.get(transcriptId);
+    if (!transcript || transcript.isCarried) return false;
+    
+    transcript.atHex = { ...newHex };
+    transcript.worldPos = this.hexGrid.hexToWorld(newHex).clone();
+    return true;
+  }
+
+  /**
+   * Milestone 7 Task 3: Nucleus transcription system
+   * Process pending install orders at nucleus organelles, consuming NT/ATP to produce transcripts
+   */
+  private updateNucleusTranscription(deltaSeconds: number): void {
+    // Find all nucleus organelles
+    const nucleusOrganelles = this.organelleSystem.getAllOrganelles()
+      .filter(org => org.type === 'nucleus' && org.isActive);
+    
+    if (nucleusOrganelles.length === 0 || this.installOrders.size === 0) return;
+    
+    // Production rates and costs
+    const TRANSCRIPTS_PER_SECOND = 0.5; // Maximum production rate per nucleus
+    const NT_COST_PER_TRANSCRIPT = 2;   // Nucleotides consumed per transcript
+    const ATP_COST_PER_TRANSCRIPT = 1;  // ATP consumed per transcript
+    const TRANSCRIPT_TTL = 15;          // Transcript lifespan in seconds
+    
+    // Process each nucleus
+    for (const nucleus of nucleusOrganelles) {
+      console.log(`🧬 Processing nucleus at (${nucleus.coord.q}, ${nucleus.coord.r})`);
+      
+      // Get footprint tiles for this nucleus using imported function
+      const footprintTiles = getFootprintTiles(
+        nucleus.config.footprint,
+        nucleus.coord.q,
+        nucleus.coord.r
+      );
+      
+      console.log(`🧬 Nucleus footprint has ${footprintTiles.length} tiles`);
+      
+      // Calculate production budget for this tick
+      const maxTranscriptsThisTick = TRANSCRIPTS_PER_SECOND * deltaSeconds;
+      let producedThisTick = 0;
+      
+      // Get oldest pending orders to prioritize them
+      const pendingOrders = Array.from(this.installOrders.values())
+        .sort((a, b) => a.createdAt - b.createdAt);
+      
+      console.log(`🧬 Processing ${pendingOrders.length} pending orders`);
+      
+      // Try to produce transcripts for orders
+      for (const order of pendingOrders) {
+        if (producedThisTick >= maxTranscriptsThisTick) break;
+        
+        // Check if we have enough resources across nucleus footprint
+        let totalNT = 0;
+        let totalATP = 0;
+        
+        for (const tileCoord of footprintTiles) {
+          const tile = this.hexGrid.getTile(tileCoord);
+          if (tile) {
+            totalNT += tile.concentrations['NT'] || 0;
+            totalATP += tile.concentrations['ATP'] || 0;
+          }
+        }
+        
+        console.log(`🧬 Available resources: NT=${totalNT.toFixed(1)}, ATP=${totalATP.toFixed(1)} (need NT=${NT_COST_PER_TRANSCRIPT}, ATP=${ATP_COST_PER_TRANSCRIPT})`);
+        
+        // Check if we have enough resources for this transcript
+        if (totalNT >= NT_COST_PER_TRANSCRIPT && totalATP >= ATP_COST_PER_TRANSCRIPT) {
+          // Consume resources from nucleus tiles
+          let ntToConsume = NT_COST_PER_TRANSCRIPT;
+          let atpToConsume = ATP_COST_PER_TRANSCRIPT;
+          
+          for (const tileCoord of footprintTiles) {
+            const tile = this.hexGrid.getTile(tileCoord);
+            if (!tile) continue;
+            
+            // Consume NT
+            if (ntToConsume > 0) {
+              const ntAvailable = tile.concentrations['NT'] || 0;
+              const ntTaken = Math.min(ntToConsume, ntAvailable);
+              tile.concentrations['NT'] = ntAvailable - ntTaken;
+              ntToConsume -= ntTaken;
+            }
+            
+            // Consume ATP
+            if (atpToConsume > 0) {
+              const atpAvailable = tile.concentrations['ATP'] || 0;
+              const atpTaken = Math.min(atpToConsume, atpAvailable);
+              tile.concentrations['ATP'] = atpAvailable - atpTaken;
+              atpToConsume -= atpTaken;
+            }
+            
+            if (ntToConsume <= 0 && atpToConsume <= 0) break;
+          }
+          
+          // Create transcript at nucleus center with destination info
+          this.createTranscript(order.proteinId, nucleus.coord, TRANSCRIPT_TTL, order.destHex);
+          
+          // Remove the completed order
+          this.removeInstallOrder(order.id);
+          
+          producedThisTick++;
+          
+          console.log(`🧬 ✅ Successfully produced ${order.proteinId} transcript!`);
+          
+          // Show toast for successful transcription
+          this.showToast(`Nucleus produced ${order.proteinId} transcript`);
+        } else {
+          console.log(`🧬 ❌ Insufficient resources for ${order.proteinId} transcript`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Milestone 7 Task 4: Transcript TTL & decay system
+   * Decrease transcript TTL over time and remove expired transcripts
+   */
+  private updateTranscriptDecay(deltaSeconds: number): void {
+    const expiredTranscripts: string[] = [];
+    
+    // Update TTL for all transcripts
+    for (const [transcriptId, transcript] of this.transcripts.entries()) {
+      // Only decay if transcript is not being carried
+      if (!transcript.isCarried) {
+        transcript.ttlSeconds -= deltaSeconds;
+        
+        // Mark for removal if expired
+        if (transcript.ttlSeconds <= 0) {
+          expiredTranscripts.push(transcriptId);
+        }
+      }
+    }
+    
+    // Remove expired transcripts
+    for (const transcriptId of expiredTranscripts) {
+      const transcript = this.transcripts.get(transcriptId);
+      if (transcript) {
+        // Show warning for important expired transcripts
+        if (transcript.ttlSeconds <= -1) { // Only show once per transcript
+          this.showToast(`${transcript.proteinId} transcript expired!`);
+        }
+        
+        // Remove from carried list if player was carrying it
+        const carriedIndex = this.carriedTranscripts.findIndex(t => t.id === transcriptId);
+        if (carriedIndex >= 0) {
+          this.carriedTranscripts.splice(carriedIndex, 1);
+        }
+        
+        // Remove from transcripts map
+        this.transcripts.delete(transcriptId);
+      }
+    }
+  }
+
+  /**
+   * Milestone 7 Task 5: Enhanced transcript routing & processing system
+   * Handles multi-stage transcript lifecycle with realistic timing
+   */
+  private updateTranscriptRouting(deltaSeconds: number): void {
+    // Processing times for each stage
+    const ER_PROCESSING_TIME = 3.0;    // seconds to process at ER
+    const TRANSPORT_SPEED = 1.5;       // hexes per second for vesicle transport
+    const INSTALLATION_TIME = 2.0;     // seconds to install at membrane
+    
+    // Find all ER organelles (proto-er type)
+    const erOrganelles = this.organelleSystem.getAllOrganelles()
+      .filter(org => org.type === 'proto-er' && org.isActive);
+    
+    if (erOrganelles.length === 0) return; // No ER to route to
+    
+    const TRANSCRIPT_MOVE_SPEED = 0.5; // hexes per second for initial routing
+    
+    // Process each transcript based on its current state
+    for (const transcript of this.transcripts.values()) {
+      if (transcript.isCarried) continue; // Skip carried transcripts
+      
+      switch (transcript.state) {
+        case 'traveling':
+          this.processTranscriptTravel(transcript, erOrganelles, TRANSCRIPT_MOVE_SPEED, deltaSeconds);
+          break;
+          
+        case 'processing_at_er':
+          this.processTranscriptAtER(transcript, ER_PROCESSING_TIME, deltaSeconds);
+          break;
+          
+        case 'packaged_for_transport':
+          this.processVesicleTransport(transcript, TRANSPORT_SPEED, deltaSeconds);
+          break;
+          
+        case 'installing_at_membrane':
+          this.processMembraneInstallation(transcript, INSTALLATION_TIME, deltaSeconds);
+          break;
+      }
+    }
+  }
+
+  /**
+   * Handle transcript traveling to ER
+   */
+  private processTranscriptTravel(transcript: Transcript, erOrganelles: any[], moveSpeed: number, deltaSeconds: number): void {
+    // Find nearest ER organelle
+    let nearestER = null;
+    let shortestDistance = Infinity;
+    
+    for (const er of erOrganelles) {
+      const distance = this.calculateHexDistance(transcript.atHex, er.coord);
+      if (distance < shortestDistance) {
+        shortestDistance = distance;
+        nearestER = er;
+      }
+    }
+    
+    if (!nearestER) return;
+    
+    // Check if arrived at ER
+    if (shortestDistance <= 1) {
+      transcript.state = 'processing_at_er';
+      transcript.processingTimer = 0;
+      console.log(`� ${transcript.proteinId} transcript arrived at ER - starting processing`);
+      this.showToast(`${transcript.proteinId} being processed at ER...`);
+      return;
+    }
+    
+    // Move toward ER
+    const moveVector = this.calculateHexMovementVector(transcript.atHex, nearestER.coord);
+    if (!moveVector) return;
+    
+    const moveDistance = moveSpeed * deltaSeconds;
+    transcript.moveAccumulator += moveDistance;
+    
+    if (transcript.moveAccumulator >= 1.0) {
+      const targetHex = {
+        q: transcript.atHex.q + Math.sign(moveVector.q),
+        r: transcript.atHex.r + Math.sign(moveVector.r)
+      };
+      
+      const targetTile = this.hexGrid.getTile(targetHex);
+      if (targetTile) {
+        const occupyingTranscripts = this.getTranscriptsAtHex(targetHex);
+        if (occupyingTranscripts.length === 0) {
+          this.moveTranscript(transcript.id, targetHex);
+          transcript.moveAccumulator = 0;
+        }
+      }
+    }
+  }
+
+  /**
+   * Handle transcript processing at ER
+   */
+  private processTranscriptAtER(transcript: Transcript, processingTime: number, deltaSeconds: number): void {
+    transcript.processingTimer += deltaSeconds;
+    
+    if (transcript.processingTimer >= processingTime) {
+      transcript.state = 'packaged_for_transport';
+      transcript.processingTimer = 0;
+      transcript.moveAccumulator = 0;
+      console.log(`📦 ✅ ${transcript.proteinId} processing complete - packaging for transport`);
+      this.showToast(`${transcript.proteinId} packaged - transporting to membrane`);
+    }
+  }
+
+  /**
+   * Handle vesicle transport to destination membrane
+   */
+  private processVesicleTransport(transcript: Transcript, transportSpeed: number, deltaSeconds: number): void {
+    if (!transcript.destHex) {
+      // No specific destination - find nearest membrane
+      const membraneTiles = this.hexGrid.getMembraneTiles();
+      if (membraneTiles.length > 0) {
+        let nearest = membraneTiles[0].coord;
+        let shortestDistance = this.calculateHexDistance(transcript.atHex, nearest);
+        
+        for (const tile of membraneTiles) {
+          const distance = this.calculateHexDistance(transcript.atHex, tile.coord);
+          if (distance < shortestDistance) {
+            shortestDistance = distance;
+            nearest = tile.coord;
+          }
+        }
+        transcript.destHex = nearest;
+      }
+    }
+    
+    if (!transcript.destHex) return;
+    
+    const distance = this.calculateHexDistance(transcript.atHex, transcript.destHex);
+    
+    // Check if arrived at destination
+    if (distance <= 0) {
+      transcript.state = 'installing_at_membrane';
+      transcript.processingTimer = 0;
+      console.log(`� ${transcript.proteinId} vesicle arrived - starting membrane installation`);
+      this.showToast(`Installing ${transcript.proteinId} at membrane...`);
+      return;
+    }
+    
+    // Move toward destination
+    const moveVector = this.calculateHexMovementVector(transcript.atHex, transcript.destHex);
+    if (!moveVector) return;
+    
+    const moveDistance = transportSpeed * deltaSeconds;
+    transcript.moveAccumulator += moveDistance;
+    
+    if (transcript.moveAccumulator >= 1.0) {
+      const targetHex = {
+        q: transcript.atHex.q + Math.sign(moveVector.q),
+        r: transcript.atHex.r + Math.sign(moveVector.r)
+      };
+      
+      const targetTile = this.hexGrid.getTile(targetHex);
+      if (targetTile) {
+        this.moveTranscript(transcript.id, targetHex);
+        transcript.moveAccumulator = 0;
+      }
+    }
+  }
+
+  /**
+   * Handle final membrane installation
+   */
+  private processMembraneInstallation(transcript: Transcript, installationTime: number, deltaSeconds: number): void {
+    transcript.processingTimer += deltaSeconds;
+    
+    if (transcript.processingTimer >= installationTime) {
+      // Install the protein
+      if (transcript.destHex) {
+        const hasProtein = this.membraneExchangeSystem.hasInstalledProtein(transcript.destHex);
+        
+        if (!hasProtein) {
+          const success = this.membraneExchangeSystem.installMembraneProtein(transcript.destHex, transcript.proteinId);
+          
+          if (success) {
+            console.log(`� ✅ ${transcript.proteinId} successfully installed at membrane (${transcript.destHex.q}, ${transcript.destHex.r})`);
+            this.showToast(`${transcript.proteinId} protein activated!`);
+            
+            // Remove the transcript (installation complete)
+            this.removeTranscript(transcript.id);
+            
+            // Update membrane debug visualization
+            this.renderMembraneDebug();
+          }
+        } else {
+          console.log(`� ⚠️ Membrane already occupied - removing transcript`);
+          this.removeTranscript(transcript.id);
+        }
+      }
+    }
+  }
+
+  /**
+   * Calculate distance between two hex coordinates
+   */
+  private calculateHexDistance(hex1: HexCoord, hex2: HexCoord): number {
+    return (Math.abs(hex1.q - hex2.q) + Math.abs(hex1.q + hex1.r - hex2.q - hex2.r) + Math.abs(hex1.r - hex2.r)) / 2;
+  }
+
+  /**
+   * Calculate movement vector from one hex to another
+   */
+  private calculateHexMovementVector(from: HexCoord, to: HexCoord): {q: number, r: number} | null {
+    const dq = to.q - from.q;
+    const dr = to.r - from.r;
+    
+    if (dq === 0 && dr === 0) return null; // Already at target
+    
+    return { q: dq, r: dr };
   }
 
 }

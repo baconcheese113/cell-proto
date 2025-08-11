@@ -10,6 +10,8 @@ This is a **cellular simulation game prototype** built with **TypeScript** and *
 - **Player inventory and resource management**
 - **Membrane transport system with protein-mediated exchange**
 - **Signal transduction pathways (receptor-mediated)**
+- **Real-time protein production pipeline (orders → transcripts → installation)**
+- **Multi-stage biological timing system with realistic delays**
 - **Real-time visualization and interactive debugging**
 
 The codebase is organized into modular systems following milestone-based development with comprehensive type safety using TypeScript union types.
@@ -93,7 +95,7 @@ The codebase is organized into modular systems following milestone-based develop
   - **Processing Rates**: Species throughput per simulation tick
   - **Priority System**: Execution order for resource competition
   - **Biological Accuracy**: Nucleus (transcription), Ribosomes (translation), ER (protein processing)
-  - **Signal-Driven Bonuses**: New feature allowing organelles to respond to SIGNAL species
+  - **Signal-Driven Bonuses**: Organelles respond to SIGNAL species
     - **Nucleus Enhancement**: Increased pre-mRNA production when SIGNAL is present
     - **Coefficient System**: Configurable multipliers for signal effects
     - **Max Bonus Caps**: Prevents runaway production from signal feedback
@@ -104,12 +106,14 @@ The codebase is organized into modular systems following milestone-based develop
   - **Multi-hex Support**: Organelles spanning multiple tiles
   - **Throughput Tracking**: Real-time processing statistics
   - **Species Conservation**: Input consumption and output production
+  - **Dynamic Creation**: Support for blueprint completion spawning
 
 - **`organelle-renderer.ts`**: Visual representation system
   - **Multi-hex Rendering**: Complex organelle shapes
   - **Dynamic Colors**: Organelle-specific color coding
   - **Labels and Outlines**: Visual identification aids
   - **Depth Management**: Proper layering with other game elements
+  - **Immediate Updates**: Re-render when organelles are created/removed
 
 - **`organelle-selection.ts`**: Interactive selection system
   - **Hover Effects**: Visual feedback for mouse interaction
@@ -163,13 +167,14 @@ The codebase is organized into modular systems following milestone-based develop
 **Purpose**: Cell boundary transport and exchange with environment
 
 **Key Files:**
-- **`membrane-exchange-system.ts`**: External resource exchange
+- **`membrane-exchange-system.ts`**: External resource exchange and protein management
   - **Membrane Transporters**: Protein structures that import/export species
   - **External Concentrations**: Constant external environment (glucose, ROS, H2O, CO2)
   - **Flux Calculations**: Import/export rates based on transporter properties
   - **Membrane Constraints**: Only membrane tiles can have transporters
   - **Transport Statistics**: Track total imports and exports
   - **Receptor System**: Growth factor receptors that convert external ligands to internal signals
+  - **Protein Installation**: Dynamic membrane protein installation system
   - **Future Integration**: Hooks for secretory pathway (ER → Golgi → membrane)
 
 - **`membrane-protein-registry.ts`**: Membrane protein definitions and behaviors
@@ -199,30 +204,42 @@ The codebase is organized into modular systems following milestone-based develop
   - **Control Instructions**: Movement and interaction help
   - **Dynamic Messages**: Context-sensitive information
   - **Screen-space Rendering**: UI elements that don't scroll with camera
+  - **Transcript Status**: Display current orders and transcript counts
+  - **Protein Production Status**: Show active membrane protein requests
 
 #### 9. **Game Scene** (`scenes/`)
 **Purpose**: Main game orchestration and state management
 
 **Key Files:**
-- **`game-scene.ts`**: Central game loop and system coordination (1500+ lines)
+- **`game-scene.ts`**: Central game loop and system coordination (2400+ lines)
   - **System Integration**: Coordinates all subsystems
   - **Input Handling**: Player movement, selection, building
   - **Camera Management**: Follow player with membrane constraints
-  - **Update Loop**: Organelles → membrane exchange → diffusion
+  - **Update Loop**: Organelles → membrane exchange → diffusion → transcripts
   - **Visual Management**: Hex grid, heatmaps, selection highlights
   - **Debug Features**: Extensive debugging tools and visualizations
   - **State Management**: Build mode, selection state, inventory display
   - **Membrane Visualization**: Debug overlays for membrane tiles and transporters
   - **Signal Transduction**: Integration of receptor-mediated signaling pathways
+  - **Milestone 7 Features**: Complete orders & transcripts protein production system
+    - **Install Orders**: Protein installation request system
+    - **Transcript Lifecycle**: Multi-stage transcript processing with realistic timing
+    - **Nucleus Transcription**: Dynamic transcript creation based on orders
+    - **ER Processing**: Transcript packaging and preparation
+    - **Vesicle Transport**: Visual movement across the cell
+    - **Membrane Installation**: Final protein activation at membrane
+    - **Player Interaction**: Transcript pickup/carry mechanics
+    - **State Machine**: 'traveling' → 'processing_at_er' → 'packaged_for_transport' → 'installing_at_membrane'
 
 ---
 
 ## Key Technical Features
 
 ### Type Safety
-- **Comprehensive Union Types**: `SpeciesId`, `OrganelleType`, `FootprintName` replace generic strings
+- **Comprehensive Union Types**: `SpeciesId`, `OrganelleType`, `FootprintName`, `ProteinId` replace generic strings
 - **Record Types**: `Record<SpeciesId, number>` for concentrations, `Partial<Record<SpeciesId, number>>` for optional data
 - **Helper Functions**: Type-safe utilities like `createEmptyProgressRecord()`, `getSpeciesKeysFromPartialRecord()`
+- **Interface Evolution**: Rich interfaces for InstallOrder, Transcript with state machines
 - **No Type Casting**: Proper type design eliminates need for unsafe casts
 
 ### Performance Optimizations
@@ -230,8 +247,9 @@ The codebase is organized into modular systems following milestone-based develop
 - **Spatial Indexing**: Efficient hex coordinate mapping with string keys
 - **Selective Updates**: Only process active organelles and changed tiles
 - **Memory Management**: Cleanup zero-amount entries and unused structures
+- **Immediate Visual Updates**: Efficient organelle renderer updates on changes
 
-### Biological Accuracy
+### Biological Accuracy & Realism
 - **Realistic Metabolic Pathways**: Nucleus (DNA→mRNA), Ribosomes (mRNA+AA→Protein), ER (Protein→Cargo)
 - **Diffusion Physics**: Species-specific molecular diffusion rates
 - **Conservation Laws**: Mass tracking and conservation validation
@@ -239,18 +257,33 @@ The codebase is organized into modular systems following milestone-based develop
 - **Signal Transduction**: Growth factor receptors converting external ligands to internal signals
 - **Transcriptional Regulation**: Signal-driven enhancement of gene expression
 - **Membrane Protein Diversity**: Multiple transporter types with directional specificity
+- **Protein Production Pipeline**: Realistic multi-stage process from order to installation
+- **Biological Timing**: ER processing (3s), vesicle transport (1.5 hex/s), membrane integration (2s)
+- **Cellular Communication**: Orders → transcripts → processing → delivery lifecycle
+
+### Advanced State Management
+- **Multi-Stage Processing**: Transcript state machine with 4 distinct phases
+- **Real-Time Coordination**: Synchronization between nucleus transcription and membrane installation
+- **Dynamic Protein Installation**: Runtime membrane protein placement system
+- **Order-Driven Production**: Request-based protein manufacturing replacing instant placement
+- **Realistic Delays**: Biologically accurate timing for cellular processes
+- **Visual Movement**: Gradual transcript and vesicle movement across the cell
 
 ### Debugging Infrastructure
 - **Conservation Tracking**: Monitor total species amounts for simulation validity
 - **Visual Debugging**: Heatmaps, selection highlights, membrane visualization
 - **Info Panels**: Real-time organelle status and processing statistics
 - **Logging System**: Comprehensive console output for system events
+- **Transcript Tracking**: Monitor order fulfillment and production pipeline status
+- **Performance Monitoring**: Real-time throughput and processing metrics
 
 ### Modular Architecture
 - **System Separation**: Each major system is independently testable
 - **Clean Interfaces**: Well-defined APIs between systems
-- **Event Coordination**: Proper update order (organelles → membrane → diffusion)
+- **Event Coordination**: Proper update order (organelles → membrane → diffusion → transcripts)
 - **Plugin Architecture**: Easy to add new organelle types and species
+- **Rendering Separation**: Dedicated renderers for different visual elements
+- **Immediate Updates**: Automatic visual updates when data changes
 
 ---
 
@@ -260,11 +293,18 @@ The codebase is organized into modular systems following milestone-based develop
 1. **Input Processing**: Player movement, selection, building actions
 2. **Player Updates**: Movement physics, inventory management
 3. **Organelle Processing**: Resource consumption/production by priority
-4. **Membrane Exchange**: Import/export through transporters
+4. **Membrane Exchange**: Import/export through installed proteins
 5. **Diffusion Step**: Species movement between adjacent tiles (30 Hz)
 6. **Passive Effects**: Environmental changes (ATP decay, ROS buildup)
 7. **Construction Processing**: Blueprint progress and completion
-8. **Rendering**: Visual updates, heatmaps, UI
+8. **Transcript Processing**: Orders → transcription → routing → installation
+9. **Rendering**: Visual updates, heatmaps, UI, transcript movement
+
+### Protein Production Pipeline (Milestone 7):
+```
+Install Order → Nucleus Transcription → Transcript Created → Travels to ER →
+ER Processing (3s) → Vesicle Transport → Membrane Installation (2s) → Active Protein
+```
 
 ### Resource Flow:
 ```
@@ -282,11 +322,18 @@ External Ligands → Receptors → SIGNAL → Enhanced Organelle Activity
 LIGAND_GROWTH (external) → Growth Factor Receptor → SIGNAL (internal) → Nucleus Transcription Boost → Enhanced PRE_MRNA Production
 ```
 
+### Transcript State Flow:
+```
+'traveling' → 'processing_at_er' → 'packaged_for_transport' → 'installing_at_membrane' → Protein Active
+```
+
 ### Information Flow:
 - **Species Registry** → defines what exists
 - **Organelle Registry** → defines cellular machinery
 - **IO Profiles** → define metabolic transformations  
 - **Construction Recipes** → define building requirements
+- **Membrane Protein Registry** → defines installable proteins
+- **Install Orders** → drive protein production requests
 - **Hex Grid** → spatial container for everything
 - **Game Scene** → orchestrates all interactions
 
@@ -294,50 +341,87 @@ LIGAND_GROWTH (external) → Growth Factor Receptor → SIGNAL (internal) → Nu
 
 ## Current Milestone Status
 
-The project appears to be implementing **Milestone 6** features with advanced signal transduction capabilities:
-- ✅ **Membrane detection system** (automatic boundary identification)
-- ✅ **Membrane exchange system** (external resource transport)
-- ✅ **Membrane protein registry** (transporters and receptors)
-- ✅ **Membrane-specific construction** (transporters, receptors, ports)
-- ✅ **Build constraints** (membrane-only vs cytosol-only structures)
-- ✅ **Signal transduction pathways** (receptor-mediated signaling)
-- ✅ **Signal-driven organelle enhancement** (transcriptional regulation)
-- 🔄 **Future integrations** (secretory pathway, protein trafficking, additional signaling pathways)
+The project has **completed Milestone 7** with a sophisticated protein production pipeline and is positioned for advanced cellular features:
 
-Previous milestones fully implemented:
-- ✅ **M1**: Basic hex grid and movement
-- ✅ **M2**: Species diffusion and passive effects  
-- ✅ **M3**: Organelle system and metabolic processing
-- ✅ **M4**: Player inventory and resource management
-- ✅ **M5**: Construction and blueprint system
+### ✅ **Milestone 7: Orders & Transcripts (Protein Production Pipeline)**
+- **Install Order System**: Request-based protein production replacing instant placement
+- **Nucleus Transcription**: Dynamic transcript creation based on membrane protein orders
+- **Multi-Stage Processing**: Realistic transcript lifecycle with state machine
+  - `'traveling'`: Move from nucleus to ER
+  - `'processing_at_er'`: ER protein folding and packaging (3 seconds)
+  - `'packaged_for_transport'`: Vesicle transport across cell (1.5 hex/second)
+  - `'installing_at_membrane'`: Final protein integration (2 seconds)
+- **Player Interaction**: Transcript pickup, carry, and delivery mechanics
+- **Visual Movement**: Gradual transcript and vesicle movement across cellular space
+- **Biological Timing**: Realistic delays for ER processing, transport, and installation
+- **Order Fulfillment**: Complete protein request and delivery pipeline
+- **Enhanced User Experience**: Clean visual feedback and progress indication
 
-**Recent Enhancements:**
-- **Advanced Species System**: Added SIGNAL and LIGAND_GROWTH for cellular communication
-- **Membrane Protein Diversity**: 6 distinct membrane proteins with specialized functions
+### ✅ **Milestone 6: Membrane Transport & Signaling**
+- **Membrane detection system** (automatic boundary identification)
+- **Membrane exchange system** (external resource transport via installed proteins)
+- **Membrane protein registry** (transporters and receptors with specialized functions)
+- **Membrane-specific construction** (transporters, receptors, ports)
+- **Build constraints** (membrane-only vs cytosol-only structures)
+- **Signal transduction pathways** (receptor-mediated signaling)
+- **Signal-driven organelle enhancement** (transcriptional regulation)
+- **Dynamic protein installation** (runtime membrane protein placement)
+
+### ✅ **Previous Milestones (Fully Implemented)**
+- **M1**: Basic hex grid and movement
+- **M2**: Species diffusion and passive effects  
+- **M3**: Organelle system and metabolic processing
+- **M4**: Player inventory and resource management
+- **M5**: Construction and blueprint system
+
+### 🚀 **Ready for Future Milestones**
+- **M8**: Advanced organelle types (Golgi apparatus, mitochondria, lysosomes)
+- **M9**: Cell division and growth mechanics
+- **M10**: Multi-cellular interactions and tissue formation
+- **M11**: Genetic regulation and adaptation systems
+
+### **Recent Major Achievements**
+- **Complete Protein Production Pipeline**: Replaced instant protein placement with realistic biological process
+- **Advanced State Management**: Multi-stage transcript processing with proper timing
+- **Enhanced Biological Realism**: ER processing, vesicle transport, membrane integration delays
+- **Improved User Experience**: Visual movement, progress feedback, clean debugging output
+- **System Integration**: Seamless coordination between nucleus, ER, transport, and membrane systems
+- **Visual Updates Fix**: Immediate organelle rendering upon construction completion
 - **Signal-Responsive Organelles**: Dynamic enhancement of organelle activity based on signal levels
-- **Enhanced Biological Realism**: Growth factor signaling mimics real cellular behavior
+- **Membrane Protein Diversity**: 6 distinct membrane proteins with specialized functions
 
 ---
 
 ## Development Patterns
 
 ### Code Organization:
-- **Registry Pattern**: Central databases for species, organelles, recipes
+- **Registry Pattern**: Central databases for species, organelles, recipes, membrane proteins
 - **System Pattern**: Modular systems with clear responsibilities
 - **Type-First Design**: Union types guide valid operations
 - **Interface Segregation**: Small, focused interfaces
 - **Composition**: Systems composed together in game scene
+- **State Machine Pattern**: Multi-stage transcript processing with clear transitions
 
 ### Error Handling:
 - **Validation Functions**: Check preconditions before operations
 - **Graceful Degradation**: Continue simulation even with missing data
-- **Console Logging**: Extensive debugging information
+- **Console Logging**: Extensive debugging information with appropriate detail levels
 - **Type Safety**: Prevent errors at compile time
+- **State Consistency**: Ensure transcript states remain valid throughout lifecycle
 
 ### Performance Considerations:
 - **Map-based Lookups**: O(1) tile access by coordinate
 - **Efficient Algorithms**: Optimized diffusion and neighbor finding
 - **Memory Pooling**: Reuse objects where possible
 - **Selective Processing**: Only update what changed
+- **Immediate Updates**: Efficient rendering updates on state changes
+- **State Cleanup**: Proper transcript and order lifecycle management
 
-This codebase demonstrates sophisticated game architecture with biological simulation accuracy, comprehensive type safety, and modular design principles suitable for continued expansion and development.
+### Biological Accuracy:
+- **Multi-Stage Processing**: Realistic cellular protein production timeline
+- **Spatial Organization**: Proper nucleus → ER → membrane pathway
+- **Timing Accuracy**: Biologically plausible processing delays
+- **Resource Conservation**: Mass balance in all transformations
+- **Signal Integration**: Receptor-mediated enhancement of cellular processes
+
+This codebase demonstrates sophisticated game architecture with biological simulation accuracy, comprehensive type safety, realistic timing systems, and modular design principles suitable for continued expansion into advanced cellular biology features.
