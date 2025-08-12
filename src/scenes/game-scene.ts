@@ -33,7 +33,7 @@ import { SubstrateSystem } from "../core/substrate-system";
 import { CellMotility } from "../systems/cell-motility";
 import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -302,6 +302,7 @@ export class GameScene extends Phaser.Scene {
       U: this.input.keyboard!.addKey("U"), // Toggle queue badges
       O: this.input.keyboard!.addKey("O"), // Toggle vesicle debug
       K: this.input.keyboard!.addKey("K"), // Debug ATP injection
+      L: this.input.keyboard!.addKey("L"), // Launch motility course
     };
 
     // Initialize remaining UI systems
@@ -452,6 +453,11 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.K)) {
       this.playerInventory.take('ATP', 50);
       this.showToast("Added 50 ATP for dash testing");
+    }
+    
+    // MILESTONE 10: Launch motility course
+    if (Phaser.Input.Keyboard.JustDown(this.keys.L)) {
+      this.scene.start('MotilityCourse');
     }
 
     // Debug species controls - Task 4
@@ -1376,22 +1382,38 @@ export class GameScene extends Phaser.Scene {
     const pendingOrders = this.installOrders.size;
     const transcriptStatus = `Transcripts: ${carriedCount}/2 carried, ${totalTranscripts} total | Orders: ${pendingOrders} pending`;
     
-    // Milestone 6 Task 8: Updated control hints for current-tile interaction  
+    // Milestone 10: Updated control hints for motility modes
     // Milestone 7: Added transcript controls
-    const controls = `B: Build/Request | ENTER: Confirm | X: Cancel | Q/E: Scoop/Drop | R: Pickup/Drop transcript | Shift+R: Drop all transcripts`;
+    const controls = `B: Build/Request | ENTER: Confirm | X: Cancel/Protease | Q/E: Scoop/Drop | R: Pickup/Drop transcript | Z: Handbrake | TAB: Cycle Mode | L: Motility Course`;
     const message = `${heatmapStatus} | ${inventoryStatus}${blueprintStatus} | ${transcriptStatus} | ${controls}`;
     
-    // Milestone 9: Add motility information
+    // Milestone 10: Enhanced motility information with modes
     let motilityInfo = undefined;
     if (this.cellMotility) {
       const motilityState = this.cellMotility.getState();
+      const modeRegistry = this.cellMotility.getModeRegistry();
+      const currentMode = modeRegistry.getCurrentMode();
+      const modeState = modeRegistry.getState();
+      const substrateScalars = modeRegistry.getSubstrateScalars(motilityState.currentSubstrate);
+      
       motilityInfo = {
         speed: motilityState.speed,
         adhesionCount: motilityState.adhesion.count,
         atpDrain: motilityState.atpDrainPerSecond,
         mode: motilityState.mode,
         substrate: motilityState.currentSubstrate,
-        dashCooldown: motilityState.dashCooldownRemaining
+        currentMotilityMode: {
+          id: currentMode.id,
+          name: currentMode.name,
+          icon: currentMode.icon
+        },
+        modeState: {
+          blebCooldown: modeState.blebbing.cooldownRemaining / 1000, // Convert to seconds
+          adhesionMaturity: motilityState.adhesion.maturity,
+          proteaseActive: modeState.mesenchymal.proteaseActive,
+          handbrakeAvailable: modeState.amoeboid.handbrakeAvailable
+        },
+        substrateEffects: substrateScalars
       };
     }
     

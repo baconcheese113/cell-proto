@@ -15,8 +15,9 @@ This is a **cellular simulation game prototype** built with **TypeScript** and *
 - **Real-time visualization and interactive debugging**
 - **Consolidated SystemObject architecture with automatic Phaser lifecycle management**
 - **Milestone 9: Complete cell motility system with unified visual transform (cellRoot container)**
+- **Milestone 10: Advanced motility modes system (Amoeboid, Blebbing, Mesenchymal)**
 
-The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles. **Milestone 9** introduced unified cell movement where all visual elements move together as a single entity.
+The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles. **Milestone 9** introduced unified cell movement where all visual elements move together as a single entity. **Milestone 10** revolutionizes locomotion with three biologically-grounded motility modes, each optimized for different terrain types and movement strategies.
 
 **Technology Stack:**
 - **Core**: TypeScript 5.8.3, Phaser 3.90.0, Vite 7.1.0
@@ -105,9 +106,13 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 
 ---
 
-## Milestone 9: Cell Motility & Unified Visual Transform
+## Milestone 9-10: Cell Motility & Advanced Motility Modes System
 
-### **Revolutionary CellRoot Container System**
+**Revolutionary Achievement**: Complete reimplementation of cell locomotion into two major milestones:
+- **Milestone 9**: Unified cell movement with consolidated visual transforms
+- **Milestone 10**: Three biologically-grounded motility modes with substrate interactions
+
+### **Milestone 9: Revolutionary CellRoot Container System**
 
 **Purpose**: Unified visual transform system where all cell visual elements move together as a single entity
 
@@ -128,6 +133,58 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 - Queue badges and vesicle indicators
 - Membrane ripple effects
 
+### **Milestone 10: Advanced Motility Modes System**
+
+#### **Three Biologically-Grounded Movement Modes**
+
+**1. Amoeboid Mode** 🟢
+- **Biology**: Cytoplasmic streaming locomotion like real amoebas
+- **Mechanics**: High speed (75), moderate energy cost (0.15 ATP/s), best on soft substrates
+- **Optimization**: Membrane deformation allows navigation through tight spaces
+- **Best For**: Maze navigation, soft tissue environments
+
+**2. Blebbing Mode** 🔵
+- **Biology**: Pressure-driven membrane protrusions for rapid movement  
+- **Mechanics**: Fastest speed (90), highest energy cost (0.25 ATP/s), excels in low-adhesion environments
+- **Optimization**: Membrane pressure dynamics enable quick escapes
+- **Best For**: Open spaces, escaping threats, low-adhesion surfaces
+
+**3. Mesenchymal Mode** 🟣
+- **Biology**: Adhesion-mediated crawling with cytoskeletal reorganization
+- **Mechanics**: Slower speed (60), energy-efficient (0.1 ATP/s), optimal for structured substrates  
+- **Optimization**: Strong substrate adhesion provides precise navigation
+- **Best For**: Structured environments, energy conservation, precise movements
+
+#### **Substrate Interaction Matrix**
+```typescript
+SUBSTRATE_SCALARS = {
+    amoeboid:    { soft: 1.4, adhesive: 0.8, structured: 0.9 },
+    blebbing:    { soft: 1.1, adhesive: 1.3, structured: 0.7 },
+    mesenchymal: { soft: 0.9, adhesive: 1.2, structured: 1.4 }
+}
+```
+
+#### **Configuration Architecture**
+- **Single Source Configuration**: `motility-modes.config.ts` defines all parameters
+- **Mode Registry**: `MotilityModeRegistry` handles switching and state management
+- **Preset System**: Easy configuration switching for testing and balancing
+- **Runtime Switching**: Dynamic mode changes with smooth transitions
+
+#### **Enhanced User Interface**
+- **Real-time Mode Display**: Current mode indicator with color-coded styling
+- **Substrate Effects**: Live visualization of movement bonuses/penalties
+- **Energy Monitoring**: Per-mode ATP consumption tracking with efficiency metrics
+- **Performance Metrics**: Speed and substrate effectiveness indicators
+
+#### **Motility Test Course**
+- **Dedicated Test Environment**: Accessible via `M` key
+- **Three Specialized Zones**:
+  - **Soft Maze**: Narrow passages favoring amoeboid movement (yellow substrate)
+  - **Low-Adhesion Runway**: Open straightaway optimized for blebbing speed (cyan substrate)
+  - **ECM Chicanes**: Structured obstacles ideal for mesenchymal precision (magenta substrate)
+- **Performance Timing**: Lap time tracking for objective mode comparison
+- **Visual Feedback**: Clear zone boundaries and optimal path indicators
+
 ### **Core Locomotion Systems**
 
 #### **CellSpaceSystem** (`core/cell-space-system.ts`)
@@ -139,62 +196,71 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 - **Target System**: Separate target and current transforms for predictive movement
 - **World Integration**: Converts between cell-local and world coordinates
 
-#### **CellMotility System** (`systems/cell-motility.ts`)
-**Purpose**: Complete cell locomotion with polarity, adhesion, and substrate interaction
+#### **Enhanced CellMotility System** (`systems/cell-motility.ts`)
+**Purpose**: Complete three-mode locomotion with substrate interactions and energy management
 
-**Key Features:**
-- **Locomotion Modes**: idle, crawl, dash with distinct behaviors
+**Milestone 10 Enhancements:**
+- **Three Movement Modes**: Amoeboid, blebbing, mesenchymal with distinct physics
+- **Substrate Optimization**: Real-time movement modifier calculations
+- **Mode Registry Integration**: Centralized mode switching and state management
+- **Enhanced Energy System**: Mode-specific ATP consumption rates
+- **Performance Telemetry**: Comprehensive movement analytics
+
+**Legacy Features (Milestone 9):**
 - **Polarity System**: Direction and magnitude-based cell orientation
-- **Adhesion Dynamics**: Realistic adhesion point management (gain when moving, lose when idle)
-- **ATP Integration**: Energy costs for movement, dash, and adhesion maintenance
-- **Substrate Recognition**: SOFT, FIRM, STICKY substrates with different movement properties
 - **Collision System**: Obstacle detection with normal vectors and collision damping
 - **Membrane Deformation**: Visual squash effects during collisions
-- **Performance Tracking**: Speed, polarity, adhesion count, ATP drain metrics
 
-**Locomotion Parameters:**
-```typescript
-crawlMaxSpeed: 60 hex/second
-dashSpeed: 120 hex/second  
-dashDuration: 1.5 seconds
-dashCooldown: 3 seconds
-dashATPCost: 25 ATP
-adhesionEfficiency: 0.2 speed multiplier per adhesion
-```
+#### **Enhanced SubstrateSystem** (`core/substrate-system.ts`)
+**Purpose**: Environment management with three substrate types for mode optimization
 
-#### **SubstrateSystem** (`core/substrate-system.ts`) 
-**Purpose**: External environment and obstacle management for cell locomotion
+**Milestone 10 Enhancements:**
+- **Three Substrate Types**: SOFT, ADHESIVE, STRUCTURED with distinct properties
+- **Movement Modifier System**: Real-time substrate effect calculations
+- **Visual Coding**: Color-coded substrate zones (yellow, cyan, magenta)
+- **Performance Integration**: Substrate effectiveness feedback to UI
 
-**Key Features:**
-- **Substrate Areas**: Circular and polygonal zones with SOFT/FIRM/STICKY properties
-- **Obstacle System**: Collision boundaries (rocks, walls) with proper physics
-- **Speed Modifiers**: Substrate-specific locomotion adjustments
-- **Visual Integration**: Color-coded substrate zones and obstacle rendering
-- **Collision Detection**: Efficient point-in-bounds checking for movement validation
+### **Complete Control System**
 
-### **Milestone 9 Controls & Interaction**
+#### **Mode Controls (Milestone 10)**
+- **1 Key**: Switch to Amoeboid mode (best for soft substrates)
+- **2 Key**: Switch to Blebbing mode (best for low-adhesion)
+- **3 Key**: Switch to Mesenchymal mode (best for structured substrates)
+- **M Key**: Access motility test course for mode comparison
 
-**Drive Mode Controls:**
+#### **Movement Controls (Milestone 9)**
 - **T Key**: Toggle between normal player movement and unified cell locomotion
 - **WASD**: In drive mode, controls cell movement instead of player
 - **SPACE**: Dash ability (requires ATP, has cooldown)
 
-**Movement Mechanics:**
-- **Normal Mode**: Player moves within cell, camera follows player
-- **Drive Mode**: Entire cell moves as unit, camera follows cell center
-- **Seamless Toggle**: Instant switching between movement modes
-- **Energy Management**: ATP consumption for dash and movement maintenance
+#### **Development Tools**
+- **Y Key**: System status including motility metrics and mode information
+- **K Key**: Debug ATP injection for testing movement mechanics
 
-**Visual Feedback:**
-- **Polarity Indicator**: Green arrow showing cell's current polarity direction
-- **Adhesion Visualization**: Real-time adhesion point count in HUD
-- **Speed Display**: Current movement speed and maximum speed limits
-- **ATP Monitoring**: Real-time energy drain and available ATP for movement
-- **Collision Effects**: Visual membrane deformation during obstacle contact
+### **Technical Implementation**
 
-**Debug Controls:**
-- **Y Key**: System status including motility metrics
-- **K Key**: Debug ATP injection for testing dash mechanics
+#### **File Structure**
+```
+src/
+  motility/
+    motility-modes.config.ts           # Central configuration and presets
+    motility-mode-registry.ts          # Mode switching and state management
+  systems/
+    cell-motility.ts                   # Enhanced three-mode movement system
+  scenes/
+    motility-course-scene.ts           # Dedicated test environment
+  core/
+    substrate-system.ts                # Enhanced substrate management
+  ui/hud.ts                           # Mode display and performance metrics
+```
+
+#### **Key Technical Achievements**
+- **Biologically Accurate**: Each mode reflects real cellular locomotion mechanisms
+- **Performance Optimized**: Efficient substrate calculations with minimal overhead
+- **Highly Configurable**: Easy parameter tuning through centralized configuration
+- **Extensible Architecture**: Framework supports additional modes and substrates
+- **Visual Polish**: Comprehensive UI feedback and real-time performance metrics
+- **Unified Visual System**: All components move together through cellRoot container
 
 ---
 
@@ -613,7 +679,7 @@ LIGAND_GROWTH (external) → Growth Factor Receptor → SIGNAL (internal) → Nu
 
 ## Current Milestone Status
 
-The project has achieved **revolutionary architectural consolidation** while completing **Milestone 8** with a sophisticated vesicle-based secretory pipeline:
+The project has achieved **revolutionary architectural consolidation** while completing **Milestone 10** with advanced motility modes system:
 
 ### ✅ **REVOLUTIONARY ACHIEVEMENT: SystemObject Consolidation**
 - **Eliminated Manual Coordination**: No more "call update on 12 things" dance
@@ -623,6 +689,25 @@ The project has achieved **revolutionary architectural consolidation** while com
 - **Performance Monitoring**: Built-in 120 updates/sec tracking across all systems
 - **Debug Excellence**: Y key provides comprehensive system status with species change rates
 - **Clean Dependencies**: Streamlined WorldRefs interface removing old system dependencies
+
+### ✅ **Milestone 10: Advanced Motility Modes v1**
+- **Three Biological Movement Modes**: Amoeboid, Blebbing, Mesenchymal with distinct physics and energy costs
+- **Substrate Optimization System**: Real-time movement modifiers based on substrate type (soft, adhesive, structured)
+- **Configuration Architecture**: Centralized `motility-modes.config.ts` with preset system for easy parameter tuning
+- **Mode Registry Pattern**: `MotilityModeRegistry` handles state management and smooth mode transitions
+- **Enhanced User Interface**: Real-time mode display, substrate effects visualization, and energy monitoring
+- **Motility Test Course**: Dedicated test environment with three specialized zones optimizing different modes
+- **Performance Telemetry**: Comprehensive movement analytics with speed, efficiency, and substrate effectiveness metrics
+- **User Controls**: 1/2/3 keys for mode switching, M key for test course access
+- **Biological Accuracy**: Each mode reflects real cellular locomotion mechanisms with appropriate energy costs
+
+### ✅ **Milestone 9: Cell Motility & Unified Visual Transform**
+- **CellRoot Container System**: All cell visuals move together as unified entity through single transform
+- **Enhanced CellMotility System**: Complete locomotion with polarity, adhesion, and substrate interaction
+- **Drive Mode Toggle**: T key switches between player movement and unified cell locomotion
+- **Collision Physics**: Proper obstacle detection with membrane deformation effects
+- **Energy Integration**: ATP costs for movement, dash abilities, and adhesion maintenance
+- **Visual Coherence**: All organelles, membrane effects, and overlays move together seamlessly
 
 ### ✅ **Milestone 8: Visible Secretory Pipeline & Membrane Install v1**
 - **Vesicle FSM System**: Complete finite state machine with 8 states (QUEUED_ER → EN_ROUTE_GOLGI → QUEUED_GOLGI → EN_ROUTE_MEMBRANE → INSTALLING → DONE)
@@ -662,10 +747,10 @@ The project has achieved **revolutionary architectural consolidation** while com
 - **M5**: Construction and blueprint system
 
 ### 🚀 **Ready for Future Milestones**
-- **M9**: Advanced organelle types (mitochondria, lysosomes, enhanced Golgi functions)
-- **M10**: Cell division and growth mechanics
-- **M11**: Multi-cellular interactions and tissue formation
-- **M12**: Genetic regulation and adaptation systems
+- **M11**: Advanced organelle types (mitochondria, lysosomes, enhanced Golgi functions)
+- **M12**: Cell division and growth mechanics
+- **M13**: Multi-cellular interactions and tissue formation
+- **M14**: Genetic regulation and adaptation systems
 
 ### **Revolutionary Architectural Achievements**
 - **SystemObject Pattern**: Revolutionary base class enabling automatic Phaser lifecycle management
@@ -739,7 +824,7 @@ class CellProduction extends SystemObject {
 
 ## Summary: Revolutionary Achievement
 
-This codebase demonstrates a **revolutionary architectural transformation** from manual system coordination to automatic Phaser lifecycle management. The **SystemObject pattern** eliminates the complexity of coordinating multiple systems while providing:
+This codebase demonstrates a **revolutionary architectural transformation** from manual system coordination to automatic Phaser lifecycle management, culminating in **advanced biological motility modes**. The **SystemObject pattern** combined with sophisticated locomotion systems provides:
 
 ✅ **Simplified Architecture**: Three consolidated systems replace 12+ individual systems  
 ✅ **Performance Excellence**: 120 updates/sec with built-in monitoring  
@@ -754,6 +839,18 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Clean Code**: Removed 500+ lines of unused legacy methods  
 ✅ **"Calm, Minimal Path Forward"**: Achieved through elimination of manual coordination
 
+### **Milestone 10: Advanced Motility Modes Achievements**
+✅ **Three Biological Movement Modes**: Amoeboid, Blebbing, Mesenchymal with distinct physics and energy costs  
+✅ **Substrate Optimization Matrix**: Real-time movement modifiers for soft, adhesive, and structured substrates  
+✅ **Configuration Architecture**: Single-source `motility-modes.config.ts` with preset system for parameter tuning  
+✅ **Mode Registry Pattern**: Centralized state management with smooth transitions between locomotion modes  
+✅ **Enhanced User Interface**: Real-time mode display, substrate effects visualization, and comprehensive energy monitoring  
+✅ **Motility Test Course**: Dedicated test environment with three specialized zones (soft maze, low-adhesion runway, ECM chicanes)  
+✅ **Performance Telemetry**: Movement analytics with speed, efficiency, and substrate effectiveness metrics  
+✅ **Biological Grounding**: Each mode reflects real cellular locomotion mechanisms with appropriate energy costs  
+✅ **User Controls**: Intuitive 1/2/3 keys for mode switching, M key for test course access  
+✅ **Visual Feedback**: Color-coded mode indicators and real-time substrate effect visualization  
+
 ### **Milestone 9: Cell Motility Achievements**
 ✅ **Unified Visual Transform**: Complete cellRoot container system for seamless cell movement  
 ✅ **Cell Locomotion**: Full motility system with polarity, adhesion, and substrate interaction  
@@ -765,4 +862,4 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Collision System**: Realistic obstacle interaction with collision normals and damping  
 ✅ **Energy Integration**: ATP costs for movement, dash ability, and adhesion maintenance  
 
-The project is now positioned for advanced cellular biology features with a solid, maintainable, and performant foundation that demonstrates how complex biological simulations can be elegantly managed through thoughtful architecture design. **Milestone 9** completed the vision of unified cell behavior where the entire cellular environment moves as a cohesive biological entity.
+The project has achieved a **revolutionary biological simulation** with a solid, maintainable, and performant foundation. **Milestone 10** completes the vision of biologically-grounded cellular locomotion where cells can adapt their movement strategy to environmental conditions, just like real cellular organisms. The three motility modes (Amoeboid, Blebbing, Mesenchymal) provide a comprehensive framework for realistic cellular behavior in diverse biological environments.

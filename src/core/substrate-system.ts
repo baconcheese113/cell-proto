@@ -5,7 +5,7 @@
  * Provides substrate types (SOFT, FIRM, STICKY) and obstacle collision detection.
  */
 
-export type SubstrateType = 'SOFT' | 'FIRM' | 'STICKY';
+export type SubstrateType = 'SOFT' | 'FIRM' | 'ECM' | 'STICKY';
 
 export interface SubstrateArea {
   /** Area bounds (circle or polygon) */
@@ -76,6 +76,18 @@ export class SubstrateSystem {
         },
         type: 'SOFT',
         color: 0x4444AA
+      },
+      
+      // ECM area (dense extracellular matrix)
+      {
+        bounds: {
+          type: 'circle',
+          x: 200,
+          y: -150,
+          radius: 90
+        },
+        type: 'ECM',
+        color: 0x664422
       },
       
       // STICKY area (slow, but good grip)
