@@ -330,7 +330,7 @@ export class CellOverlays extends SystemObject {
     if (motilityState.polarity.magnitude < 0.1) return;
     
     const cellCenter = this.worldRefs.hexGrid.hexToWorld({ q: 0, r: 0 });
-    const cellRadius = 220; // Standard cell radius
+    const cellRadius = 216; // Standard cell radius for visual overlays
     
     // Front indicator (arrow/chevron)
     const frontDirection = motilityState.polarity.direction;
@@ -369,7 +369,7 @@ export class CellOverlays extends SystemObject {
     if (motilityState.membraneSquash < 0.05) return;
     
     const cellCenter = this.worldRefs.hexGrid.hexToWorld({ q: 0, r: 0 });
-    const cellRadius = 220; // Standard cell radius
+    const cellRadius = 216; // Standard cell radius for visual overlays
     
     // Calculate deformation based on squash direction and magnitude
     const squashDir = motilityState.membraneSquashDirection;

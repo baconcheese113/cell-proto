@@ -47,7 +47,8 @@ export class GameScene extends Phaser.Scene {
   private tileActionController!: TileActionController;
 
   private cellCenter = new Phaser.Math.Vector2(0, 0);
-  private cellRadius = 220;
+  private cellRadius = 216; // Original size for hex grid area
+  private playerBoundaryRadius = this.cellRadius - 12; // Smaller boundary for player movement
   private membraneThickness = 10;
   // Hex grid system
   private hexGrid!: HexGrid;
@@ -193,7 +194,7 @@ export class GameScene extends Phaser.Scene {
       playerColor: this.col.player,
       ringColor: this.col.playerRing,
       cellCenter: new Phaser.Math.Vector2(0, 0), // Relative to cellRoot
-      cellRadius: this.cellRadius,
+      cellRadius: this.playerBoundaryRadius, // Use smaller boundary for player movement
       cellRoot: this.cellRoot // HOTFIX H5: Pass cellRoot for membrane effects
     }, this.hexGrid);
     
