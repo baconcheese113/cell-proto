@@ -15,13 +15,20 @@ export class BlueprintRenderer {
   private graphics: Phaser.GameObjects.Graphics;
   private hexSize: number;
   private textObjects: Map<string, Phaser.GameObjects.Text> = new Map(); // Track text objects
+  private parentContainer?: Phaser.GameObjects.Container; // HOTFIX: Support for cellRoot parenting
 
-  constructor(scene: Phaser.Scene, blueprintSystem: BlueprintSystem, hexSize: number) {
+  constructor(scene: Phaser.Scene, blueprintSystem: BlueprintSystem, hexSize: number, parentContainer?: Phaser.GameObjects.Container) {
     this.scene = scene;
     this.blueprintSystem = blueprintSystem;
     this.hexSize = hexSize;
+    this.parentContainer = parentContainer;
     this.graphics = scene.add.graphics();
     this.graphics.setDepth(10); // Above hex grid but below UI
+    
+    // HOTFIX H5: Add to cellRoot if provided
+    if (this.parentContainer) {
+      this.parentContainer.add(this.graphics);
+    }
   }
 
   public render(): void {
@@ -185,6 +192,11 @@ export class BlueprintRenderer {
     text.setOrigin(0.5, 0.5);
     text.setDepth(11);
     text.setAlpha(0.8);
+    
+    // HOTFIX H5: Add text to cellRoot if we have a parent container
+    if (this.parentContainer) {
+      this.parentContainer.add(text);
+    }
     
     // Track the text object for cleanup
     this.textObjects.set(blueprint.id, text);

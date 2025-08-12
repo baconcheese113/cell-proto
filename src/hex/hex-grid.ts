@@ -134,7 +134,8 @@ export class HexGrid {
     return this.tiles.size;
   }
 
-  // Update grid center (for window resize)
+  // Update grid center (for window resize and cell locomotion)
+  // Called every frame by locomotion system when cell moves
   updateCenter(centerX: number, centerY: number): void {
     const deltaX = centerX - this.gridCenter.x;
     const deltaY = centerY - this.gridCenter.y;

@@ -27,9 +27,13 @@ import { TileActionController } from "../controllers/tile-action-controller";
 import { CellProduction } from "../systems/cell-production";
 import { CellTransport } from "../systems/cell-transport";
 import { CellOverlays } from "../systems/cell-overlays";
+// Milestone 9: Cell locomotion systems
+import { CellSpaceSystem } from "../core/cell-space-system";
+import { SubstrateSystem } from "../core/substrate-system";
+import { CellMotility } from "../systems/cell-motility";
 import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -124,6 +128,17 @@ export class GameScene extends Phaser.Scene {
   private cellProduction!: CellProduction;
   private cellTransport!: CellTransport;
   private cellOverlays!: CellOverlays;
+  
+  // Milestone 9: Cell locomotion systems
+  private cellSpaceSystem!: CellSpaceSystem;
+  private substrateSystem!: SubstrateSystem;
+  private cellMotility!: CellMotility;
+  
+  // Milestone 9: Cell motility mode
+  private cellDriveMode = false;
+  
+  // HOTFIX: Root container for all cell visuals
+  private cellRoot!: Phaser.GameObjects.Container;
 
   private col = {
     bg: 0x0b0f14, gridMinor: 0x10141d, gridMajor: 0x182131,
@@ -147,10 +162,19 @@ export class GameScene extends Phaser.Scene {
     this.grid = this.add.image(0, 0, gridKey).setOrigin(0.5, 0.5).setDepth(0);
     this.grid.setPosition(view.width * 0.5, view.height * 0.5);
 
+    // HOTFIX H1: Create cellRoot container for unified transform FIRST
+    this.cellRoot = this.add.container(view.width * 0.5, view.height * 0.5);
+    this.cellRoot.setDepth(1); // Above background, will contain all cell visuals
+    
     // Cell membrane
     this.cellCenter.set(view.width * 0.5, view.height * 0.5);
     const cellKey = makeCellTexture(this, this.cellRadius * 2 + this.membraneThickness * 2, this.membraneThickness, this.col.cellFill, this.col.membrane);
-    this.cellSprite = this.add.image(this.cellCenter.x, this.cellCenter.y, cellKey).setDepth(1);
+    this.cellSprite = this.add.image(0, 0, cellKey).setDepth(1); // Position relative to cellRoot
+    
+    // HOTFIX H2: Re-parent cell sprite to cellRoot
+    this.cellRoot.add(this.cellSprite);
+    
+    console.log('CellRoot container created at:', this.cellCenter.x, this.cellCenter.y);
 
     // Initialize hex grid FIRST (required by Player)
     this.initializeHexGrid();
@@ -159,8 +183,8 @@ export class GameScene extends Phaser.Scene {
     // NEW: Create modular Player actor (after hex grid is initialized)
     this.playerActor = new Player({
       scene: this,
-      x: this.cellCenter.x,
-      y: this.cellCenter.y,
+      x: 0, // Position relative to cellRoot
+      y: 0, // Position relative to cellRoot
       normalMaxSpeed: 120,
       acceleration: 600,
       dashSpeed: 320,
@@ -168,9 +192,13 @@ export class GameScene extends Phaser.Scene {
       maxDashCooldown: 1.2,
       playerColor: this.col.player,
       ringColor: this.col.playerRing,
-      cellCenter: this.cellCenter,
-      cellRadius: this.cellRadius
+      cellCenter: new Phaser.Math.Vector2(0, 0), // Relative to cellRoot
+      cellRadius: this.cellRadius,
+      cellRoot: this.cellRoot // HOTFIX H5: Pass cellRoot for membrane effects
     }, this.hexGrid);
+    
+    // HOTFIX H2: Re-parent player to cellRoot
+    this.cellRoot.add(this.playerActor);
 
     // Initialize all other systems...
     this.initializeOrganelleSystem();
@@ -181,12 +209,16 @@ export class GameScene extends Phaser.Scene {
     this.initializeDiffusionSystem();
     this.initializeMembraneExchangeSystem();
     this.initializeConservationTracker();
+    
+    // Milestone 9: Initialize cell locomotion systems
+    this.initializeCellLocomotionSystems();
 
     // NEW: After all systems initialized, create transcript systems and WorldRefs 
     
-    // Create a temporary WorldRefs for system initialization (without transcript systems)
+    // Create a temporary WorldRefs for system initialization (without cellMotility)
     const baseWorldRefs = {
       hexGrid: this.hexGrid,
+      cellRoot: this.cellRoot,
       playerInventory: this.playerInventory,
       organelleSystem: this.organelleSystem,
       organelleRenderer: this.organelleRenderer,
@@ -197,6 +229,10 @@ export class GameScene extends Phaser.Scene {
       passiveEffectsSystem: this.passiveEffectsSystem,
       heatmapSystem: this.heatmapSystem,
       conservationTracker: this.conservationTracker,
+      // Milestone 9: Cell locomotion systems
+      cellSpaceSystem: this.cellSpaceSystem,
+      substrateSystem: this.substrateSystem,
+      cellMotility: undefined as any, // Will be set after creation
       installOrders: this.installOrders,
       transcripts: this.transcripts,
       carriedTranscripts: this.carriedTranscripts,
@@ -210,6 +246,12 @@ export class GameScene extends Phaser.Scene {
       refreshTileInfo: () => this.updateTileInfoPanel()
     };
 
+    // Create CellMotility now that we have cellSpaceSystem
+    this.cellMotility = new CellMotility(this, baseWorldRefs, this.cellSpaceSystem);
+    
+    // Update worldRefs with cellMotility
+    baseWorldRefs.cellMotility = this.cellMotility;
+
     // Now create complete WorldRefs with all systems (old individual systems removed)
     const worldRefs: WorldRefs = {
       ...baseWorldRefs
@@ -222,9 +264,9 @@ export class GameScene extends Phaser.Scene {
     });
 
     // Initialize consolidated systems - NEW ARCHITECTURE
-    this.cellProduction = new CellProduction(this, worldRefs);
+    this.cellProduction = new CellProduction(this, worldRefs, this.cellRoot);
     this.cellTransport = new CellTransport(this, worldRefs);
-    this.cellOverlays = new CellOverlays(this, worldRefs);
+    this.cellOverlays = new CellOverlays(this, worldRefs, this.cellRoot); // Now cellMotility is defined
 
     // Input keys
     this.keys = {
@@ -259,17 +301,13 @@ export class GameScene extends Phaser.Scene {
       Y: this.input.keyboard!.addKey("Y"),
       U: this.input.keyboard!.addKey("U"), // Toggle queue badges
       O: this.input.keyboard!.addKey("O"), // Toggle vesicle debug
+      K: this.input.keyboard!.addKey("K"), // Debug ATP injection
     };
 
-    // Initialize systems
+    // Initialize remaining UI systems
     addHud(this);
     this.initializeHexInteraction();
     this.initializeTileInfoPanel();
-    this.initializeHeatmapSystem();
-    this.initializePassiveEffectsSystem();
-    this.initializeConservationTracker();
-    this.initializeOrganelleSystem();
-    this.initializePlayerInventory();
     this.initializeBlueprintSystem(); // After membrane exchange system
     this.initializeDebugInfo();
     this.initializeTranscriptSystem(); // Milestone 7 Task 1
@@ -284,6 +322,10 @@ export class GameScene extends Phaser.Scene {
     
     // Initialize HUD with current information
     this.updateHUD();
+    
+    // HOTFIX H4: Initialize camera to center on cell
+    this.cameras.main.centerOn(this.cellCenter.x, this.cellCenter.y);
+    console.log('Camera centered on cell at:', this.cellCenter.x, this.cellCenter.y);
 
     // Window resize handling
     this.scale.on("resize", (sz: Phaser.Structs.Size) => {
@@ -298,11 +340,13 @@ export class GameScene extends Phaser.Scene {
       
       // Re-center cell
       this.cellCenter.set(newWidth * 0.5, newHeight * 0.5);
-      this.cellSprite.setPosition(this.cellCenter.x, this.cellCenter.y);
+      
+      // HOTFIX H3: Update unified cellRoot position instead of individual elements
+      this.cellRoot.setPosition(this.cellCenter.x, this.cellCenter.y);
 
-      // Update hex grid
+      // HOTFIX H5: Update hex grid to use local coordinates (0,0 relative to cellRoot)
       if (this.hexGrid) {
-        this.hexGrid.updateCenter(this.cellCenter.x, this.cellCenter.y);
+        this.hexGrid.updateCenter(0, 0); // Local coordinates relative to cellRoot
         this.renderHexGrid();
         
         // Reinitialize diffusion system buffers after grid change
@@ -334,6 +378,25 @@ export class GameScene extends Phaser.Scene {
   }
 
   override update() {
+    // MILESTONE 9 FIX 1: Only drive camera from CellSpaceSystem when in drive mode
+    if (this.cellDriveMode) {
+      const tf = this.cellSpaceSystem.getTransform();
+      this.cellCenter.set(tf.position.x, tf.position.y);
+      
+      // HOTFIX H3: Drive unified cellRoot transform instead of individual updates
+      this.cellRoot.setPosition(tf.position.x, tf.position.y);
+      
+      this.cameras.main.centerOn(tf.position.x, tf.position.y);
+      
+      // MILESTONE 9 FIX 1: Keep rendering hex grid after movement
+      this.renderHexGrid();
+    } else {
+      // HOTFIX H4: When not in drive mode, camera follows player's world position
+      const playerWorldX = this.cellRoot.x + this.playerActor.x;
+      const playerWorldY = this.cellRoot.y + this.playerActor.y;
+      this.cameras.main.centerOn(playerWorldX, playerWorldY);
+    }
+
     // Handle hex grid toggle
     if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
       this.toggleHexGrid();
@@ -361,9 +424,16 @@ export class GameScene extends Phaser.Scene {
       this.passiveEffectsSystem.setAllEffectsEnabled(newState);
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.T)) {
-      // Toggle conservation tracking / pause simulation
-      this.conservationTracker.togglePause();
-      this.updateConservationPanel();
+      // MILESTONE 9 FIX 3: Toggle cell drive mode
+      this.cellDriveMode = !this.cellDriveMode;
+      this.cellMotility.setDriveMode(this.cellDriveMode);
+      
+      // Sync cell space system position when entering drive mode
+      if (this.cellDriveMode) {
+        this.cellSpaceSystem.setPosition(this.cellCenter.x, this.cellCenter.y);
+      }
+      
+      console.log(`Cell drive mode: ${this.cellDriveMode ? 'ON' : 'OFF'}`);
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.Y)) {
       // System status debug - show consolidated system info
@@ -376,6 +446,12 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.O)) {
       // Milestone 8: Toggle vesicle debug info
       this.cellOverlays.toggleVesicleDebug();
+    }
+    
+    // MILESTONE 9 FIX 4: Debug ATP injection for testing dash
+    if (Phaser.Input.Keyboard.JustDown(this.keys.K)) {
+      this.playerInventory.take('ATP', 50);
+      this.showToast("Added 50 ATP for dash testing");
     }
 
     // Debug species controls - Task 4
@@ -397,8 +473,22 @@ export class GameScene extends Phaser.Scene {
     // NEW: MODULAR UPDATE SYSTEM
     const deltaSeconds = this.game.loop.delta / 1000;
     
-    // Use modular player actor for movement
-    this.playerActor.update(deltaSeconds, this.keys);
+    // MILESTONE 9 FIX 3: Conditional movement based on drive mode
+    if (this.cellDriveMode) {
+      // Cell drive mode: cellMotility handles WASD, player stays put
+      const disabledKeys = {
+        W: { isDown: false, _justDown: false },
+        A: { isDown: false, _justDown: false },
+        S: { isDown: false, _justDown: false },
+        D: { isDown: false, _justDown: false },
+        SPACE: { isDown: false, _justDown: false }
+      } as any;
+      this.playerActor.update(deltaSeconds, disabledKeys);
+      this.cellMotility.updateInput(this.keys);
+    } else {
+      // Normal mode: player actor handles WASD, cellMotility ignores input
+      this.playerActor.update(deltaSeconds, this.keys);
+    }
     
     // Milestone 6 Task 1: Update current tile tracking
     this.updateCurrentTile();
@@ -503,14 +593,15 @@ export class GameScene extends Phaser.Scene {
     });
     console.log(`Total species: ${allSpecies.length}`);
     
-    this.hexGrid = new HexGrid(this.hexSize, this.cellCenter.x, this.cellCenter.y);
+    // HOTFIX H5: Initialize hex grid with local coordinates (0,0) since it's now in cellRoot
+    this.hexGrid = new HexGrid(this.hexSize, 0, 0);
     this.hexGrid.generateTiles(this.gridRadius);
     
     const maxDistance = this.cellRadius - this.hexSize;
-    this.hexGrid.filterTilesInCircle(this.cellCenter.x, this.cellCenter.y, maxDistance);
+    this.hexGrid.filterTilesInCircle(0, 0, maxDistance);
     
-    // Milestone 6 Task 1: Compute membrane tiles
-    this.hexGrid.recomputeMembranes(this.cellCenter.x, this.cellCenter.y, this.cellRadius);
+    // Milestone 6 Task 1: Compute membrane tiles using local coordinates
+    this.hexGrid.recomputeMembranes(0, 0, this.cellRadius);
     
     console.log(`Hex Grid initialized:
       - Tiles: ${this.hexGrid.getTileCount()}
@@ -518,20 +609,20 @@ export class GameScene extends Phaser.Scene {
       - Grid radius: ${this.gridRadius}
       - Cell radius: ${this.cellRadius}
       - Max distance: ${maxDistance}
-      - Cell center: (${this.cellCenter.x}, ${this.cellCenter.y})`);
+      - Cell center: (0, 0) [local coordinates in cellRoot]`);
     
     // Test coordinate conversion and neighbors
     const testTiles = this.hexGrid.getAllTiles().slice(0, 3);
     testTiles.forEach((tile, i) => {
       const neighbors = this.hexGrid.getNeighbors(tile.coord);
-      console.log(`Tile ${i}: coord(${tile.coord.q},${tile.coord.r}) world(${Math.round(tile.worldPos.x)},${Math.round(tile.worldPos.y)}) neighbors: ${neighbors.length}`);
+      console.log(`Tile ${i}: coord(${tile.coord.q},${tile.coord.r}) local(${Math.round(tile.worldPos.x)},${Math.round(tile.worldPos.y)}) neighbors: ${neighbors.length}`);
     });
     
     // Test center tile conversion
     const centerTile = this.hexGrid.getTile({ q: 0, r: 0 });
     if (centerTile) {
       const backToHex = this.hexGrid.worldToHex(centerTile.worldPos.x, centerTile.worldPos.y);
-      console.log(`Center tile test: original(0,0) -> world(${Math.round(centerTile.worldPos.x)}, ${Math.round(centerTile.worldPos.y)}) -> back to hex(${backToHex.q}, ${backToHex.r})`);
+      console.log(`Center tile test: original(0,0) -> local(${Math.round(centerTile.worldPos.x)}, ${Math.round(centerTile.worldPos.y)}) -> back to hex(${backToHex.q}, ${backToHex.r})`);
     }
     
     console.log('Hex grid initialization complete!');
@@ -541,6 +632,10 @@ export class GameScene extends Phaser.Scene {
     this.hexGraphics = this.add.graphics();
     this.hexGraphics.setDepth(1.5); // Above background, below organelles
     this.hexGraphics.setVisible(this.showHexGrid);
+    
+    // HOTFIX H2: Re-parent hex graphics to cellRoot
+    this.cellRoot.add(this.hexGraphics);
+    
     this.renderHexGrid();
     
     // Milestone 6: Initialize membrane debug graphics
@@ -551,6 +646,10 @@ export class GameScene extends Phaser.Scene {
     this.membraneGraphics = this.add.graphics();
     this.membraneGraphics.setDepth(1.6); // Above hex grid, below organelles
     this.membraneGraphics.setVisible(true); // Always visible now that it contains protein glyphs
+    
+    // HOTFIX H2: Re-parent membrane graphics to cellRoot
+    this.cellRoot.add(this.membraneGraphics);
+    
     // Note: renderMembraneDebug() will be called after membrane exchange system is initialized
   }
 
@@ -610,6 +709,10 @@ export class GameScene extends Phaser.Scene {
             });
             label.setOrigin(0.5, 0.5);
             label.setDepth(10);
+            
+            // HOTFIX H5: Add transporter labels to cellRoot
+            this.cellRoot.add(label);
+            
             this.transporterLabels.push(label);
           }
         }
@@ -642,9 +745,9 @@ export class GameScene extends Phaser.Scene {
           this.membraneGraphics.fillCircle(tile.worldPos.x, tile.worldPos.y, radius);
           this.membraneGraphics.strokeCircle(tile.worldPos.x, tile.worldPos.y, radius);
           
-          // Calculate direction toward/away from cell center for more intuitive arrows
-          const centerX = this.cellCenter.x;
-          const centerY = this.cellCenter.y;
+          // HOTFIX H5: Calculate direction toward/away from local center (0,0) since we're in cellRoot
+          const centerX = 0; // Local coordinates center
+          const centerY = 0; // Local coordinates center
           const deltaX = tile.worldPos.x - centerX;
           const deltaY = tile.worldPos.y - centerY;
           const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
@@ -814,6 +917,9 @@ export class GameScene extends Phaser.Scene {
     this.hexInteractionGraphics = this.add.graphics();
     this.hexInteractionGraphics.setDepth(1.6); // Above hex grid, below organelles
     
+    // HOTFIX H2: Re-parent interaction graphics to cellRoot
+    this.cellRoot.add(this.hexInteractionGraphics);
+    
     this.input.on('pointermove', this.onPointerMove, this);
     this.input.on('pointerdown', this.onPointerDown, this);
   }
@@ -826,9 +932,10 @@ export class GameScene extends Phaser.Scene {
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
     if (!this.hexGrid) return;
     
-    const worldX = pointer.worldX;
-    const worldY = pointer.worldY;
-    const tile = this.hexGrid.getTileAtWorld(worldX, worldY);
+    // HOTFIX H5: Convert world coordinates to local coordinates relative to cellRoot
+    const localX = pointer.worldX - this.cellRoot.x;
+    const localY = pointer.worldY - this.cellRoot.y;
+    const tile = this.hexGrid.getTileAtWorld(localX, localY);
     
     this.hoveredTile = tile || null;
     
@@ -840,9 +947,10 @@ export class GameScene extends Phaser.Scene {
     if (!this.hexGrid) return;
     
     if (pointer.leftButtonDown()) {
-      const worldX = pointer.worldX;
-      const worldY = pointer.worldY;
-      const tile = this.hexGrid.getTileAtWorld(worldX, worldY);
+      // HOTFIX H5: Convert world coordinates to local coordinates relative to cellRoot
+      const localX = pointer.worldX - this.cellRoot.x;
+      const localY = pointer.worldY - this.cellRoot.y;
+      const tile = this.hexGrid.getTileAtWorld(localX, localY);
       
       // Milestone 6 Task 3: Mouse click only for tile selection (info), not actions
       // Remove blueprint placement - that's now handled by ENTER key on current tile
@@ -851,9 +959,9 @@ export class GameScene extends Phaser.Scene {
       this.selectedTile = tile || null;
       
       if (tile) {
-        console.log(`Clicked: mouse world(${Math.round(worldX)}, ${Math.round(worldY)}) -> hex(${tile.coord.q}, ${tile.coord.r}) at world(${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`);
+        console.log(`Clicked: mouse world(${Math.round(pointer.worldX)}, ${Math.round(pointer.worldY)}) -> local(${Math.round(localX)}, ${Math.round(localY)}) -> hex(${tile.coord.q}, ${tile.coord.r}) at local(${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`);
       } else {
-        console.log(`Clicked: mouse world(${Math.round(worldX)}, ${Math.round(worldY)}) -> no hex found`);
+        console.log(`Clicked: mouse world(${Math.round(pointer.worldX)}, ${Math.round(pointer.worldY)}) -> local(${Math.round(localX)}, ${Math.round(localY)}) -> no hex found`);
       }
     }
   }
@@ -1138,6 +1246,9 @@ export class GameScene extends Phaser.Scene {
     this.transcriptGraphics = this.add.graphics();
     this.transcriptGraphics.setDepth(3.5); // Above organelles, below player
     
+    // HOTFIX H2: Re-parent transcript graphics to cellRoot
+    this.cellRoot.add(this.transcriptGraphics);
+    
     console.log('Transcript system initialized');
   }
   
@@ -1165,7 +1276,7 @@ export class GameScene extends Phaser.Scene {
   
   private initializeOrganelleSystem(): void {
     this.organelleSystem = new OrganelleSystem(this.hexGrid);
-    this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize);
+    this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize, this.cellRoot);
     this.organelleSelection = new OrganelleSelectionSystem(this, this.organelleSystem, this.hexSize);
     
     // Set up selection callback
@@ -1210,7 +1321,7 @@ export class GameScene extends Phaser.Scene {
     };
     
     // Initialize blueprint renderer
-    this.blueprintRenderer = new BlueprintRenderer(this, this.blueprintSystem, this.hexSize);
+    this.blueprintRenderer = new BlueprintRenderer(this, this.blueprintSystem, this.hexSize, this.cellRoot);
     
     console.log('Blueprint system initialized');
   }
@@ -1270,7 +1381,21 @@ export class GameScene extends Phaser.Scene {
     const controls = `B: Build/Request | ENTER: Confirm | X: Cancel | Q/E: Scoop/Drop | R: Pickup/Drop transcript | Shift+R: Drop all transcripts`;
     const message = `${heatmapStatus} | ${inventoryStatus}${blueprintStatus} | ${transcriptStatus} | ${controls}`;
     
-    setHud(this, { message });
+    // Milestone 9: Add motility information
+    let motilityInfo = undefined;
+    if (this.cellMotility) {
+      const motilityState = this.cellMotility.getState();
+      motilityInfo = {
+        speed: motilityState.speed,
+        adhesionCount: motilityState.adhesion.count,
+        atpDrain: motilityState.atpDrainPerSecond,
+        mode: motilityState.mode,
+        substrate: motilityState.currentSubstrate,
+        dashCooldown: motilityState.dashCooldownRemaining
+      };
+    }
+    
+    setHud(this, { message, motilityInfo, driveMode: this.cellDriveMode });
   }
 
   /**
@@ -1299,7 +1424,7 @@ export class GameScene extends Phaser.Scene {
   // Heatmap System - Task 5
   
   private initializeHeatmapSystem(): void {
-    this.heatmapSystem = new HeatmapSystem(this, this.hexGrid, this.hexSize);
+    this.heatmapSystem = new HeatmapSystem(this, this.hexGrid, this.hexSize, this.cellRoot);
     // Start with heatmap visible
     this.heatmapSystem.toggle();
     console.log('Heatmap system initialized and visible');
@@ -1328,7 +1453,19 @@ export class GameScene extends Phaser.Scene {
     console.log('Membrane exchange system and port system initialized');
   }
 
-  // Debug Controls - Task 4
+  private initializeCellLocomotionSystems(): void {
+    // Initialize cell space system with current cell center
+    this.cellSpaceSystem = new CellSpaceSystem(this.cellCenter.x, this.cellCenter.y);
+    console.log('Cell space system initialized');
+    
+    // Initialize substrate system
+    this.substrateSystem = new SubstrateSystem();
+    console.log('Substrate system initialized');
+    
+    // Initialize cell motility (depends on the other systems)
+    // Note: This will be created after worldRefs is ready
+  }
+
   
   private handleDebugControls(): void {
     const playerCoord = this.getPlayerHexCoord();
@@ -1850,6 +1987,14 @@ export class GameScene extends Phaser.Scene {
    */
   private printSystemStatus(): void {
     console.log("=== CONSOLIDATED SYSTEMS STATUS ===");
+    
+    // MILESTONE 9: Drive mode and motility status
+    console.log(`🚗 Cell Drive Mode: ${this.cellDriveMode ? 'ON' : 'OFF'}`);
+    if (this.cellMotility) {
+      const state = this.cellMotility.getState();
+      console.log(`🏃 Motility: ${state.mode}, Speed: ${state.speed.toFixed(2)}, Polarity: ${state.polarity.magnitude.toFixed(2)}`);
+      console.log(`📍 Cell Center: (${this.cellCenter.x.toFixed(1)}, ${this.cellCenter.y.toFixed(1)})`);
+    }
     
     // CellProduction metrics
     const transcriptCount = this.transcripts.size;

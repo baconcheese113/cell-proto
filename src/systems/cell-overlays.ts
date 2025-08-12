@@ -11,6 +11,7 @@ export class CellOverlays extends SystemObject {
   private overlayGraphics: Phaser.GameObjects.Graphics;
   private showQueueBadges = true;
   private showVesicleDebug = false;
+  private cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Store cellRoot container reference
   
   // Persistent debug panel (like other HUD elements)
   private vesicleDebugPanel?: Phaser.GameObjects.Text;
@@ -18,13 +19,19 @@ export class CellOverlays extends SystemObject {
   // Milestone 8: Story 8.7 - Dirty tile redraw system
   private dirtyTiles: Set<string> = new Set(); // hex coordinates that need redraw
 
-  constructor(scene: Phaser.Scene, worldRefs: WorldRefs) {
+  constructor(scene: Phaser.Scene, worldRefs: WorldRefs, parentContainer?: Phaser.GameObjects.Container) {
     super(scene, 'CellOverlays', (deltaSeconds: number) => this.update(deltaSeconds));
     this.worldRefs = worldRefs;
+    this.cellRoot = parentContainer; // HOTFIX H5: Store reference for text creation
     
     // Create graphics object for overlay rendering
     this.overlayGraphics = scene.add.graphics();
     this.overlayGraphics.setDepth(10); // Above everything else
+    
+    // HOTFIX H2: Re-parent overlay graphics to cellRoot if provided
+    if (parentContainer) {
+      parentContainer.add(this.overlayGraphics);
+    }
     
     // Create persistent debug panel (like other HUD elements)
     this.createVesicleDebugPanel();
@@ -42,6 +49,9 @@ export class CellOverlays extends SystemObject {
       this.refreshDirtyTiles();
       this.dirtyTiles.clear();
     }
+    
+    // Milestone 9: Render cell motility overlays
+    this.renderMotilityOverlays();
     
     // Milestone 8: Story 8.6 - Render queue badges and incoming indicators
     if (this.showQueueBadges) {
@@ -131,6 +141,11 @@ export class CellOverlays extends SystemObject {
     text.setOrigin(0.5, 0.5);
     text.setDepth(11);
     
+    // HOTFIX H5: Add text to cellRoot if available
+    if (this.cellRoot) {
+      this.cellRoot.add(text);
+    }
+    
     // Store text for cleanup
     this.scene.time.delayedCall(1000, () => text.destroy());
   }
@@ -172,6 +187,11 @@ export class CellOverlays extends SystemObject {
       );
       text.setOrigin(0.5, 0.5);
       text.setDepth(11);
+      
+      // HOTFIX H5: Add text to cellRoot if available
+      if (this.cellRoot) {
+        this.cellRoot.add(text);
+      }
       
       // Store text for cleanup
       this.scene.time.delayedCall(1000, () => text.destroy());
@@ -279,6 +299,153 @@ export class CellOverlays extends SystemObject {
     // In the future, this could be optimized to only redraw specific tiles
     this.scene.events.emit('refresh-membrane-glyphs');
     console.log(`♻️ Refreshed ${this.dirtyTiles.size} dirty tiles`);
+  }
+
+  /**
+   * Milestone 9: Render cell motility overlays (polarity, membrane deformation, substrate)
+   */
+  private renderMotilityOverlays(): void {
+    // Get motility system from world refs (will be added)
+    const motility = (this.worldRefs as any).cellMotility;
+    if (!motility) return;
+    
+    const motilityState = motility.getState();
+    
+    // Render polarity vector (front indicator)
+    this.renderPolarityOverlay(motilityState);
+    
+    // Render membrane deformation
+    this.renderMembraneDeformation(motilityState);
+    
+    // Render substrate areas (debug mode)
+    if (this.showVesicleDebug) {
+      this.renderSubstrateAreas();
+    }
+  }
+
+  /**
+   * Render polarity vector as front/rear indicators
+   */
+  private renderPolarityOverlay(motilityState: any): void {
+    if (motilityState.polarity.magnitude < 0.1) return;
+    
+    const cellCenter = this.worldRefs.hexGrid.hexToWorld({ q: 0, r: 0 });
+    const cellRadius = 220; // Standard cell radius
+    
+    // Front indicator (arrow/chevron)
+    const frontDirection = motilityState.polarity.direction;
+    const frontX = cellCenter.x + Math.cos(frontDirection) * (cellRadius + 20);
+    const frontY = cellCenter.y + Math.sin(frontDirection) * (cellRadius + 20);
+    
+    // Draw front chevron
+    this.overlayGraphics.lineStyle(3, 0x00ff00, 0.8 * motilityState.polarity.magnitude);
+    const chevronSize = 15;
+    const chevronAngle = 0.5;
+    
+    // Left arm of chevron
+    const leftX = frontX - Math.cos(frontDirection - chevronAngle) * chevronSize;
+    const leftY = frontY - Math.sin(frontDirection - chevronAngle) * chevronSize;
+    this.overlayGraphics.moveTo(leftX, leftY);
+    this.overlayGraphics.lineTo(frontX, frontY);
+    
+    // Right arm of chevron
+    const rightX = frontX - Math.cos(frontDirection + chevronAngle) * chevronSize;
+    const rightY = frontY - Math.sin(frontDirection + chevronAngle) * chevronSize;
+    this.overlayGraphics.lineTo(rightX, rightY);
+    
+    // Rear indicator (dimmer ring)
+    const rearDirection = frontDirection + Math.PI;
+    const rearX = cellCenter.x + Math.cos(rearDirection) * (cellRadius + 10);
+    const rearY = cellCenter.y + Math.sin(rearDirection) * (cellRadius + 10);
+    
+    this.overlayGraphics.fillStyle(0xff4444, 0.3 * motilityState.polarity.magnitude);
+    this.overlayGraphics.fillCircle(rearX, rearY, 8);
+  }
+
+  /**
+   * Render membrane deformation (squash/stretch)
+   */
+  private renderMembraneDeformation(motilityState: any): void {
+    if (motilityState.membraneSquash < 0.05) return;
+    
+    const cellCenter = this.worldRefs.hexGrid.hexToWorld({ q: 0, r: 0 });
+    const cellRadius = 220; // Standard cell radius
+    
+    // Calculate deformation based on squash direction and magnitude
+    const squashDir = motilityState.membraneSquashDirection;
+    const squashAmount = motilityState.membraneSquash;
+    
+    // Draw deformed membrane overlay
+    this.overlayGraphics.lineStyle(2, 0xffff00, squashAmount * 0.5);
+    
+    // Draw deformation indicator at contact point
+    const contactX = cellCenter.x + Math.cos(squashDir) * cellRadius;
+    const contactY = cellCenter.y + Math.sin(squashDir) * cellRadius;
+    
+    this.overlayGraphics.fillStyle(0xffff00, squashAmount * 0.4);
+    this.overlayGraphics.fillCircle(contactX, contactY, 5 + squashAmount * 10);
+  }
+
+  /**
+   * Render substrate areas for debug purposes
+   */
+  private renderSubstrateAreas(): void {
+    // Get substrate system from world refs (will be added)
+    const substrate = (this.worldRefs as any).substrateSystem;
+    if (!substrate) return;
+    
+    // Render substrate areas
+    for (const area of substrate.getSubstrates()) {
+      const alpha = 0.2;
+      let color = 0x888888; // Default FIRM
+      
+      switch (area.type) {
+        case 'SOFT':
+          color = 0x4444AA;
+          break;
+        case 'STICKY':
+          color = 0xAA4444;
+          break;
+      }
+      
+      this.overlayGraphics.fillStyle(color, alpha);
+      
+      if (area.bounds.type === 'circle') {
+        this.overlayGraphics.fillCircle(area.bounds.x, area.bounds.y, area.bounds.radius);
+      } else {
+        // Polygon
+        this.overlayGraphics.beginPath();
+        const points = area.bounds.points;
+        this.overlayGraphics.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+          this.overlayGraphics.lineTo(points[i].x, points[i].y);
+        }
+        this.overlayGraphics.closePath();
+        this.overlayGraphics.fillPath();
+      }
+    }
+    
+    // Render obstacles
+    for (const obstacle of substrate.getObstacles()) {
+      const alpha = obstacle.alpha || 0.8;
+      const color = obstacle.color || 0x666666;
+      
+      this.overlayGraphics.fillStyle(color, alpha);
+      
+      if (obstacle.bounds.type === 'circle') {
+        this.overlayGraphics.fillCircle(obstacle.bounds.x, obstacle.bounds.y, obstacle.bounds.radius);
+      } else {
+        // Polygon
+        this.overlayGraphics.beginPath();
+        const points = obstacle.bounds.points;
+        this.overlayGraphics.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+          this.overlayGraphics.lineTo(points[i].x, points[i].y);
+        }
+        this.overlayGraphics.closePath();
+        this.overlayGraphics.fillPath();
+      }
+    }
   }
 
   override destroy() {

@@ -15,6 +15,7 @@ interface PlayerConfig {
   ringColor: number;
   cellCenter: Phaser.Math.Vector2;
   cellRadius: number;
+  cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Add cellRoot for membrane effects
 }
 
 export class Player extends Phaser.GameObjects.Container {
@@ -35,6 +36,7 @@ export class Player extends Phaser.GameObjects.Container {
   private cellCenter: Phaser.Math.Vector2;
   private cellRadius: number;
   private lastMembraneHit = 0;
+  private cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Store cellRoot for membrane effects
   
   // Transcript carrying
   private carriedTranscripts: Transcript[] = [];
@@ -53,6 +55,7 @@ export class Player extends Phaser.GameObjects.Container {
     this.maxDashCooldown = config.maxDashCooldown;
     this.cellCenter = config.cellCenter;
     this.cellRadius = config.cellRadius;
+    this.cellRoot = config.cellRoot; // HOTFIX H5: Store cellRoot reference
 
     // Create sprite with physics body
     const pkey = this.makePlayerTexture(config.playerColor);
@@ -270,6 +273,11 @@ export class Player extends Phaser.GameObjects.Container {
   private createMembraneRipple(position: Phaser.Math.Vector2) {
     const ripple = this.scene.add.circle(position.x, position.y, 20, 0x66ccff, 0.3);
     ripple.setDepth(2);
+    
+    // HOTFIX H5: Add ripple to cellRoot if available, so it moves with the cell
+    if (this.cellRoot) {
+      this.cellRoot.add(ripple);
+    }
     
     this.scene.tweens.add({
       targets: ripple,

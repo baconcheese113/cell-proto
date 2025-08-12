@@ -17,11 +17,13 @@ export class OrganelleRenderer {
   // Visual elements
   private graphics!: Phaser.GameObjects.Graphics;
   private labelGroup!: Phaser.GameObjects.Group;
+  private parentContainer?: Phaser.GameObjects.Container; // HOTFIX: Support for cellRoot parenting
 
-  constructor(scene: Phaser.Scene, organelleSystem: OrganelleSystem, hexSize: number) {
+  constructor(scene: Phaser.Scene, organelleSystem: OrganelleSystem, hexSize: number, parentContainer?: Phaser.GameObjects.Container) {
     this.scene = scene;
     this.organelleSystem = organelleSystem;
     this.hexSize = hexSize;
+    this.parentContainer = parentContainer;
     this.initializeGraphics();
   }
 
@@ -32,6 +34,11 @@ export class OrganelleRenderer {
     // Graphics for outlines and shapes
     this.graphics = this.scene.add.graphics();
     this.graphics.setDepth(1.7); // Above hex grid, below UI
+    
+    // HOTFIX H2: Re-parent to cellRoot if provided
+    if (this.parentContainer) {
+      this.parentContainer.add(this.graphics);
+    }
     
     // Group for text labels
     this.labelGroup = this.scene.add.group();
@@ -99,6 +106,11 @@ export class OrganelleRenderer {
     label.setDepth(1.8);
     this.labelGroup.add(label);
     
+    // HOTFIX H5: Add label to cellRoot if we have a parent container
+    if (this.parentContainer) {
+      this.parentContainer.add(label);
+    }
+    
     // Add footprint size indicator
     const sizeLabel = this.scene.add.text(centerPos.x, centerPos.y + this.hexSize + 8, 
       `${config.footprint.name} (${footprintTiles.length} tiles)`, {
@@ -114,6 +126,11 @@ export class OrganelleRenderer {
     sizeLabel.setDepth(1.8);
     sizeLabel.setAlpha(0.7);
     this.labelGroup.add(sizeLabel);
+    
+    // HOTFIX H5: Add size label to cellRoot if we have a parent container
+    if (this.parentContainer) {
+      this.parentContainer.add(sizeLabel);
+    }
   }
 
   /**
@@ -131,20 +148,17 @@ export class OrganelleRenderer {
   }
 
   /**
-   * Convert hex coordinate to world position (simplified)
-   * TODO: Get this from the actual hex grid system
+   * Convert hex coordinate to local position relative to cellRoot
+   * HOTFIX H5: Now uses local coordinates (0,0 center) since we're in cellRoot
    */
   private hexToWorld(coord: { q: number, r: number }): { x: number, y: number } {
-    // Get center of screen (this should match the hex grid center)
-    const centerX = this.scene.scale.gameSize.width * 0.5;
-    const centerY = this.scene.scale.gameSize.height * 0.5;
-    
+    // Use local coordinates (0,0 at center) since we're now in cellRoot container
     const x = this.hexSize * (3/2 * coord.q);
     const y = this.hexSize * (Math.sqrt(3)/2 * coord.q + Math.sqrt(3) * coord.r);
     
     return {
-      x: centerX + x,
-      y: centerY + y
+      x: x,
+      y: y
     };
   }
 

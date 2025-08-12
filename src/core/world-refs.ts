@@ -15,6 +15,9 @@ import type { DiffusionSystem } from "../species/diffusion-system";
 import type { PassiveEffectsSystem } from "../species/passive-effects-system";
 import type { HeatmapSystem } from "../species/heatmap-system";
 import type { ConservationTracker } from "../species/conservation-tracker";
+import type { CellSpaceSystem } from "./cell-space-system";
+import type { SubstrateSystem } from "./substrate-system";
+import type { CellMotility } from "../systems/cell-motility";
 
 // Milestone 7: Orders & Transcripts data types
 export type ProteinId = 'GLUT' | 'AA_TRANSPORTER' | 'NT_TRANSPORTER' | 'ROS_EXPORTER' | 'SECRETION_PUMP' | 'GROWTH_FACTOR_RECEPTOR';
@@ -83,6 +86,9 @@ export interface WorldRefs {
   // Core spatial system
   hexGrid: HexGrid;
   
+  // HOTFIX: Root container for all cell visuals
+  cellRoot: Phaser.GameObjects.Container;
+  
   // Player and inventory
   playerInventory: PlayerInventorySystem;
   
@@ -102,6 +108,11 @@ export interface WorldRefs {
   passiveEffectsSystem: PassiveEffectsSystem;
   heatmapSystem: HeatmapSystem;
   conservationTracker: ConservationTracker;
+  
+  // Milestone 9: Cell locomotion systems
+  cellSpaceSystem: CellSpaceSystem;
+  substrateSystem: SubstrateSystem;
+  cellMotility: CellMotility;
   
   // Milestone 7: Orders & Transcripts (now handled by consolidated systems)
   installOrders: Map<string, InstallOrder>;

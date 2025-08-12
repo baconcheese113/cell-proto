@@ -16,13 +16,18 @@ export class CellProduction extends SystemObject {
   private updateCount = 0;
   private lastPerformanceLog = 0;
 
-  constructor(scene: Phaser.Scene, worldRefs: WorldRefs) {
+  constructor(scene: Phaser.Scene, worldRefs: WorldRefs, cellRoot?: Phaser.GameObjects.Container) {
     super(scene, 'CellProduction', (deltaSeconds: number) => this.update(deltaSeconds));
     this.worldRefs = worldRefs;
     
     // Create graphics object for rendering transcript dots
     this.transcriptGraphics = scene.add.graphics();
     this.transcriptGraphics.setDepth(5);
+    
+    // HOTFIX H5: Re-parent to cellRoot if provided
+    if (cellRoot) {
+      cellRoot.add(this.transcriptGraphics);
+    }
   }
 
   /**

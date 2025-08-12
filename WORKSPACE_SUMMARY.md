@@ -14,8 +14,9 @@ This is a **cellular simulation game prototype** built with **TypeScript** and *
 - **Multi-stage biological timing system with realistic delays**
 - **Real-time visualization and interactive debugging**
 - **Consolidated SystemObject architecture with automatic Phaser lifecycle management**
+- **Milestone 9: Complete cell motility system with unified visual transform (cellRoot container)**
 
-The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles.
+The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles. **Milestone 9** introduced unified cell movement where all visual elements move together as a single entity.
 
 **Technology Stack:**
 - **Core**: TypeScript 5.8.3, Phaser 3.90.0, Vite 7.1.0
@@ -104,6 +105,99 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 
 ---
 
+## Milestone 9: Cell Motility & Unified Visual Transform
+
+### **Revolutionary CellRoot Container System**
+
+**Purpose**: Unified visual transform system where all cell visual elements move together as a single entity
+
+**Key Innovation**: 
+- **CellRoot Container** (`cellRoot: Phaser.GameObjects.Container`) acts as parent for ALL cell visuals
+- **Local Coordinate System**: (0,0) at center, all positions relative to cellRoot
+- **Unified Movement**: Single transform drives hex grid, organelles, player, transcripts, vesicles, heatmaps, blueprints, overlays, and membrane effects
+- **Drive Mode Toggle**: T key switches between normal player movement and unified cell locomotion
+
+**Visual Elements in CellRoot:**
+- Hex grid graphics and interaction highlights
+- All organelles (graphics and text labels)
+- Player actor and selection ring
+- Transcript and vesicle rendering graphics
+- Heatmap visualization
+- Blueprint construction progress
+- Membrane protein glyphs and transporter labels
+- Queue badges and vesicle indicators
+- Membrane ripple effects
+
+### **Core Locomotion Systems**
+
+#### **CellSpaceSystem** (`core/cell-space-system.ts`)
+**Purpose**: Single source of truth for cell's spatial relationship with external world
+
+**Key Features:**
+- **Transform Management**: Position, rotation, and scale of entire cell
+- **Smooth Interpolation**: Lerp-based movement for fluid cell locomotion
+- **Target System**: Separate target and current transforms for predictive movement
+- **World Integration**: Converts between cell-local and world coordinates
+
+#### **CellMotility System** (`systems/cell-motility.ts`)
+**Purpose**: Complete cell locomotion with polarity, adhesion, and substrate interaction
+
+**Key Features:**
+- **Locomotion Modes**: idle, crawl, dash with distinct behaviors
+- **Polarity System**: Direction and magnitude-based cell orientation
+- **Adhesion Dynamics**: Realistic adhesion point management (gain when moving, lose when idle)
+- **ATP Integration**: Energy costs for movement, dash, and adhesion maintenance
+- **Substrate Recognition**: SOFT, FIRM, STICKY substrates with different movement properties
+- **Collision System**: Obstacle detection with normal vectors and collision damping
+- **Membrane Deformation**: Visual squash effects during collisions
+- **Performance Tracking**: Speed, polarity, adhesion count, ATP drain metrics
+
+**Locomotion Parameters:**
+```typescript
+crawlMaxSpeed: 60 hex/second
+dashSpeed: 120 hex/second  
+dashDuration: 1.5 seconds
+dashCooldown: 3 seconds
+dashATPCost: 25 ATP
+adhesionEfficiency: 0.2 speed multiplier per adhesion
+```
+
+#### **SubstrateSystem** (`core/substrate-system.ts`) 
+**Purpose**: External environment and obstacle management for cell locomotion
+
+**Key Features:**
+- **Substrate Areas**: Circular and polygonal zones with SOFT/FIRM/STICKY properties
+- **Obstacle System**: Collision boundaries (rocks, walls) with proper physics
+- **Speed Modifiers**: Substrate-specific locomotion adjustments
+- **Visual Integration**: Color-coded substrate zones and obstacle rendering
+- **Collision Detection**: Efficient point-in-bounds checking for movement validation
+
+### **Milestone 9 Controls & Interaction**
+
+**Drive Mode Controls:**
+- **T Key**: Toggle between normal player movement and unified cell locomotion
+- **WASD**: In drive mode, controls cell movement instead of player
+- **SPACE**: Dash ability (requires ATP, has cooldown)
+
+**Movement Mechanics:**
+- **Normal Mode**: Player moves within cell, camera follows player
+- **Drive Mode**: Entire cell moves as unit, camera follows cell center
+- **Seamless Toggle**: Instant switching between movement modes
+- **Energy Management**: ATP consumption for dash and movement maintenance
+
+**Visual Feedback:**
+- **Polarity Indicator**: Green arrow showing cell's current polarity direction
+- **Adhesion Visualization**: Real-time adhesion point count in HUD
+- **Speed Display**: Current movement speed and maximum speed limits
+- **ATP Monitoring**: Real-time energy drain and available ATP for movement
+- **Collision Effects**: Visual membrane deformation during obstacle contact
+
+**Debug Controls:**
+- **Y Key**: System status including motility metrics
+- **K Key**: Debug ATP injection for testing dash mechanics
+
+---
+
 ## Project Structure
 
 ### Core Entry Points
@@ -119,10 +213,11 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 - **Phaser Container**: Extends Phaser.GameObjects.Container for proper lifecycle
 - **Physics Integration**: Arcade physics with acceleration/deceleration
 - **Dash Mechanics**: Speed boost with cooldown management  
-- **Membrane Constraints**: Cell boundary collision detection
+- **Membrane Constraints**: Cell boundary collision detection with visual ripple effects
 - **Hex Grid Integration**: Current tile tracking and coordinate conversion
 - **Transcript Interaction**: Pickup/carry mechanics for protein transport
 - **Visual Management**: Player sprite and selection ring rendering
+- **CellRoot Integration**: Membrane ripple effects positioned within unified cell coordinate system
 
 #### **TileActionController** (`controllers/tile-action-controller.ts`)
 **Purpose**: Centralized tile-based interaction management
@@ -133,6 +228,32 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 - **Input State Management**: Mode tracking (build, protein selection, etc.)
 - **Order Generation**: Install order creation for protein production pipeline
 - **Validation Logic**: Placement rules and prerequisite checking
+
+### **Hotfix Epic: Unified Visual Transform System**
+
+**Problem Solved**: Visual disconnection where hex grid moved but organelles, player, and overlays remained anchored to scene root
+
+**Comprehensive Solution Phases:**
+- **H1**: CellRoot container creation and initialization
+- **H2**: Re-parenting all visual elements to cellRoot (hex graphics, player, organelles, overlays)
+- **H3**: Unified transform driving through cellRoot.setPosition()
+- **H4**: Camera centering and coordinate system fixes
+- **H5**: Final visual element positioning (heatmap, blueprints, membrane effects, text labels)
+
+**Technical Implementation:**
+- **Local Coordinate System**: All positions now relative to cellRoot (0,0 at center)
+- **Mouse Interaction Fix**: `localX = pointer.worldX - this.cellRoot.x` for proper hex detection
+- **Visual Element Re-parenting**: Systematic addition to cellRoot for unified movement
+- **Container Hierarchy**: Complete visual hierarchy under single cellRoot container
+
+**Systems Modified:**
+- **GameScene**: cellRoot creation, camera management, coordinate conversion
+- **OrganelleRenderer**: Local coordinates, parentContainer support for labels
+- **CellProduction**: Re-parented transcriptGraphics for transcript/vesicle rendering
+- **CellOverlays**: Re-parented overlay graphics and dynamic text elements
+- **HeatmapSystem**: parentContainer support for graphics
+- **BlueprintRenderer**: parentContainer support for construction visuals
+- **Player**: cellRoot reference for membrane ripple effects
 
 ### **Core Data Systems**
 
@@ -298,6 +419,16 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 - **`textures.ts`**: Procedural texture generation
   - **Grid Textures**: Hex grid overlays with major/minor lines
   - **Cell Textures**: Circular cell membrane visualization
+
+### **Core System Integration** (`core/world-refs.ts`)
+**Purpose**: Centralized system references and shared state management
+
+**Key Components:**
+- **System References**: Access to all major systems (hex grid, organelles, membrane, species, motility)
+- **CellRoot Container**: Unified visual transform container for all cell elements
+- **Data Sharing**: Maps for transcripts, vesicles, install orders with shared access
+- **Milestone 9 Integration**: CellSpaceSystem, SubstrateSystem, and CellMotility references
+- **UI Callbacks**: Toast messages and tile information refresh functions
   - **Ring Textures**: Selection and highlight indicators
   - **Dot Textures**: Small visual markers
   - **Station Textures**: Organelle-specific symbols
@@ -623,4 +754,15 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Clean Code**: Removed 500+ lines of unused legacy methods  
 ✅ **"Calm, Minimal Path Forward"**: Achieved through elimination of manual coordination
 
-The project is now positioned for advanced cellular biology features with a solid, maintainable, and performant foundation that demonstrates how complex biological simulations can be elegantly managed through thoughtful architecture design.
+### **Milestone 9: Cell Motility Achievements**
+✅ **Unified Visual Transform**: Complete cellRoot container system for seamless cell movement  
+✅ **Cell Locomotion**: Full motility system with polarity, adhesion, and substrate interaction  
+✅ **Drive Mode**: T key toggle between player movement and unified cell locomotion  
+✅ **Coordinate System Unity**: All visual elements move together (grid, organelles, player, transcripts, vesicles, overlays, effects)  
+✅ **Mouse Interaction Fix**: Proper coordinate conversion for hex tile detection during cell movement  
+✅ **Membrane Effects**: Visual ripple effects properly positioned within cell coordinate system  
+✅ **Performance Monitoring**: Real-time motility metrics (speed, polarity, adhesion, ATP drain)  
+✅ **Collision System**: Realistic obstacle interaction with collision normals and damping  
+✅ **Energy Integration**: ATP costs for movement, dash ability, and adhesion maintenance  
+
+The project is now positioned for advanced cellular biology features with a solid, maintainable, and performant foundation that demonstrates how complex biological simulations can be elegantly managed through thoughtful architecture design. **Milestone 9** completed the vision of unified cell behavior where the entire cellular environment moves as a cohesive biological entity.
