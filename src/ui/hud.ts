@@ -26,9 +26,45 @@ export type HudCtx = {
       turnMultiplier: number;
       adhesionEfficiency: number;
     };
+    // V2: State meters
+    stateMeters?: {
+      pulse?: number;              // 0-1, amoeboid pulse energy
+      pressure?: number;           // 0-1, blebbing pressure
+      leftMaturity?: number;       // 0-1, left adhesion maturity
+      rightMaturity?: number;      // 0-1, right adhesion maturity
+      trackStrength?: number;      // 0-1, protease track strength
+      chainWindow?: number;        // 0-1, chain timing window progress
+    };
+    // V2: Action availability
+    actionStates?: {
+      blebBurst?: boolean;
+      proteaseToggle?: boolean;
+      handbrake?: boolean;
+      pseudopodLobe?: boolean;
+    };
+    // V2: Visual effects for readability
+    visualEffects?: {
+      membraneState: 'normal' | 'extending' | 'retracting' | 'blebbing';
+      pulse: {
+        active: boolean;
+        intensity: number;
+        color: string;
+      };
+      trail: {
+        active: boolean;
+        type: 'adhesion' | 'protease' | 'cytoplasm';
+        opacity: number;
+      };
+      animation: {
+        phase: number;
+        speed: number;
+      };
+    };
   };
   // Milestone 9: Drive mode status
   driveMode?: boolean;
+  // V2: Debug mode
+  debugMode?: boolean;
 };
 
 let hudText: Phaser.GameObjects.Text | null = null;
@@ -99,7 +135,98 @@ export function setHud(scene: Phaser.Scene, ctx: HudCtx) {
         motilityInfo += ` | Handbrake: COOLDOWN`;
       }
     }
+
+    // V2: State meters display
+    if (info.stateMeters && ctx.debugMode) {
+      const meters = info.stateMeters;
+      motilityInfo += `\n📊 State Meters:`;
+      
+      if (meters.pulse !== undefined) {
+        const pulseBar = generateProgressBar(meters.pulse, 10);
+        motilityInfo += `\n  🎯 Pulse: ${pulseBar} ${(meters.pulse * 100).toFixed(0)}%`;
+      }
+      
+      if (meters.pressure !== undefined) {
+        const pressureBar = generateProgressBar(meters.pressure, 10);
+        motilityInfo += `\n  💨 Pressure: ${pressureBar} ${(meters.pressure * 100).toFixed(0)}%`;
+      }
+      
+      if (meters.leftMaturity !== undefined && meters.rightMaturity !== undefined) {
+        const leftBar = generateProgressBar(meters.leftMaturity, 5);
+        const rightBar = generateProgressBar(meters.rightMaturity, 5);
+        motilityInfo += `\n  🔗 L:${leftBar} R:${rightBar}`;
+      }
+      
+      if (meters.trackStrength !== undefined) {
+        const trackBar = generateProgressBar(meters.trackStrength, 10);
+        motilityInfo += `\n  🛤️  Track: ${trackBar} ${(meters.trackStrength * 100).toFixed(0)}%`;
+      }
+      
+      if (meters.chainWindow !== undefined && meters.chainWindow > 0) {
+        const chainBar = generateProgressBar(meters.chainWindow, 8);
+        motilityInfo += `\n  ⛓️  Chain: ${chainBar}`;
+      }
+    }
+    
+    // V2: Visual effects display (always shown for readability feedback)
+    if (info.visualEffects) {
+      const vfx = info.visualEffects;
+      motilityInfo += `\n🎬 Visual Mode:`;
+      
+      // Membrane state indicator
+      let membraneIcon = '⚪';
+      switch (vfx.membraneState) {
+        case 'extending': membraneIcon = '🟢'; break;
+        case 'retracting': membraneIcon = '🔴'; break;
+        case 'blebbing': membraneIcon = '🔵'; break;
+      }
+      motilityInfo += ` ${membraneIcon} ${vfx.membraneState}`;
+      
+      // Active pulse indicator
+      if (vfx.pulse.active) {
+        const intensity = Math.round(vfx.pulse.intensity * 100);
+        motilityInfo += ` ✨${intensity}%`;
+      }
+      
+      // Trail indicator
+      if (vfx.trail.active) {
+        const trailIcon = vfx.trail.type === 'protease' ? '🧪' : 
+                         vfx.trail.type === 'adhesion' ? '🔗' : '💫';
+        const opacity = Math.round(vfx.trail.opacity * 100);
+        motilityInfo += ` ${trailIcon}${opacity}%`;
+      }
+    }
+
+    // V2: Action availability indicators
+    if (info.actionStates) {
+      const actions = info.actionStates;
+      let actionLine = "\n🎮 Actions: ";
+      
+      if (actions.blebBurst !== undefined) {
+        actionLine += `SPACE${actions.blebBurst ? '✓' : '✗'} `;
+      }
+      if (actions.handbrake !== undefined) {
+        actionLine += `Z${actions.handbrake ? '✓' : '✗'} `;
+      }
+      if (actions.proteaseToggle !== undefined) {
+        actionLine += `X${actions.proteaseToggle ? '✓' : '✗'} `;
+      }
+      if (actions.pseudopodLobe !== undefined) {
+        actionLine += `Hold-Mode${actions.pseudopodLobe ? '✓' : '✗'} `;
+      }
+      
+      motilityInfo += actionLine;
+    }
   }
   
   hudText!.setText(controls + message + driveStatus + motilityInfo);
+}
+
+/**
+ * Generate a simple ASCII progress bar
+ */
+function generateProgressBar(value: number, length: number): string {
+  const filled = Math.round(value * length);
+  const empty = length - filled;
+  return '█'.repeat(filled) + '░'.repeat(empty);
 }

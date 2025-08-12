@@ -14,6 +14,7 @@ import { CellMotility } from "../systems/cell-motility";
 import { PlayerInventorySystem } from "../player/player-inventory";
 import { setHud, addHud } from "../ui/hud";
 import type { WorldRefs } from "../core/world-refs";
+import { MotilityTelemetry } from "../systems/motility-telemetry";
 
 export class MotilityCourseScene extends Phaser.Scene {
   private substrateSystem!: SubstrateSystem;
@@ -31,6 +32,22 @@ export class MotilityCourseScene extends Phaser.Scene {
   private currentZone = 0;
   private zoneTimes: number[] = [];
   private isRunning = false;
+  
+  // V2: Debug mode for state meters
+  private debugMode = false;
+
+  // V2: Performance tracking for scoring
+  private performanceData = {
+    amoeboidLobeCount: 0,
+    blebChainCount: 0,
+    mesenchymalAnchorDrops: 0,
+    totalAtpUsed: 0,
+    skillEvents: [] as string[]
+  };
+  
+  // V2: Telemetry system
+  private telemetry!: MotilityTelemetry;
+  private lastMode: string = 'amoeboid';
   
   // Zone positions
   private zonePositions = [
@@ -60,6 +77,7 @@ export class MotilityCourseScene extends Phaser.Scene {
   private setupSystems(): void {
     this.substrateSystem = new SubstrateSystem();
     this.playerInventory = new PlayerInventorySystem();
+    this.telemetry = new MotilityTelemetry();
     
     // Give player plenty of ATP for testing
     this.playerInventory.take('ATP', 1000);
@@ -122,6 +140,21 @@ export class MotilityCourseScene extends Phaser.Scene {
         ]
       }, 0x333333);
     });
+
+    // V2: Add micropores for amoeboid advantage
+    this.addTerrainFeature('micropore', {
+      type: 'circle',
+      x: baseX - 80,
+      y: -10,
+      radius: 8
+    }, { requiredMode: 'amoeboid' }, 0x6666FF);
+
+    this.addTerrainFeature('micropore', {
+      type: 'circle', 
+      x: baseX + 40,
+      y: 50,
+      radius: 8
+    }, { requiredMode: 'amoeboid' }, 0x6666FF);
   }
   
   private createLowAdhesionRunway(): void {
@@ -152,6 +185,27 @@ export class MotilityCourseScene extends Phaser.Scene {
       y: -25,
       radius: 12
     }, 0x666666);
+
+    // V2: Add run-up gates for speed detection (blebbing advantage)
+    this.addTerrainFeature('runUpGate', {
+      type: 'polygon',
+      points: [
+        { x: baseX - 100, y: -5 },
+        { x: baseX - 95, y: -5 },
+        { x: baseX - 95, y: 5 },
+        { x: baseX - 100, y: 5 }
+      ]
+    }, { requiredSpeed: 25, rewardPoints: 10 }, 0xFFFF66);
+
+    this.addTerrainFeature('runUpGate', {
+      type: 'polygon',
+      points: [
+        { x: baseX + 50, y: -5 },
+        { x: baseX + 55, y: -5 },
+        { x: baseX + 55, y: 5 },
+        { x: baseX + 50, y: 5 }
+      ]
+    }, { requiredSpeed: 30, rewardPoints: 15 }, 0xFFFF66);
   }
   
   private createECMChicanes(): void {
@@ -184,6 +238,27 @@ export class MotilityCourseScene extends Phaser.Scene {
         ]
       }, 0x333333);
     });
+
+    // V2: Add ECM lattice with S-curves for mesenchymal track advantage
+    this.addTerrainFeature('ecmLattice', {
+      type: 'polygon',
+      points: [
+        { x: baseX - 60, y: -20 },
+        { x: baseX - 40, y: -20 },
+        { x: baseX - 20, y: 0 },
+        { x: baseX, y: 20 },
+        { x: baseX + 20, y: 0 },
+        { x: baseX + 40, y: -20 },
+        { x: baseX + 60, y: -20 },
+        { x: baseX + 60, y: -10 },
+        { x: baseX + 45, y: -10 },
+        { x: baseX + 25, y: 10 },
+        { x: baseX + 5, y: 30 },
+        { x: baseX - 15, y: 10 },
+        { x: baseX - 35, y: -10 },
+        { x: baseX - 60, y: -10 }
+      ]
+    }, { trackPersistence: 15, resistanceReduction: 0.4 }, 0xAA8844);
   }
   
   private createStartFinishAreas(): void {
@@ -218,6 +293,17 @@ export class MotilityCourseScene extends Phaser.Scene {
       bounds,
       color,
       alpha: 0.8
+    });
+  }
+
+  // V2: Add terrain features for mode differentiation
+  private addTerrainFeature(type: any, bounds: any, properties: any, color: number): void {
+    this.substrateSystem.addTerrainFeature({
+      type,
+      bounds,
+      properties,
+      color,
+      alpha: 0.6
     });
   }
   
@@ -272,7 +358,7 @@ export class MotilityCourseScene extends Phaser.Scene {
   }
   
   private setupInput(): void {
-    this.keys = this.input.keyboard?.addKeys('W,A,S,D,SPACE,TAB,X,Z,R,ESC') as any;
+    this.keys = this.input.keyboard?.addKeys('W,A,S,D,SPACE,TAB,X,Z,R,ESC,M') as any;
     
     // Reset course
     this.input.keyboard?.on('keydown-R', () => {
@@ -281,7 +367,12 @@ export class MotilityCourseScene extends Phaser.Scene {
     
     // Return to main game
     this.input.keyboard?.on('keydown-ESC', () => {
-      this.scene.start('GameScene');
+      this.scene.start('game');
+    });
+    
+    // V2: Toggle debug mode for state meters
+    this.input.keyboard?.on('keydown-M', () => {
+      this.debugMode = !this.debugMode;
     });
   }
   
@@ -301,6 +392,15 @@ export class MotilityCourseScene extends Phaser.Scene {
     this.zoneTimes = [];
     this.isRunning = true;
     
+    // V2: Reset performance tracking
+    this.performanceData = {
+      amoeboidLobeCount: 0,
+      blebChainCount: 0,
+      mesenchymalAnchorDrops: 0,
+      totalAtpUsed: 0,
+      skillEvents: []
+    };
+    
     // Center camera on start area
     this.cameras.main.centerOn(-450, 0);
   }
@@ -308,6 +408,11 @@ export class MotilityCourseScene extends Phaser.Scene {
   override update(): void {
     // Update systems
     this.cellMotility.updateInput(this.keys);
+    
+    // V2: Track skill usage for scoring
+    if (this.isRunning) {
+      this.trackPerformanceMetrics();
+    }
     
     // Update cell visual position
     const transform = this.cellSpaceSystem.getTransform();
@@ -324,6 +429,92 @@ export class MotilityCourseScene extends Phaser.Scene {
     
     // Update HUD
     this.updateCourseHUD();
+  }
+
+  // V2: Track performance metrics for star rating
+  private trackPerformanceMetrics(): void {
+    const modeState = this.cellMotility.getModeRegistry().getState();
+    const motilityState = this.cellMotility.getState();
+    
+    // V2: Track mode changes for telemetry
+    const currentMode = modeState.currentModeId;
+    if (currentMode !== this.lastMode) {
+      this.telemetry.logEvent('mode_switch', {
+        newMode: currentMode,
+        oldMode: this.lastMode,
+        timestamp: this.time.now
+      });
+      this.lastMode = currentMode;
+    }
+    
+    // V2: Track terrain interactions
+    const currentSubstrate = motilityState.currentSubstrate;
+    if (Math.random() < 0.02) { // Sample terrain interactions occasionally to avoid spam
+      this.telemetry.logEvent('terrain_interaction', {
+        terrainType: currentSubstrate,
+        modeId: currentMode,
+        speed: motilityState.speed,
+        timestamp: this.time.now
+      });
+    }
+    
+    // Track ATP usage (simplified)
+    this.performanceData.totalAtpUsed += motilityState.atpDrainPerSecond * 0.016; // ~60fps
+    
+    // Track mode-specific skill usage
+    if (modeState.currentModeId === 'amoeboid' && modeState.amoeboid.isAiming) {
+      // Count pseudopod lobe usage
+      if (!this.performanceData.skillEvents.includes('aimingLobe')) {
+        this.performanceData.amoeboidLobeCount++;
+        this.performanceData.skillEvents.push('aimingLobe');
+        
+        // V2: Telemetry - track skill usage
+        this.telemetry.logEvent('skill_usage', {
+          skillType: 'pseudopodLobe',
+          modeId: 'amoeboid',
+          timestamp: this.time.now
+        });
+      }
+    } else {
+      this.performanceData.skillEvents = this.performanceData.skillEvents.filter(e => e !== 'aimingLobe');
+    }
+    
+    // Track bleb chains
+    if (modeState.currentModeId === 'blebbing' && modeState.blebbing.chainCount > 1) {
+      if (!this.performanceData.skillEvents.includes('chainActive')) {
+        this.performanceData.blebChainCount++;
+        this.performanceData.skillEvents.push('chainActive');
+        
+        // V2: Telemetry - track skill usage
+        this.telemetry.logEvent('skill_usage', {
+          skillType: 'blebChain',
+          modeId: 'blebbing',
+          chainLength: modeState.blebbing.chainCount,
+          timestamp: this.time.now
+        });
+      }
+    } else {
+      this.performanceData.skillEvents = this.performanceData.skillEvents.filter(e => e !== 'chainActive');
+    }
+    
+    // Track anchor drops (penalty)
+    if (modeState.currentModeId === 'mesenchymal' && modeState.mesenchymal.anchorDropWarning) {
+      if (!this.performanceData.skillEvents.includes('anchorDrop')) {
+        this.performanceData.mesenchymalAnchorDrops++;
+        this.performanceData.skillEvents.push('anchorDrop');
+        
+        // V2: Telemetry - track negative skill usage
+        this.telemetry.logEvent('skill_usage', {
+          skillType: 'anchorDropPenalty',
+          modeId: 'mesenchymal',
+          timestamp: this.time.now
+        });
+        
+        setTimeout(() => {
+          this.performanceData.skillEvents = this.performanceData.skillEvents.filter(e => e !== 'anchorDrop');
+        }, 1000);
+      }
+    }
   }
   
   private checkZoneProgression(cellX: number): void {
@@ -355,14 +546,100 @@ export class MotilityCourseScene extends Phaser.Scene {
     const totalTime = (this.time.now - this.courseStartTime) / 1000;
     this.isRunning = false;
     
-    // Export stats
+    // V2: Calculate star rating based on performance
+    const stars = this.calculateStarRating(totalTime, this.performanceData.totalAtpUsed);
+    const tips = this.generatePerformanceTips();
+    
+    // V2: Telemetry - log course completion
+    this.telemetry.logEvent('performance_metric', {
+      type: 'course_completion',
+      score: stars,
+      totalTime,
+      atpUsed: this.performanceData.totalAtpUsed,
+      skillEvents: { ...this.performanceData },
+      timestamp: this.time.now
+    });
+    
+    // Export enhanced stats
     const stats = {
       totalTime,
       zoneTimes: this.zoneTimes,
-      finalMode: this.cellMotility.getModeRegistry().getCurrentMode().name
+      finalMode: this.cellMotility.getModeRegistry().getCurrentMode().name,
+      stars,
+      performance: {
+        ...this.performanceData,
+        atpEfficiency: this.calculateAtpEfficiency(totalTime),
+        tips
+      }
     };
     
-    console.log('Course completed!', stats);
+    console.log('🏁 Course completed!', stats);
+    this.displayResults(stats);
+  }
+
+  // V2: Calculate 3-star rating system
+  private calculateStarRating(totalTime: number, atpUsed: number): number {
+    let stars = 0;
+    
+    // ⭐ Finish under target time (90 seconds)
+    if (totalTime <= 90) stars++;
+    
+    // ⭐ Use each mode's micro-skill at least twice
+    const skillUsage = 
+      (this.performanceData.amoeboidLobeCount >= 2 ? 1 : 0) +
+      (this.performanceData.blebChainCount >= 2 ? 1 : 0) +
+      (this.performanceData.mesenchymalAnchorDrops <= 1 ? 1 : 0); // Good = few drops
+    
+    if (skillUsage >= 2) stars++;
+    
+    // ⭐ ≤ target ATP usage (300 ATP total)
+    if (atpUsed <= 300) stars++;
+    
+    return stars;
+  }
+
+  // V2: Generate performance tips
+  private generatePerformanceTips(): string[] {
+    const tips: string[] = [];
+    
+    if (this.performanceData.amoeboidLobeCount < 2) {
+      tips.push("Try holding SPACE to aim pseudopod lobes in amoeboid mode");
+    }
+    
+    if (this.performanceData.blebChainCount < 2) {
+      tips.push("Try chaining your blebs within the timing window for speed bonus");
+    }
+    
+    if (this.performanceData.mesenchymalAnchorDrops > 2) {
+      tips.push("Maintain adhesion anchors in mesenchymal mode - avoid sharp turns");
+    }
+    
+    if (this.performanceData.totalAtpUsed > 300) {
+      tips.push("Use mode-specific advantages to reduce energy consumption");
+    }
+    
+    return tips;
+  }
+
+  // V2: Calculate ATP efficiency
+  private calculateAtpEfficiency(_totalTime: number): number {
+    const distance = 900; // Approximate course length
+    return this.performanceData.totalAtpUsed > 0 ? distance / this.performanceData.totalAtpUsed : 0;
+  }
+
+  // V2: Display results (placeholder for UI)
+  private displayResults(stats: any): void {
+    // TODO: Create proper results UI
+    const starString = '⭐'.repeat(stats.stars) + '☆'.repeat(3 - stats.stars);
+    console.log(`\n${starString} Performance Report ${starString}`);
+    console.log(`Time: ${stats.totalTime.toFixed(1)}s (target: ≤90s)`);
+    console.log(`ATP Used: ${stats.performance.totalAtpUsed} (target: ≤300)`);
+    console.log(`Efficiency: ${stats.performance.atpEfficiency.toFixed(2)} distance/ATP`);
+    
+    if (stats.performance.tips.length > 0) {
+      console.log('\n💡 Tips for improvement:');
+      stats.performance.tips.forEach((tip: string) => console.log(`  • ${tip}`));
+    }
   }
   
   private updateCourseHUD(): void {
@@ -383,6 +660,24 @@ export class MotilityCourseScene extends Phaser.Scene {
     } else {
       courseStatus = "Course Complete! Press R to restart, ESC to return";
     }
+
+    // V2: State meters for debug mode
+    const stateMeters = this.debugMode ? {
+      pulse: this.cellMotility.getStateMeter('pulse') / 10.0, // Normalize to 0-1
+      pressure: this.cellMotility.getStateMeter('pressure'),
+      leftMaturity: this.cellMotility.getStateMeter('leftMaturity'),
+      rightMaturity: this.cellMotility.getStateMeter('rightMaturity'),
+      trackStrength: this.cellMotility.getStateMeter('trackStrength'),
+      chainWindow: this.cellMotility.getChainWindowProgress()
+    } : undefined;
+
+    // V2: Action availability
+    const actionStates = this.debugMode ? {
+      blebBurst: this.cellMotility.isActionAvailable('blebBurst'),
+      proteaseToggle: this.cellMotility.isActionAvailable('proteaseToggle'),
+      handbrake: this.cellMotility.isActionAvailable('handbrake'),
+      pseudopodLobe: this.cellMotility.isActionAvailable('pseudopodLobe')
+    } : undefined;
     
     const motilityInfo = {
       speed: motilityState.speed,
@@ -401,13 +696,17 @@ export class MotilityCourseScene extends Phaser.Scene {
         proteaseActive: modeState.mesenchymal.proteaseActive,
         handbrakeAvailable: modeState.amoeboid.handbrakeAvailable
       },
-      substrateEffects: substrateScalars
+      substrateEffects: substrateScalars,
+      stateMeters,
+      actionStates,
+      visualEffects: this.cellMotility.getVisualEffects()
     };
     
     setHud(this, { 
-      message: courseStatus,
+      message: `${courseStatus}\n\n💡 Press M to toggle debug meters`,
       motilityInfo,
-      driveMode: true
+      driveMode: true,
+      debugMode: this.debugMode
     });
   }
 }

@@ -7,6 +7,9 @@
 
 export type SubstrateType = 'SOFT' | 'FIRM' | 'ECM' | 'STICKY';
 
+// V2: New terrain feature types
+export type TerrainFeatureType = 'micropore' | 'runUpGate' | 'ecmLattice';
+
 export interface SubstrateArea {
   /** Area bounds (circle or polygon) */
   bounds: CircleBounds | PolygonBounds;
@@ -16,6 +19,22 @@ export interface SubstrateArea {
   
   /** Optional visual color */
   color?: number;
+}
+
+// V2: Terrain features for mode differentiation
+export interface TerrainFeature {
+  /** Feature bounds */
+  bounds: CircleBounds | PolygonBounds;
+  
+  /** Feature type */
+  type: TerrainFeatureType;
+  
+  /** Feature-specific properties */
+  properties: any;
+  
+  /** Visual properties */
+  color?: number;
+  alpha?: number;
 }
 
 export interface CircleBounds {
@@ -45,6 +64,7 @@ export interface Obstacle {
 export class SubstrateSystem {
   private substrates: SubstrateArea[] = [];
   private obstacles: Obstacle[] = [];
+  private terrainFeatures: TerrainFeature[] = []; // V2: New terrain features
   
   constructor() {
     this.initializeDefaultSubstrates();
@@ -331,6 +351,11 @@ export class SubstrateSystem {
   getObstacles(): readonly Obstacle[] {
     return this.obstacles;
   }
+
+  // V2: Terrain features getter
+  getTerrainFeatures(): readonly TerrainFeature[] {
+    return this.terrainFeatures;
+  }
   
   // Methods to add/remove substrates and obstacles dynamically
   addSubstrate(substrate: SubstrateArea): void {
@@ -340,6 +365,40 @@ export class SubstrateSystem {
   addObstacle(obstacle: Obstacle): void {
     this.obstacles.push(obstacle);
   }
+
+  // V2: Add terrain feature
+  addTerrainFeature(feature: TerrainFeature): void {
+    this.terrainFeatures.push(feature);
+  }
+  
+  // V2: Check terrain feature interactions
+  checkTerrainFeatureAt(x: number, y: number): TerrainFeature | null {
+    for (const feature of this.terrainFeatures) {
+      if (this.pointInBounds(x, y, feature.bounds)) {
+        return feature;
+      }
+    }
+    return null;
+  }
+
+  // V2: Check if cell can pass through micropore (amoeboid-specific)
+  canPassThroughMicropore(cellRadius: number, modeId: string): boolean {
+    return modeId === 'amoeboid' && cellRadius <= 8; // Reduced radius when squeezing
+  }
+
+  // V2: Trigger run-up gate timing check
+  triggerRunUpGate(speed: number, gateProperties: any): { passed: boolean; time: number } {
+    const requiredSpeed = gateProperties.requiredSpeed || 25;
+    const passed = speed >= requiredSpeed;
+    const time = Date.now();
+    
+    return { passed, time };
+  }
+
+  // V2: Get ECM lattice resistance reduction from track
+  getEcmTrackBonus(trackStrength: number): number {
+    return Math.min(0.4, trackStrength * 0.6); // Up to 40% resistance reduction
+  }
   
   clearSubstrates(): void {
     this.substrates = [];
@@ -347,5 +406,10 @@ export class SubstrateSystem {
   
   clearObstacles(): void {
     this.obstacles = [];
+  }
+
+  // V2: Clear terrain features
+  clearTerrainFeatures(): void {
+    this.terrainFeatures = [];
   }
 }

@@ -10,6 +10,7 @@ Welcome to the most biologically accurate cellular adventure you never knew you 
 - **Real Biology, Real Fun**: From realistic secretory pathways to actual protein trafficking - it's like being inside a biology textbook that doesn't put you to sleep
 - **Hexagonal Excellence**: Because circles are for quitters and squares are for squares
 - **Unified Cell Movement**: When you move, EVERYTHING moves - hex grid, organelles, transcripts, vesicles, and even membrane ripples. It's like commanding a biological mothership!
+- **Multiple Motility Modes**: Switch between amoeboid, blebbing, and mesenchymal locomotion with unique mechanics for each mode
 
 ## 🎮 Quick Start (For the Impatient)
 
@@ -23,19 +24,25 @@ Then visit `http://localhost:5173` and prepare to be a unicellular overlord!
 ## 🕹️ Controls That Actually Make Sense
 
 - **WASD / Arrow Keys**: Classic cellular locomotion
+- **1, 2, 3 Keys**: Switch between amoeboid, blebbing, and mesenchymal motility modes
+- **Space/Shift**: Mode-specific actions (bleb burst, pseudopod aim, protease toggle)
 - **T Key**: Toggle between "I am small human" and "I AM THE CELL" modes
 - **Mouse**: Click hexes to build organelles (like SimCity but with ribosomes)
 - **Y Key**: Debug mode for when things get too real
+- **M Key**: Toggle debug meters for detailed motility state information
 
 ## 🔬 Current Biological Marvels
 
-### Milestone 9: Cell Motility & Unified Visual Transform
-*The one where everything finally moves together like a proper biological entity*
+### Milestone 11: Motility Expression v2 System
+*The one where cells finally move like actual living organisms*
 
-- **Cell Locomotion**: Your cell can now move through its environment with realistic physics
-- **Unified Movement**: All visual elements (grid, organelles, player, effects) move as one cohesive unit
-- **Energy Costs**: Moving drains ATP because biology doesn't give free rides
-- **Substrate Interaction**: Different surfaces affect movement speed and adhesion
+- **🏃 Amoeboid Locomotion**: Fast pseudopod formation with protrusion cycling and handbrake turning
+- **💨 Blebbing Locomotion**: Pressure-driven bursts with chain combos and precision challenges  
+- **🔗 Mesenchymal Locomotion**: Adhesion-dependent movement with protease trails and maturity mechanics
+- **🌍 Terrain Features**: Different substrates (soft tissue, ECM, loose matrices) favor different modes
+- **📊 Performance Tracking**: 3-star scoring system with skill-based analytics
+- **🎨 Visual Feedback**: Mode-specific membrane states, pulses, and trail effects for blind identification
+- **📈 Telemetry System**: Comprehensive logging for balance analysis and preset generation
 
 ### The Cellular Machinery
 - **Organelle Construction**: Build ribosomes, ER, Golgi apparatus, and more

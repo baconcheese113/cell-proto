@@ -26,6 +26,29 @@ export interface MotilityModeParams {
   blebDurationMs?: number;              // Duration of bleb burst (milliseconds)
   blebCooldownMs?: number;              // Cooldown between bursts (milliseconds)
   
+  // V2: Blebbing chain mechanics
+  blebChainWindowMs?: number;           // Timing window for chain bursts (milliseconds)
+  blebChainCostMultiplier?: number;     // Cost multiplier for chained bursts (0-1)
+  blebRefractoryMs?: number;            // Steering penalty duration after missed chain (milliseconds)
+  blebRefractorySteeringPenalty?: number; // Turn rate penalty during refractory (0-1)
+  
+  // V2: Amoeboid pseudopod mechanics
+  amoeboidPulseRegenRate?: number;      // Pulse regeneration per second while coasting
+  amoeboidPulseMaxBank?: number;        // Maximum stored pulse energy
+  amoeboidLobeForce?: number;           // Force applied by pseudopod lobe
+  amoeboidLobeAngle?: number;           // Angle range for lobe aiming (radians)
+  amoeboidHandbrakeForce?: number;      // Rear tension force for handbrake
+  amoeboidHandbrakeDuration?: number;   // Duration of handbrake effect (seconds)
+  
+  // V2: Mesenchymal track mechanics
+  mesenchymalMaturityTime?: number;     // Time to reach full adhesion maturity (seconds)
+  mesenchymalMaturitySpeedMin?: number; // Speed at 0% maturity (0-1 of baseSpeed)
+  mesenchymalMaturitySpeedMax?: number; // Speed at 100% maturity (0-1.5 of baseSpeed)
+  mesenchymalTurnThreshold?: number;    // Turn rate that triggers anchor drop (rad/s)
+  mesenchymalTrackDuration?: number;    // How long protease tracks persist (seconds)
+  mesenchymalTrackStrength?: number;    // Initial track effectiveness (0-1)
+  mesenchymalTrackDecayRate?: number;   // Track strength decay per use/second
+  
   // Substrate traction preferences
   ecmTraction: number;                  // Effectiveness on ECM substrate
   softTraction: number;                 // Effectiveness on soft substrate
@@ -36,6 +59,11 @@ export interface MotilityModeParams {
   atpPerSec: number;                    // ATP drain per second while active
   atpPerBurst?: number;                 // ATP cost per bleb burst
   proteasePerSec?: number;              // Protease consumption (mesenchymal only)
+  
+  // V2: Dynamic energy curves
+  atpIdleMultiplier?: number;           // ATP multiplier when not moving (0-1)
+  atpHighSpeedMultiplier?: number;      // ATP multiplier at max speed (1-2)
+  atpChainPenalty?: number;             // Additional ATP cost per burst in chain
 }
 
 export interface MotilityModeDefinition {
@@ -75,7 +103,16 @@ export const MOTILITY_MODES: Record<MotilityModeId, MotilityModeDefinition> = {
       softTraction: 1.2,
       firmTraction: 1.0,
       stickyTraction: 0.8,
-      atpPerSec: 0.6
+      atpPerSec: 0.6,
+      // V2: Pseudopod aiming mechanics
+      amoeboidPulseRegenRate: 2.0,
+      amoeboidPulseMaxBank: 10.0,
+      amoeboidLobeForce: 15.0,
+      amoeboidLobeAngle: Math.PI / 3,  // 60 degree aim cone
+      amoeboidHandbrakeForce: 8.0,
+      amoeboidHandbrakeDuration: 0.4,
+      atpIdleMultiplier: 0.3,
+      atpHighSpeedMultiplier: 1.5
     }
   },
 
@@ -98,7 +135,14 @@ export const MOTILITY_MODES: Record<MotilityModeId, MotilityModeDefinition> = {
       firmTraction: 0.8,
       stickyTraction: 0.3,
       atpPerSec: 0.2,
-      atpPerBurst: 4.0
+      atpPerBurst: 4.0,
+      // V2: Chain rhythm mechanics
+      blebChainWindowMs: 300,
+      blebChainCostMultiplier: 0.9,
+      blebRefractoryMs: 1200,
+      blebRefractorySteeringPenalty: 0.4,
+      atpIdleMultiplier: 0.1,
+      atpChainPenalty: 1.2
     }
   },
 
@@ -119,7 +163,17 @@ export const MOTILITY_MODES: Record<MotilityModeId, MotilityModeDefinition> = {
       firmTraction: 1.1,
       stickyTraction: 1.0,
       atpPerSec: 0.8,
-      proteasePerSec: 0.3
+      proteasePerSec: 0.3,
+      // V2: Adhesion maturity and track mechanics
+      mesenchymalMaturityTime: 2.0,
+      mesenchymalMaturitySpeedMin: 0.3,
+      mesenchymalMaturitySpeedMax: 1.0,
+      mesenchymalTurnThreshold: 0.8,
+      mesenchymalTrackDuration: 15.0,
+      mesenchymalTrackStrength: 0.7,
+      mesenchymalTrackDecayRate: 0.1,
+      atpIdleMultiplier: 0.8,
+      atpHighSpeedMultiplier: 1.2
     }
   }
 };
@@ -211,5 +265,55 @@ export function applyPresetToMode(
   return {
     ...mode,
     params: scaledParams
+  };
+}
+
+/**
+ * Debug configuration for state meter visibility
+ */
+export interface MotilityDebugConfig {
+  showMeters: boolean;
+  showAllValues: boolean;
+  enableTelemetry: boolean;
+  logInterval: number; // seconds
+}
+
+export const DEFAULT_DEBUG_CONFIG: MotilityDebugConfig = {
+  showMeters: false,
+  showAllValues: false,
+  enableTelemetry: false,
+  logInterval: 5.0
+};
+
+/**
+ * Telemetry data structure for mode performance tracking
+ */
+export interface MotilityTelemetry {
+  sessionId: string;
+  timestamp: number;
+  mode: MotilityModeId;
+  
+  // Performance metrics
+  avgSpeed: number;
+  maxSpeed: number;
+  atpEfficiency: number;  // distance/atp
+  
+  // Mode-specific metrics
+  amoeboid?: {
+    pulseUtilization: number;      // 0-1, how much pulse was used
+    handbrakeUsage: number;        // times used per minute
+    lobeAccuracy: number;          // 0-1, aiming effectiveness
+  };
+  
+  blebbing?: {
+    chainSuccessRate: number;      // 0-1, successful chains vs attempts
+    refractoryTime: number;        // total seconds in refractory
+    burstEfficiency: number;       // distance per burst
+  };
+  
+  mesenchymal?: {
+    avgAdhesionMaturity: number;   // 0-1, average maturity maintained
+    anchorDropCount: number;       // times anchors were dropped
+    trackReuseCount: number;       // times tracks were reused
   };
 }

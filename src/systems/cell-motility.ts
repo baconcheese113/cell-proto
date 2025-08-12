@@ -47,6 +47,31 @@ export interface PolarityState {
   timeSinceInput: number;
 }
 
+export interface VisualEffects {
+  /** Cell membrane visual state */
+  membraneState: 'normal' | 'extending' | 'retracting' | 'blebbing';
+  
+  /** Visual pulses or flashes */
+  pulse: {
+    active: boolean;
+    intensity: number;  // 0-1
+    color: string;      // hex color
+  };
+  
+  /** Particle trails */
+  trail: {
+    active: boolean;
+    type: 'adhesion' | 'protease' | 'cytoplasm';
+    opacity: number;    // 0-1
+  };
+  
+  /** Animation state */
+  animation: {
+    phase: number;      // 0-1 animation cycle
+    speed: number;      // animation speed multiplier
+  };
+}
+
 export interface AdhesionState {
   /** Current number of active adhesions */
   count: number;
@@ -103,6 +128,9 @@ export class CellMotility extends SystemObject {
   private config: MotilityConfig;
   private modeRegistry: MotilityModeRegistry;
   
+  // V2: Visual effects state
+  private visualEffects: VisualEffects;
+  
   // Input state
   private inputVector: { x: number; y: number } = { x: 0, y: 0 };
   private actionRequested: string | null = null;
@@ -119,6 +147,7 @@ export class CellMotility extends SystemObject {
     
     this.config = this.createDefaultConfig();
     this.motilityState = this.createInitialState();
+    this.visualEffects = this.createDefaultVisualEffects();
     
     this.setupInputHandlers();
   }
@@ -146,6 +175,18 @@ export class CellMotility extends SystemObject {
     
     this.setInput(x, y);
     
+    // V2: Mode-specific input handling
+    const currentMode = this.modeRegistry.getCurrentMode();
+    
+    if (currentMode.id === 'amoeboid') {
+      this.handleAmoeboidInput(keys, x, y);
+    } else if (currentMode.id === 'blebbing') {
+      this.handleBlebbingInput(keys);
+    } else if (currentMode.id === 'mesenchymal') {
+      this.handleMesenchymalInput(keys);
+    }
+    
+    // Legacy action handling
     if (keys.SPACE && Phaser.Input.Keyboard.JustDown(keys.SPACE)) {
       this.requestAction('blebBurst');
     }
@@ -160,6 +201,58 @@ export class CellMotility extends SystemObject {
     
     if (keys.TAB && Phaser.Input.Keyboard.JustDown(keys.TAB)) {
       this.cycleMode();
+    }
+  }
+
+  /**
+   * V2: Handle amoeboid-specific input (pseudopod aiming)
+   */
+  private handleAmoeboidInput(keys: any, inputX: number, inputY: number): void {
+    // Hold SPACE to aim pseudopod lobe
+    if (keys.SPACE?.isDown && !this.modeRegistry.getState().amoeboid.isAiming) {
+      // Start aiming in movement direction
+      const aimDirection = Math.atan2(inputY, inputX);
+      this.modeRegistry.startPseudopodAim(aimDirection);
+    }
+    
+    // Release SPACE to fire lobe
+    if (keys.SPACE && Phaser.Input.Keyboard.JustUp(keys.SPACE)) {
+      const result = this.modeRegistry.firePseudopodLobe();
+      if (result.success) {
+        this.applyPseudopodForce(result.force, result.direction);
+      }
+    }
+    
+    // Z for handbrake
+    if (keys.Z && Phaser.Input.Keyboard.JustDown(keys.Z)) {
+      const success = this.modeRegistry.activateHandbrake();
+      if (success) {
+        this.applyHandbrakeEffect();
+      }
+    }
+  }
+
+  /**
+   * V2: Handle blebbing-specific input (chain timing)
+   */
+  private handleBlebbingInput(keys: any): void {
+    // SPACE for bleb burst with chain detection
+    if (keys.SPACE && Phaser.Input.Keyboard.JustDown(keys.SPACE)) {
+      const result = this.modeRegistry.chainBlebBurst();
+      if (result.success) {
+        this.triggerBlebBurst(result.isChain, result.cost);
+      }
+    }
+  }
+
+  /**
+   * V2: Handle mesenchymal-specific input
+   */
+  private handleMesenchymalInput(keys: any): void {
+    // X for protease toggle
+    if (keys.X && Phaser.Input.Keyboard.JustDown(keys.X)) {
+      this.modeRegistry.requestAction('proteaseToggle');
+      this.updateProteaseEffect();
     }
   }
   
@@ -180,6 +273,26 @@ export class CellMotility extends SystemObject {
       adhesionDecayRate: 2.0,
       adhesionSpawnRate: 5.0,
       adhesionATPPerSecond: 0.02
+    };
+  }
+  
+  private createDefaultVisualEffects(): VisualEffects {
+    return {
+      membraneState: 'normal',
+      pulse: {
+        active: false,
+        intensity: 0,
+        color: '#ffffff'
+      },
+      trail: {
+        active: false,
+        type: 'cytoplasm',
+        opacity: 0
+      },
+      animation: {
+        phase: 0,
+        speed: 1.0
+      }
     };
   }
   
@@ -260,8 +373,12 @@ export class CellMotility extends SystemObject {
     // Update cell space transform
     this.cellSpace.update(deltaSeconds);
     
-    // Update mode registry
-    this.modeRegistry.update(deltaSeconds);
+    // Update mode registry with current motion state
+    this.modeRegistry.update(
+      deltaSeconds, 
+      this.motilityState.speed, 
+      this.motilityState.effectiveTurnRate
+    );
     
     // Handle action requests
     if (this.actionRequested) {
@@ -277,6 +394,7 @@ export class CellMotility extends SystemObject {
     this.updateSubstrate();
     this.updateMembraneDeformation(deltaSeconds);
     this.updateEnergyConsumption();
+    this.updateVisualEffects(deltaSeconds);
     
     // Apply movement to cell space
     this.applyCellSpaceMovement(deltaSeconds);
@@ -392,18 +510,43 @@ export class CellMotility extends SystemObject {
         const protrusionBoost = 1.0 + 0.2 * modeState.amoeboid.protrusion.intensity * 
           this.motilityState.polarity.magnitude;
         targetSpeed *= protrusionBoost;
+        
+        // V2: Apply handbrake effects
+        if (modeState.amoeboid.handbrakeActive) {
+          targetSpeed *= 0.85; // Speed reduction during handbrake
+          baseTurnRate *= 2.0;  // Enhanced turning
+        }
         break;
         
       case 'blebBurst':
         targetSpeed = currentMode.params.blebBurstSpeed || currentMode.params.baseSpeed * 2;
         baseTurnRate *= 0.3; // Poor steering during burst
+        
+        // V2: Apply refractory steering penalty
+        if (modeState.blebbing.refractory > 0) {
+          const penalty = currentMode.params.blebRefractorySteeringPenalty || 0.4;
+          baseTurnRate *= (1.0 - penalty);
+        }
         break;
         
       case 'mesenchymalCrawl':
         targetSpeed = currentMode.params.baseSpeed * this.motilityState.polarity.magnitude;
         
-        // Speed scales with adhesion maturity
-        targetSpeed *= (0.3 + 0.7 * this.motilityState.adhesion.maturity);
+        // V2: Speed scales with adhesion maturity (dual-side system)
+        const leftMaturity = modeState.mesenchymal.leftAdhesionMaturity;
+        const rightMaturity = modeState.mesenchymal.rightAdhesionMaturity;
+        const avgMaturity = (leftMaturity + rightMaturity) / 2;
+        
+        const minSpeed = currentMode.params.mesenchymalMaturitySpeedMin || 0.3;
+        const maxSpeed = currentMode.params.mesenchymalMaturitySpeedMax || 1.0;
+        const maturitySpeedFactor = minSpeed + (maxSpeed - minSpeed) * avgMaturity;
+        
+        targetSpeed *= maturitySpeedFactor;
+        
+        // V2: Apply track strength bonus
+        if (this.motilityState.currentSubstrate === 'ECM' && modeState.mesenchymal.trackStrength > 0) {
+          targetSpeed *= (1.0 + 0.3 * modeState.mesenchymal.trackStrength);
+        }
         break;
         
       case 'crawl':
@@ -499,16 +642,55 @@ export class CellMotility extends SystemObject {
     
     let drain = 0;
     
-    // Base motility cost
+    // V2: Dynamic energy curves per mode
     if (this.motilityState.mode !== 'idle') {
       const speedFactor = this.motilityState.speed / currentMode.params.baseSpeed;
-      drain += currentMode.params.atpPerSec * speedFactor;
+      let baseDrain = currentMode.params.atpPerSec;
+      
+      // Apply mode-specific energy curves
+      switch (modeState.currentModeId) {
+        case 'amoeboid':
+          // Faster regeneration when slow, higher cost at high speed
+          const idleMultiplier = currentMode.params.atpIdleMultiplier || 0.3;
+          const highSpeedMultiplier = currentMode.params.atpHighSpeedMultiplier || 1.5;
+          
+          if (speedFactor < 0.3) {
+            baseDrain *= idleMultiplier;
+          } else if (speedFactor > 0.8) {
+            baseDrain *= highSpeedMultiplier;
+          }
+          break;
+          
+        case 'blebbing':
+          // Near-zero cost when idle, chain penalties
+          const blebIdleMultiplier = currentMode.params.atpIdleMultiplier || 0.1;
+          
+          if (speedFactor < 0.1) {
+            baseDrain *= blebIdleMultiplier;
+          }
+          
+          // Additional cost for active chains
+          if (modeState.blebbing.chainCount > 0) {
+            const chainPenalty = currentMode.params.atpChainPenalty || 1.2;
+            baseDrain *= Math.pow(chainPenalty, modeState.blebbing.chainCount - 1);
+          }
+          break;
+          
+        case 'mesenchymal':
+          // Reduced cost when using established tracks
+          if (this.motilityState.currentSubstrate === 'ECM' && modeState.mesenchymal.trackStrength > 0) {
+            baseDrain *= (1.0 - 0.2 * modeState.mesenchymal.trackStrength);
+          }
+          break;
+      }
+      
+      drain += baseDrain * speedFactor;
     }
     
     // Adhesion maintenance cost
     drain += this.motilityState.adhesion.count * this.config.adhesionATPPerSecond;
     
-    // Protease cost for mesenchymal mode
+    // V2: Protease cost only while actively painting trails
     if (modeState.currentModeId === 'mesenchymal' && modeState.mesenchymal.proteaseActive) {
       drain += currentMode.params.proteasePerSec || 0;
     }
@@ -547,6 +729,97 @@ export class CellMotility extends SystemObject {
     return diff;
   }
   
+  private updateVisualEffects(deltaSeconds: number): void {
+    const currentMode = this.modeRegistry.getCurrentMode();
+    const modeState = this.modeRegistry.getState();
+    
+    // Update animation phase
+    this.visualEffects.animation.phase += deltaSeconds * this.visualEffects.animation.speed;
+    if (this.visualEffects.animation.phase > 1.0) {
+      this.visualEffects.animation.phase -= 1.0;
+    }
+    
+    // Mode-specific visual effects
+    switch (modeState.currentModeId) {
+      case 'amoeboid':
+        // Amoeboid: Membrane extending/retracting with pulses
+        if (modeState.amoeboid.protrusion.intensity > 0.5) {
+          this.visualEffects.membraneState = 'extending';
+          this.visualEffects.pulse.active = true;
+          this.visualEffects.pulse.intensity = modeState.amoeboid.protrusion.intensity;
+          this.visualEffects.pulse.color = '#4CAF50'; // Green for growth
+        } else {
+          this.visualEffects.membraneState = 'normal';
+          this.visualEffects.pulse.active = false;
+        }
+        
+        // Handbrake visual feedback
+        if (modeState.amoeboid.handbrakeActive) {
+          this.visualEffects.pulse.color = '#FF9800'; // Orange for enhanced turning
+          this.visualEffects.animation.speed = 1.5;
+        } else {
+          this.visualEffects.animation.speed = 1.0;
+        }
+        break;
+        
+      case 'blebbing':
+        // Blebbing: Pressure buildup and burst effects
+        if (modeState.blebbing.pressure > 0.8) {
+          this.visualEffects.membraneState = 'blebbing';
+          this.visualEffects.pulse.active = true;
+          this.visualEffects.pulse.intensity = modeState.blebbing.pressure;
+          this.visualEffects.pulse.color = '#2196F3'; // Blue for pressure
+        } else if (modeState.blebbing.refractory > 0) {
+          this.visualEffects.membraneState = 'retracting';
+          this.visualEffects.pulse.color = '#9E9E9E'; // Gray for cooldown
+        } else {
+          this.visualEffects.membraneState = 'normal';
+          this.visualEffects.pulse.active = false;
+        }
+        
+        // Chain timing window visual
+        if (modeState.blebbing.chainWindow > 0) {
+          this.visualEffects.animation.speed = 2.0; // Fast animation during chain window
+        }
+        break;
+        
+      case 'mesenchymal':
+        // Mesenchymal: Adhesion maturity and protease trail effects
+        const leftMaturity = modeState.mesenchymal.leftAdhesionMaturity;
+        const rightMaturity = modeState.mesenchymal.rightAdhesionMaturity;
+        const avgMaturity = (leftMaturity + rightMaturity) / 2;
+        
+        if (avgMaturity > 0.7) {
+          this.visualEffects.membraneState = 'extending';
+          this.visualEffects.pulse.active = true;
+          this.visualEffects.pulse.intensity = avgMaturity;
+          this.visualEffects.pulse.color = '#9C27B0'; // Purple for mature adhesions
+        } else {
+          this.visualEffects.membraneState = 'normal';
+          this.visualEffects.pulse.active = false;
+        }
+        
+        // Protease trail effects
+        if (modeState.mesenchymal.proteaseActive && modeState.mesenchymal.trackStrength > 0) {
+          this.visualEffects.trail.active = true;
+          this.visualEffects.trail.type = 'protease';
+          this.visualEffects.trail.opacity = Math.min(0.8, modeState.mesenchymal.trackStrength);
+        } else {
+          this.visualEffects.trail.active = false;
+        }
+        break;
+    }
+    
+    // General movement trail
+    if (this.motilityState.speed > 0.5 && !this.visualEffects.trail.active) {
+      this.visualEffects.trail.active = true;
+      this.visualEffects.trail.type = 'cytoplasm';
+      this.visualEffects.trail.opacity = Math.min(0.4, this.motilityState.speed / currentMode.params.baseSpeed);
+    } else if (this.motilityState.speed < 0.1 && this.visualEffects.trail.type === 'cytoplasm') {
+      this.visualEffects.trail.active = false;
+    }
+  }
+  
   // Public getters for UI and debugging
   getState(): Readonly<MotilityState> {
     return this.motilityState;
@@ -558,6 +831,11 @@ export class CellMotility extends SystemObject {
   
   getModeRegistry(): MotilityModeRegistry {
     return this.modeRegistry;
+  }
+  
+  // V2: Visual effects getter
+  getVisualEffects(): Readonly<VisualEffects> {
+    return this.visualEffects;
   }
   
   updateConfig(updates: Partial<MotilityConfig>): void {
@@ -579,5 +857,159 @@ export class CellMotility extends SystemObject {
     
     this.config.crawlMaxSpeed = 20.0 * multiplier;
     this.config.crawlATPPerSecond = 0.5 * multiplier;
+  }
+
+  /**
+   * V2: Get state meters for HUD display
+   */
+  getStateMeter(meter: 'pulse' | 'pressure' | 'leftMaturity' | 'rightMaturity' | 'trackStrength'): number {
+    return this.modeRegistry.getStateMeter(meter);
+  }
+
+  /**
+   * V2: Get all state meters for debugging
+   */
+  getAllStateMeters(): Record<string, number> {
+    return this.modeRegistry.getAllStateMeters();
+  }
+
+  /**
+   * V2: Check if specific actions are available
+   */
+  isActionAvailable(action: 'blebBurst' | 'proteaseToggle' | 'handbrake' | 'pseudopodLobe'): boolean {
+    return this.modeRegistry.isActionAvailable(action);
+  }
+
+  /**
+   * V2: Get chain timing window progress for blebbing
+   */
+  getChainWindowProgress(): number {
+    return this.modeRegistry.getChainWindowProgress();
+  }
+
+  /**
+   * V2: Start aiming pseudopod lobe (amoeboid mode)
+   */
+  startPseudopodAim(direction: number): boolean {
+    return this.modeRegistry.startPseudopodAim(direction);
+  }
+
+  /**
+   * V2: Fire pseudopod lobe 
+   */
+  firePseudopodLobe(): { success: boolean; force: number; direction: number } {
+    return this.modeRegistry.firePseudopodLobe();
+  }
+
+  /**
+   * V2: Activate handbrake for sharp pivot
+   */
+  activateHandbrake(): boolean {
+    return this.modeRegistry.activateHandbrake();
+  }
+
+  /**
+   * V2: Chain bleb burst (if in timing window)
+   */
+  chainBlebBurst(): { success: boolean; isChain: boolean; cost: number } {
+    return this.modeRegistry.chainBlebBurst();
+  }
+
+  /**
+   * V2: Apply pseudopod force in specified direction
+   */
+  private applyPseudopodForce(force: number, direction: number): void {
+    // Convert force to velocity impulse
+    const impulseX = Math.cos(direction) * force;
+    const impulseY = Math.sin(direction) * force;
+    
+    // Add impulse to current velocity
+    this.motilityState.velocity.x += impulseX;
+    this.motilityState.velocity.y += impulseY;
+    
+    // Update speed
+    this.motilityState.speed = Math.sqrt(
+      this.motilityState.velocity.x ** 2 + this.motilityState.velocity.y ** 2
+    );
+    
+    // Brief membrane deformation in lobe direction
+    this.motilityState.membraneSquash = Math.min(0.3, this.motilityState.membraneSquash + 0.15);
+    this.motilityState.membraneSquashDirection = direction;
+  }
+
+  /**
+   * V2: Apply handbrake pivot effect
+   */
+  private applyHandbrakeEffect(): void {
+    const mode = this.modeRegistry.getCurrentMode();
+    const handbrakeForce = mode.params.amoeboidHandbrakeForce || 8.0;
+    
+    // Reduce front adhesions temporarily, increase rear tension
+    this.motilityState.adhesion.frontBias -= 0.3;
+    this.motilityState.effectiveSpeed *= 0.85; // Slight speed dip
+    
+    // Increase turn responsiveness for sharp pivot
+    this.motilityState.effectiveTurnRate *= 2.0;
+    
+    // Apply brief brake force opposite to movement
+    if (this.motilityState.speed > 0) {
+      const brakeDirection = Math.atan2(this.motilityState.velocity.y, this.motilityState.velocity.x) + Math.PI;
+      const brakeX = Math.cos(brakeDirection) * handbrakeForce * 0.5;
+      const brakeY = Math.sin(brakeDirection) * handbrakeForce * 0.5;
+      
+      this.motilityState.velocity.x += brakeX;
+      this.motilityState.velocity.y += brakeY;
+    }
+  }
+
+  /**
+   * V2: Trigger bleb burst with chain mechanics
+   */
+  private triggerBlebBurst(isChain: boolean, atpCost: number): void {
+    const mode = this.modeRegistry.getCurrentMode();
+    const burstSpeed = mode.params.blebBurstSpeed || 35.0;
+    
+    // Apply burst in current polarity direction
+    const burstX = Math.cos(this.motilityState.polarity.direction) * burstSpeed;
+    const burstY = Math.sin(this.motilityState.polarity.direction) * burstSpeed;
+    
+    // Set velocity directly for burst
+    this.motilityState.velocity.x = burstX;
+    this.motilityState.velocity.y = burstY;
+    this.motilityState.speed = burstSpeed;
+    
+    // V2: Chain effects
+    if (isChain) {
+      // Chained bursts get slight speed bonus
+      this.motilityState.velocity.x *= 1.1;
+      this.motilityState.velocity.y *= 1.1;
+      this.motilityState.speed *= 1.1;
+    }
+    
+    // Consume ATP
+    // TODO: Integrate with ATP system when available
+    console.log(`Bleb burst: Chain=${isChain}, Cost=${atpCost.toFixed(1)}`);
+    
+    // Membrane effects
+    this.motilityState.membraneSquash = 0.4;
+    this.motilityState.membraneSquashDirection = this.motilityState.polarity.direction;
+  }
+
+  /**
+   * V2: Update protease track effects
+   */
+  private updateProteaseEffect(): void {
+    const modeState = this.modeRegistry.getState();
+    
+    if (modeState.mesenchymal.proteaseActive) {
+      // Mark current location as having protease track
+      // TODO: Integrate with substrate system for spatial tracking
+      console.log('Protease trail activated at current location');
+      
+      // Improve local ECM resistance
+      if (this.motilityState.currentSubstrate === 'ECM') {
+        this.motilityState.effectiveSpeed *= 1.2; // Temporary speed boost on ECM
+      }
+    }
   }
 }
