@@ -22,6 +22,9 @@ export interface InstalledMembraneProtein {
   proteinId: string; // ID from membrane protein registry
   instanceId: string; // unique instance identifier
   isActive: boolean;
+  // Milestone 8: Glycosylation status affects throughput
+  glycosylationStatus?: 'complete' | 'partial'; // undefined = legacy (treated as complete)
+  throughputMultiplier?: number; // cached multiplier based on glycosylation
 }
 
 export interface MembraneExchangeStats {
@@ -154,9 +157,9 @@ export class MembraneExchangeSystem {
       if (!protein) continue;
 
       if (protein.kind === 'transporter') {
-        this.applyTransporterProtein(tile, protein, deltaSeconds);
+        this.applyTransporterProtein(tile, protein, deltaSeconds, installedProtein);
       } else if (protein.kind === 'receptor') {
-        this.applyReceptorProtein(tile, protein, deltaSeconds);
+        this.applyReceptorProtein(tile, protein, deltaSeconds, installedProtein);
       }
     }
   }
@@ -193,10 +196,20 @@ export class MembraneExchangeSystem {
 
   /**
    * Milestone 6: Apply transporter protein effect
+   * Milestone 8: Include glycosylation-based throughput multiplier
    */
-  private applyTransporterProtein(tile: any, protein: TransporterProtein, deltaSeconds: number): void {
+  private applyTransporterProtein(
+    tile: any, 
+    protein: TransporterProtein, 
+    deltaSeconds: number, 
+    installedProtein: InstalledMembraneProtein
+  ): void {
     const { speciesId, direction, ratePerTick } = protein;
-    const fluxAmount = ratePerTick * deltaSeconds;
+    
+    // Milestone 8: Apply throughput multiplier based on glycosylation
+    const throughputMultiplier = installedProtein.throughputMultiplier ?? 1.0; // Default to 100% for legacy proteins
+    const effectiveRate = ratePerTick * throughputMultiplier;
+    const fluxAmount = effectiveRate * deltaSeconds;
     
     const currentConc = tile.concentrations[speciesId] || 0;
     let actualFlux = 0;
@@ -216,29 +229,41 @@ export class MembraneExchangeSystem {
 
     // Debug output (throttled)
     if (Math.random() < 0.01) { // More frequent debug output to test
-      console.log(`🚛 ${protein.label}: ${direction === 'in' ? '+' : '-'}${actualFlux.toFixed(3)} ${speciesId} (rate: ${ratePerTick}/tick)`);
+      const glycoStatus = installedProtein.glycosylationStatus || 'complete';
+      console.log(`🚛 ${protein.label} (${glycoStatus}, ${Math.round(throughputMultiplier * 100)}%): ${direction === 'in' ? '+' : '-'}${actualFlux.toFixed(3)} ${speciesId}`);
+      console.log(`   Rate: ${effectiveRate.toFixed(3)}/tick, Delta: ${deltaSeconds.toFixed(3)}s, Flux: ${fluxAmount.toFixed(3)}`);
     }
   }
 
   /**
    * Milestone 6: Apply receptor protein effect (Task 5)
    */
-  private applyReceptorProtein(tile: any, protein: ReceptorProtein, deltaSeconds: number): void {
+  private applyReceptorProtein(
+    tile: any, 
+    protein: ReceptorProtein, 
+    deltaSeconds: number, 
+    installedProtein: InstalledMembraneProtein
+  ): void {
     const { ligandId, messengerId, messengerRate } = protein;
     
     // Check if ligand is present in external environment
     const ligandPresence = this.externalLigands[ligandId] || 0;
     
     if (ligandPresence > 0) {
+      // Milestone 8: Apply throughput multiplier for receptors too
+      const throughputMultiplier = installedProtein.throughputMultiplier ?? 1.0;
+      const effectiveRate = messengerRate * throughputMultiplier;
+      
       // Produce signal proportional to ligand presence
-      const signalProduction = messengerRate * ligandPresence * deltaSeconds;
+      const signalProduction = effectiveRate * ligandPresence * deltaSeconds;
       const currentSignal = tile.concentrations[messengerId] || 0;
       
       tile.concentrations[messengerId] = currentSignal + signalProduction;
       
       // Debug output (throttled)
       if (Math.random() < 0.01) {
-        console.log(`${protein.label}: +${signalProduction.toFixed(3)} ${messengerId} (ligand present: ${ligandPresence})`);
+        const glycoStatus = installedProtein.glycosylationStatus || 'complete';
+        console.log(`${protein.label} (${glycoStatus}, ${Math.round(throughputMultiplier * 100)}%): +${signalProduction.toFixed(3)} ${messengerId} (ligand: ${ligandPresence})`);
       }
     }
   }
@@ -276,6 +301,17 @@ export class MembraneExchangeSystem {
    * Milestone 6: Install membrane protein (Task 7)
    */
   public installMembraneProtein(coord: HexCoord, proteinId: string): boolean {
+    return this.installMembraneProteinWithGlycosylation(coord, proteinId, 'complete');
+  }
+
+  /**
+   * Milestone 8: Install membrane protein with glycosylation status (Story 8.5)
+   */
+  public installMembraneProteinWithGlycosylation(
+    coord: HexCoord, 
+    proteinId: string, 
+    glycosylationStatus: 'complete' | 'partial' = 'complete'
+  ): boolean {
     if (!this.hexGrid.isMembraneCoord(coord)) {
       console.warn(`Cannot install protein at (${coord.q}, ${coord.r}): not a membrane tile`);
       return false;
@@ -295,14 +331,19 @@ export class MembraneExchangeSystem {
       return false;
     }
 
+    // Calculate throughput multiplier based on glycosylation
+    const throughputMultiplier = glycosylationStatus === 'complete' ? 1.0 : 0.5;
+
     const instanceId = `${proteinId}-${Date.now()}`;
     this.installedProteins.set(tileKey, {
       proteinId,
       instanceId,
-      isActive: true
+      isActive: true,
+      glycosylationStatus,
+      throughputMultiplier
     });
 
-    console.log(`Installed ${protein.label} at (${coord.q}, ${coord.r})`);
+    console.log(`Installed ${protein.label} at (${coord.q}, ${coord.r}) with ${glycosylationStatus} glycosylation (${Math.round(throughputMultiplier * 100)}% throughput)`);
     return true;
   }
 

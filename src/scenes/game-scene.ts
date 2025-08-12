@@ -18,6 +18,7 @@ import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
+import { MembranePortSystem } from "../membrane/membrane-port-system";
 
 // New modular components
 import { Player } from "../actors/player";
@@ -26,9 +27,9 @@ import { TileActionController } from "../controllers/tile-action-controller";
 import { CellProduction } from "../systems/cell-production";
 import { CellTransport } from "../systems/cell-transport";
 import { CellOverlays } from "../systems/cell-overlays";
-import type { WorldRefs, InstallOrder, Transcript } from "../core/world-refs";
+import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -64,6 +65,9 @@ export class GameScene extends Phaser.Scene {
   
   // Milestone 6: Membrane exchange system
   private membraneExchangeSystem!: MembraneExchangeSystem;
+  
+  // Story 8.11: External interface system
+  private membranePortSystem!: MembranePortSystem;
 
   // Species diffusion system - Task 3
   private diffusionSystem!: DiffusionSystem;
@@ -107,6 +111,11 @@ export class GameScene extends Phaser.Scene {
   private carriedTranscripts: Transcript[] = []; // transcripts carried by player (max 1-2)
   private nextOrderId = 1;
   private nextTranscriptId = 1;
+
+  // Milestone 8: Vesicle system for secretory pipeline
+  private vesicles: Map<string, Vesicle> = new Map();
+  private carriedVesicles: Vesicle[] = [];
+  private nextVesicleId = 1;
 
   // NOTE: Movement mechanics now handled by Player actor
   // NOTE: Membrane physics now handled by Player actor
@@ -183,6 +192,7 @@ export class GameScene extends Phaser.Scene {
       organelleRenderer: this.organelleRenderer,
       blueprintSystem: this.blueprintSystem,
       membraneExchangeSystem: this.membraneExchangeSystem,
+      membranePortSystem: this.membranePortSystem, // Story 8.11: External interface
       diffusionSystem: this.diffusionSystem,
       passiveEffectsSystem: this.passiveEffectsSystem,
       heatmapSystem: this.heatmapSystem,
@@ -192,6 +202,10 @@ export class GameScene extends Phaser.Scene {
       carriedTranscripts: this.carriedTranscripts,
       nextOrderId: this.nextOrderId,
       nextTranscriptId: this.nextTranscriptId,
+      // Milestone 8: Vesicle system
+      vesicles: this.vesicles,
+      carriedVesicles: this.carriedVesicles,
+      nextVesicleId: this.nextVesicleId,
       showToast: (message: string) => this.showToast(message),
       refreshTileInfo: () => this.updateTileInfoPanel()
     };
@@ -243,6 +257,8 @@ export class GameScene extends Phaser.Scene {
       M: this.input.keyboard!.addKey("M"),
       F: this.input.keyboard!.addKey("F"),
       Y: this.input.keyboard!.addKey("Y"),
+      U: this.input.keyboard!.addKey("U"), // Toggle queue badges
+      O: this.input.keyboard!.addKey("O"), // Toggle vesicle debug
     };
 
     // Initialize systems
@@ -260,6 +276,11 @@ export class GameScene extends Phaser.Scene {
     
     // Initialize protein glyphs by rendering membrane debug
     this.renderMembraneDebug();
+    
+    // Milestone 8: Story 8.7 - Listen for dirty tile refresh events
+    this.events.on('refresh-membrane-glyphs', () => {
+      this.renderMembraneDebug();
+    });
     
     // Initialize HUD with current information
     this.updateHUD();
@@ -347,6 +368,14 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.Y)) {
       // System status debug - show consolidated system info
       this.printSystemStatus();
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.U)) {
+      // Milestone 8: Toggle queue badges
+      this.cellOverlays.toggleQueueBadges();
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.O)) {
+      // Milestone 8: Toggle vesicle debug info
+      this.cellOverlays.toggleVesicleDebug();
     }
 
     // Debug species controls - Task 4
@@ -1295,7 +1324,8 @@ export class GameScene extends Phaser.Scene {
 
   private initializeMembraneExchangeSystem(): void {
     this.membraneExchangeSystem = new MembraneExchangeSystem(this.hexGrid);
-    console.log('Membrane exchange system initialized');
+    this.membranePortSystem = new MembranePortSystem(); // Story 8.11: External interface
+    console.log('Membrane exchange system and port system initialized');
   }
 
   // Debug Controls - Task 4

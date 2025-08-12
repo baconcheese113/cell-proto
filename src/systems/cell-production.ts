@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import type { WorldRefs, Transcript, InstallOrder } from "../core/world-refs";
 import type { HexCoord } from "../hex/hex-grid";
 import { SystemObject } from "./system-object";
+import { updateVesicles, createVesicleAtER } from "./vesicle-system";
 
 /**
  * Consolidated Cell Production System
@@ -34,7 +35,8 @@ export class CellProduction extends SystemObject {
     const now = Date.now();
     if (now - this.lastPerformanceLog > 5000) {
       const transcriptCount = this.worldRefs.transcripts.size;
-      console.log(`🔬 CellProduction: ${transcriptCount} transcripts, ${Math.round(this.updateCount / 5)} updates/sec`);
+      const vesicleCount = this.worldRefs.vesicles.size;
+      console.log(`🔬 CellProduction: ${transcriptCount} transcripts, ${vesicleCount} vesicles, ${Math.round(this.updateCount / 5)} updates/sec`);
       this.updateCount = 0;
       this.lastPerformanceLog = now;
     }
@@ -48,10 +50,13 @@ export class CellProduction extends SystemObject {
     // Phase 3: Process transcripts at ER (transcript → vesicle)
     this.updateErProcessing(deltaSeconds);
     
-    // Phase 4: Route vesicles to membrane and install proteins
+    // Phase 4: Update vesicles through secretory pipeline (Milestone 8)
+    updateVesicles(this.worldRefs, deltaSeconds, this.scene);
+    
+    // Phase 5: Route vesicles to membrane and install proteins (legacy - now handled by vesicles)
     this.updateVesicleRouting(deltaSeconds);
     
-    // Phase 5: Render all transcripts/vesicles
+    // Phase 6: Render all transcripts/vesicles
     this.renderTranscripts();
   }
 
@@ -258,39 +263,36 @@ export class CellProduction extends SystemObject {
 
     const aaRequired = 5.0; // Amino acids for protein synthesis
     const atpRequired = 3.0; // Energy for processing
-    const sugarRequired = 2.0; // Sugar for glycosylation (optional)
     
     const aaAvailable = erTile.concentrations['AA'] || 0;
     const atpAvailable = erTile.concentrations['ATP'] || 0;
-    const sugarAvailable = erTile.concentrations['GLUCOSE'] || 0;
 
     if (aaAvailable >= aaRequired && atpAvailable >= atpRequired) {
       // Consume basic resources
       this.worldRefs.hexGrid.addConcentration(transcript.atHex, 'AA', -aaRequired);
       this.worldRefs.hexGrid.addConcentration(transcript.atHex, 'ATP', -atpRequired);
 
-      // Determine glycosylation state based on available resources
-      if (sugarAvailable >= sugarRequired) {
-        // Complete glycosylation with sugar consumption
-        this.worldRefs.hexGrid.addConcentration(transcript.atHex, 'GLUCOSE', -sugarRequired);
-        transcript.glycosylationState = 'complete';
-        console.log(`🍭 ${transcript.proteinId} received complete glycosylation`);
-      } else if (sugarAvailable >= sugarRequired / 2) {
-        // Partial glycosylation with partial sugar consumption
-        this.worldRefs.hexGrid.addConcentration(transcript.atHex, 'GLUCOSE', -sugarAvailable);
-        transcript.glycosylationState = 'partial';
-        console.log(`🍬 ${transcript.proteinId} received partial glycosylation`);
+      // Milestone 8: Create vesicle with partial glycosylation (to be completed at Golgi)
+      if (transcript.destHex) {
+        const vesicle = createVesicleAtER(
+          this.worldRefs,
+          transcript.proteinId,
+          transcript.destHex,
+          transcript.atHex,
+          'partial' // ER produces partially glycosylated vesicles
+        );
+        
+        if (vesicle) {
+          // Remove transcript (replaced by vesicle)
+          this.worldRefs.transcripts.delete(transcript.id);
+          console.log(`📦 ${transcript.proteinId} transcript converted to vesicle at ER`);
+        } else {
+          console.log(`⚠️ Cannot create vesicle for ${transcript.proteinId} - budget exceeded, keeping transcript`);
+        }
       } else {
-        // No glycosylation
-        transcript.glycosylationState = 'none';
-        console.log(`⚪ ${transcript.proteinId} processed without glycosylation`);
+        // Remove transcript even if no destination
+        this.worldRefs.transcripts.delete(transcript.id);
       }
-
-      // Transition to transport state
-      transcript.state = 'packaged_for_transport';
-      transcript.processingTimer = 0;
-      
-      console.log(`📦 ${transcript.proteinId} transcript processed at ER - ready for transport`);
     } else {
       // Insufficient resources - wait and try again next frame
       transcript.processingTimer = 0.1; // Short retry delay
@@ -408,6 +410,7 @@ export class CellProduction extends SystemObject {
   private renderTranscripts() {
     this.transcriptGraphics.clear();
     
+    // Render transcripts
     for (const transcript of this.worldRefs.transcripts.values()) {
       // Skip rendering carried transcripts (handled by player)
       if (transcript.isCarried) continue;
@@ -473,6 +476,78 @@ export class CellProduction extends SystemObject {
           transcript.worldPos.x,
           transcript.worldPos.y,
           10
+        );
+      }
+    }
+    
+    // Milestone 8: Render vesicles
+    for (const vesicle of this.worldRefs.vesicles.values()) {
+      // Skip rendering carried vesicles (handled by player)
+      if (vesicle.isCarried) continue;
+      
+      // Choose color based on vesicle state
+      let color = 0x6699ff; // Default blue for vesicles
+      let size = 5; // Slightly larger than transcripts
+      
+      switch (vesicle.state) {
+        case 'QUEUED_ER':
+          color = 0xff6699; // Pink - waiting at ER
+          break;
+        case 'EN_ROUTE_GOLGI':
+          color = 0x66ff99; // Green - traveling to Golgi
+          break;
+        case 'QUEUED_GOLGI':
+          color = 0xffcc66; // Yellow - processing at Golgi
+          break;
+        case 'EN_ROUTE_MEMBRANE':
+          color = 0x9966ff; // Purple - traveling to membrane
+          break;
+        case 'INSTALLING':
+          color = 0xff6666; // Red - installing
+          size = 6; // Larger during installation
+          break;
+        case 'BLOCKED':
+          color = 0x666666; // Gray - blocked
+          break;
+      }
+      
+      // Modify color based on glycosylation
+      if (vesicle.glyco === 'complete') {
+        // Add bright ring for complete glycosylation
+        this.transcriptGraphics.lineStyle(2, 0xffffff, 0.9);
+        this.transcriptGraphics.strokeCircle(
+          vesicle.worldPos.x,
+          vesicle.worldPos.y,
+          size + 2
+        );
+      }
+      
+      // Draw vesicle
+      this.transcriptGraphics.fillStyle(color);
+      this.transcriptGraphics.fillCircle(
+        vesicle.worldPos.x, 
+        vesicle.worldPos.y, 
+        size
+      );
+      
+      // Add directional indicator for moving vesicles
+      if (vesicle.state.includes('EN_ROUTE') && vesicle.routeCache && vesicle.routeCache.length > 0) {
+        const nextHex = vesicle.routeCache[0];
+        const nextWorldPos = this.worldRefs.hexGrid.hexToWorld(nextHex);
+        const angle = Math.atan2(
+          nextWorldPos.y - vesicle.worldPos.y,
+          nextWorldPos.x - vesicle.worldPos.x
+        );
+        
+        // Draw small arrow
+        this.transcriptGraphics.lineStyle(1, color, 0.8);
+        const arrowLength = 8;
+        const arrowX = vesicle.worldPos.x + Math.cos(angle) * arrowLength;
+        const arrowY = vesicle.worldPos.y + Math.sin(angle) * arrowLength;
+        
+        this.transcriptGraphics.lineBetween(
+          vesicle.worldPos.x, vesicle.worldPos.y,
+          arrowX, arrowY
         );
       }
     }

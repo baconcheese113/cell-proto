@@ -75,6 +75,14 @@ export const ORGANELLE_IO_PROFILES: Record<string, OrganelleIOProfile> = {
     outputs: [
       { id: "CARGO", rate: 0.3 }     // Cargo production
     ]
+  },
+
+  // Milestone 8: Golgi - glycosylation: partial vesicles -> complete vesicles
+  "golgi": {
+    capPerTick: 1, // One-in/one-out processing slot
+    priority: 4,
+    inputs: [], // No traditional species inputs - processes vesicles instead
+    outputs: [] // No traditional species outputs - modifies vesicles instead
   }
 };
 

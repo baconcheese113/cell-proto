@@ -53,18 +53,20 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 ### **Consolidated Systems Architecture**
 
 #### 1. **CellProduction System** (`systems/cell-production.ts`)
-**Purpose**: Complete biological transcript workflow from order to protein installation
+**Purpose**: Complete biological transcript and vesicle workflow from order to protein installation
 
 **Responsibilities:**
 - **Transcript Creation**: Nucleus-based transcription from installation orders
 - **ER Processing**: Protein folding and packaging (3-second realistic timing)
-- **Vesicle Transport**: Movement across cellular space (1.5 hex/second)
-- **Membrane Installation**: Final protein activation (2-second integration)
-- **Visual Rendering**: Real-time transcript movement with TTL-based alpha fading
-- **State Machine Management**: 4-phase transcript lifecycle
-- **Performance Monitoring**: 120 updates/sec tracking with 5-second logging intervals
+- **Vesicle Management**: FSM-driven vesicle transport with 8 states (QUEUED_ER → EN_ROUTE_GOLGI → QUEUED_GOLGI → EN_ROUTE_MEMBRANE → INSTALLING → DONE)
+- **Golgi Processing**: Vesicle glycosylation and enhancement at Golgi stations
+- **Pathfinding System**: BFS pathfinding with capacity limits and jamming prevention
+- **Membrane Installation**: Final protein activation with glycosylation effects
+- **Visual Rendering**: Real-time vesicle movement with state-based colors and directional arrows
+- **Performance Management**: 50-vesicle budget with automatic cleanup and telemetry
+- **Proximity Enforcement**: Distance validation for Golgi and membrane interactions
 
-**Key Innovation**: Single system handles entire protein production pipeline that previously required 4+ separate systems.
+**Key Innovation**: Single system handles entire secretory pathway (nucleus → ER → Golgi → membrane) with realistic vesicle transport and capacity constraints.
 
 #### 2. **CellTransport System** (`systems/cell-transport.ts`)
 **Purpose**: All cellular transport and diffusion processes
@@ -80,13 +82,17 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 **Key Innovation**: Consolidates 6+ transport-related systems into single cohesive unit with proper timestep management.
 
 #### 3. **CellOverlays System** (`systems/cell-overlays.ts`)
-**Purpose**: All visual overlays and UI feedback systems
+**Purpose**: All visual overlays, UI feedback, and vesicle visualization systems
 
 **Responsibilities:**
 - **Heatmap Visualization**: Real-time concentration visualization
 - **Blueprint Rendering**: Construction progress and validation feedback
+- **Vesicle Overlays**: State-based vesicle colors, directional arrows, and movement visualization
+- **Queue Indicators**: Visual badges showing vesicle counts at organelles (U key toggle)
+- **Incoming Vesicle Pips**: Real-time indicators for vesicles approaching organelles (O key toggle)
+- **Dirty Tile Optimization**: Set-based dirty tile tracking for efficient visual updates
 - **UI Coordination**: Interface elements and visual feedback
-- **Performance Optimization**: Efficient overlay updates
+- **Performance Optimization**: Efficient overlay updates with minimal redraw operations
 
 **Architecture Benefits:**
 - **Eliminated Manual Updates**: No more manual system.update() calls in game loop
@@ -178,8 +184,9 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
 
 **Key Files:**
 - **`organelle-registry.ts`**: Centralized organelle definitions
-  - **Union Type**: `OrganelleType` (8 types: nucleus, ribosome-hub, proto-er, golgi, peroxisome, membrane-port, transporter, receptor)
+  - **Union Type**: `OrganelleType` (9 types: nucleus, ribosome-hub, proto-er, golgi, peroxisome, membrane-port, transporter, receptor, secretion-pump)
   - **Organelle Properties**: Size, color, footprint, build costs, throughput caps
+  - **Golgi Integration**: New Golgi organelle type supporting vesicle processing and glycosylation
   - **Starter Placements**: Initial organelle configurations
   - **Build Integration**: Links with construction system
 
@@ -429,10 +436,25 @@ export class SystemObject extends Phaser.GameObjects.GameObject {
    - Blueprint construction progress
    - UI element positioning
 
-### **Protein Production Pipeline** (CellProduction System):
+### **Vesicle Production Pipeline** (CellProduction System):
 ```
 Install Order → Nucleus Transcription → Transcript Created → Travels to ER →
-ER Processing (3s) → Vesicle Transport → Membrane Installation (2s) → Active Protein
+ER Processing (3s) → Vesicle Creation → QUEUED_ER → EN_ROUTE_GOLGI → QUEUED_GOLGI →
+Golgi Processing → EN_ROUTE_MEMBRANE → INSTALLING → Membrane Installation → DONE
+```
+
+### **Vesicle State Flow**:
+```
+QUEUED_ER → EN_ROUTE_GOLGI → QUEUED_GOLGI → EN_ROUTE_MEMBRANE → INSTALLING → DONE
+     ↓              ↓               ↓               ↓              ↓
+   BLOCKED ←—————————————————————————————————————————————————————
+```
+
+### **Glycosylation Effects**:
+```
+ER Processing → Partial Glycosylation (50% throughput) →
+Golgi Processing → Complete Glycosylation (100% throughput) →
+Membrane Installation → Active Protein with Full Efficiency
 ```
 
 ### **Resource Flow** (CellTransport System):
@@ -460,7 +482,7 @@ LIGAND_GROWTH (external) → Growth Factor Receptor → SIGNAL (internal) → Nu
 
 ## Current Milestone Status
 
-The project has achieved **revolutionary architectural consolidation** while completing **Milestone 7** with a sophisticated protein production pipeline:
+The project has achieved **revolutionary architectural consolidation** while completing **Milestone 8** with a sophisticated vesicle-based secretory pipeline:
 
 ### ✅ **REVOLUTIONARY ACHIEVEMENT: SystemObject Consolidation**
 - **Eliminated Manual Coordination**: No more "call update on 12 things" dance
@@ -471,19 +493,25 @@ The project has achieved **revolutionary architectural consolidation** while com
 - **Debug Excellence**: Y key provides comprehensive system status with species change rates
 - **Clean Dependencies**: Streamlined WorldRefs interface removing old system dependencies
 
+### ✅ **Milestone 8: Visible Secretory Pipeline & Membrane Install v1**
+- **Vesicle FSM System**: Complete finite state machine with 8 states (QUEUED_ER → EN_ROUTE_GOLGI → QUEUED_GOLGI → EN_ROUTE_MEMBRANE → INSTALLING → DONE)
+- **Golgi Integration**: Added Golgi organelle type with vesicle processing capabilities
+- **Pathfinding with Capacity**: BFS pathfinding with per-tile capacity limits (max 2 vesicles) and jamming prevention
+- **Glycosylation Effects**: Partial (50% throughput) vs complete (100% throughput) glycosylation states affecting membrane protein efficiency
+- **Visual Overlay System**: State-based vesicle colors, directional arrows, queue badges, and incoming vesicle indicators
+- **Performance Guardrails**: Maximum 50 vesicles with automatic cleanup and comprehensive telemetry
+- **External Interface**: MembranePortSystem scaffolding and stable APIs for future extensibility
+- **Proximity Enforcement**: Distance validation for Golgi and membrane interactions (1 hex range)
+- **Dirty Tile Optimization**: Set-based dirty tile tracking for efficient visual updates
+- **User Controls**: U key (queue overlays), O key (vesicle indicators) for debug visualization
+
 ### ✅ **Milestone 7: Orders & Transcripts (Protein Production Pipeline)**
 - **Install Order System**: Request-based protein production replacing instant placement
 - **Nucleus Transcription**: Dynamic transcript creation based on membrane protein orders
 - **Multi-Stage Processing**: Realistic transcript lifecycle with state machine
-  - `'traveling'`: Move from nucleus to ER
-  - `'processing_at_er'`: ER protein folding and packaging (3 seconds)
-  - `'packaged_for_transport'`: Vesicle transport across cell (1.5 hex/second)
-  - `'installing_at_membrane'`: Final protein integration (2 seconds)
 - **Player Interaction**: Transcript pickup, carry, and delivery mechanics
 - **Visual Movement**: Gradual transcript and vesicle movement across cellular space
 - **Biological Timing**: Realistic delays for ER processing, transport, and installation
-- **Order Fulfillment**: Complete protein request and delivery pipeline
-- **Enhanced User Experience**: Clean visual feedback and progress indication
 
 ### ✅ **Milestone 6: Membrane Transport & Signaling**
 - **Membrane detection system** (automatic boundary identification)
@@ -503,10 +531,10 @@ The project has achieved **revolutionary architectural consolidation** while com
 - **M5**: Construction and blueprint system
 
 ### 🚀 **Ready for Future Milestones**
-- **M8**: Advanced organelle types (Golgi apparatus, mitochondria, lysosomes)
-- **M9**: Cell division and growth mechanics
-- **M10**: Multi-cellular interactions and tissue formation
-- **M11**: Genetic regulation and adaptation systems
+- **M9**: Advanced organelle types (mitochondria, lysosomes, enhanced Golgi functions)
+- **M10**: Cell division and growth mechanics
+- **M11**: Multi-cellular interactions and tissue formation
+- **M12**: Genetic regulation and adaptation systems
 
 ### **Revolutionary Architectural Achievements**
 - **SystemObject Pattern**: Revolutionary base class enabling automatic Phaser lifecycle management
@@ -586,7 +614,11 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Performance Excellence**: 120 updates/sec with built-in monitoring  
 ✅ **Bundle Optimization**: Reduced size from 1,592 kB to 1,577 kB  
 ✅ **Debug Excellence**: Comprehensive Y key system status  
-✅ **Biological Accuracy**: Complete protein production pipeline with realistic timing  
+✅ **Advanced Secretory Pipeline**: Complete vesicle-based protein trafficking with FSM and visual feedback  
+✅ **Vesicle System**: 8-state FSM with pathfinding, capacity limits, and glycosylation effects  
+✅ **Visual Excellence**: Real-time vesicle movement, queue indicators, and state-based visualization  
+✅ **Performance Guardrails**: 50-vesicle budget with automatic cleanup and comprehensive telemetry  
+✅ **Biological Accuracy**: Realistic ER→Golgi→membrane secretory pathway with proper timing  
 ✅ **Type Safety**: Comprehensive union types and interfaces  
 ✅ **Clean Code**: Removed 500+ lines of unused legacy methods  
 ✅ **"Calm, Minimal Path Forward"**: Achieved through elimination of manual coordination

@@ -43,14 +43,14 @@ class MembraneProteinRegistry {
   }
 
   private initializeProteins(): void {
-    // Transporters (constant flux)
+    // Transporters (constant flux) - rates per second
     this.registerProtein({
       kind: 'transporter',
       id: 'GLUT',
       label: 'GLUT Transporter',
       speciesId: 'GLUCOSE',
       direction: 'in',
-      ratePerTick: 0.05,
+      ratePerTick: 3.0, // Increased from 0.05 for better visibility
       color: 0xffd93d
     });
 
@@ -60,7 +60,7 @@ class MembraneProteinRegistry {
       label: 'AA Transporter',
       speciesId: 'AA',
       direction: 'in',
-      ratePerTick: 0.04,
+      ratePerTick: 2.5, // Increased from 0.04 for better visibility
       color: 0x8ef58a
     });
 
@@ -70,7 +70,7 @@ class MembraneProteinRegistry {
       label: 'NT Transporter',
       speciesId: 'NT',
       direction: 'in',
-      ratePerTick: 0.03,
+      ratePerTick: 2.0, // Increased from 0.03 for better visibility
       color: 0x52a7ff
     });
 
@@ -80,7 +80,7 @@ class MembraneProteinRegistry {
       label: 'ROS Exporter',
       speciesId: 'ROS',
       direction: 'out',
-      ratePerTick: 0.06,
+      ratePerTick: 3.5, // Increased from 0.06 for better visibility
       color: 0xff6b6b
     });
 
@@ -90,18 +90,18 @@ class MembraneProteinRegistry {
       label: 'Secretion Pump',
       speciesId: 'CARGO',
       direction: 'out',
-      ratePerTick: 0.08,
+      ratePerTick: 4.0, // Increased from 0.08 for better visibility
       color: 0x66ff99
     });
 
-    // Receptors (ligand → messenger)
+    // Receptors (ligand → messenger) - rates per second
     this.registerProtein({
       kind: 'receptor',
       id: 'GROWTH_FACTOR_RECEPTOR',
       label: 'Growth Factor Receptor',
       ligandId: 'LIGAND_GROWTH',
       messengerId: 'SIGNAL',
-      messengerRate: 0.04,
+      messengerRate: 2.5, // Increased from 0.04 for better visibility
       color: 0xff33ff
     });
   }
