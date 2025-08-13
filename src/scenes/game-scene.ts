@@ -68,6 +68,8 @@ export class GameScene extends Phaser.Scene {
   private tileInfoPanel!: Phaser.GameObjects.Text;
   private debugInfoPanel!: Phaser.GameObjects.Text;
   private buildDateText!: Phaser.GameObjects.Text;
+  private lastInfoUpdateTile: any = null; // Track last tile that was used for info update
+  private lastInfoUpdateTime = 0; // Track when info was last updated
 
   // Milestone 6: Membrane debug visualization
   private membraneGraphics!: Phaser.GameObjects.Graphics;
@@ -985,7 +987,18 @@ export class GameScene extends Phaser.Scene {
 
   private updateHexInteraction(): void {
     this.renderHexInteractionHighlights();
-    this.updateTileInfoPanel();
+    
+    // Only update tile info panel when tile changes or periodically (every 250ms)
+    const now = Date.now();
+    const shouldUpdate = 
+      this.selectedTile !== this.lastInfoUpdateTile || 
+      (now - this.lastInfoUpdateTime) > 250; // Update every 250ms at most
+    
+    if (shouldUpdate) {
+      this.updateTileInfoPanel();
+      this.lastInfoUpdateTile = this.selectedTile;
+      this.lastInfoUpdateTime = now;
+    }
   }
 
   private onPointerMove(pointer: Phaser.Input.Pointer): void {
@@ -1223,10 +1236,12 @@ export class GameScene extends Phaser.Scene {
       
       info.push(`Species Concentrations:`);
       
-      // Show all species concentrations
+      // Show all species concentrations with reduced precision to minimize flicker
       for (const speciesId in concentrations) {
         const concentration = concentrations[speciesId];
-        info.push(`  ${speciesId}: ${concentration.toFixed(2)}`);
+        if (concentration > 0.01) { // Only show meaningful amounts
+          info.push(`  ${speciesId}: ${concentration.toFixed(1)}`); // Reduced to 1 decimal place
+        }
       }
       
       this.tileInfoPanel.setText(info.join('\n'));
@@ -1234,6 +1249,14 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.tileInfoPanel.setVisible(false);
     }
+  }
+
+  /**
+   * Force an immediate tile info panel update (call when something significant changes)
+   */
+  private forceUpdateTileInfoPanel(): void {
+    this.lastInfoUpdateTime = 0; // Reset timer to force update
+    this.updateTileInfoPanel();
   }
 
   // Debug Info Panel - Task 4
@@ -1425,7 +1448,7 @@ export class GameScene extends Phaser.Scene {
       // Force an update of the tile info panel if this tile is selected
       if (this.selectedTile && this.selectedTile.coord.q === coord.q && this.selectedTile.coord.r === coord.r) {
         console.log(`🔄 Selected tile matches spawned organelle, updating info panel`);
-        this.updateTileInfoPanel();
+        this.forceUpdateTileInfoPanel();
       }
     } else {
       console.warn(`Unknown organelle type for blueprint completion: ${organelleType}`);

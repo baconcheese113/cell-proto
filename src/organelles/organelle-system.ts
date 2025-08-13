@@ -48,6 +48,10 @@ export class OrganelleSystem {
   
   // Processing state
   private processingThisTick: Map<string, number> = new Map(); // organelle ID -> units processed
+  
+  // UI info caching to prevent rapid flickering
+  private infoCache: Map<string, { info: string[], lastUpdate: number }> = new Map();
+  private readonly INFO_CACHE_DURATION = 250; // Cache for 250ms (4 updates per second max)
   // Task 8: Batch tile changes to avoid intermediate state inconsistency
   private tileChanges: Map<string, Map<SpeciesId, number>> = new Map(); // tile key -> species changes
 
@@ -146,6 +150,9 @@ export class OrganelleSystem {
     for (const tileCoord of footprintTiles) {
       this.organellesByTile.set(this.coordToKey(tileCoord), organelle);
     }
+    
+    // Clear info cache for this organelle since it's new
+    this.clearInfoCache(organelle.coord);
     
     console.log(`Placed ${organelle.config.label} at (${organelle.coord.q}, ${organelle.coord.r}) with ${footprintTiles.length} tiles`);
   }
@@ -396,11 +403,24 @@ export class OrganelleSystem {
   }
 
   /**
-   * Get organelle info for debugging
+   * Get organelle info for debugging (with caching to prevent UI flickering)
    */
   public getOrganelleInfo(coord: HexCoord): string[] {
+    const coordKey = this.coordToKey(coord);
+    const now = Date.now();
+    
+    // Check if we have a recent cached version
+    const cached = this.infoCache.get(coordKey);
+    if (cached && (now - cached.lastUpdate) < this.INFO_CACHE_DURATION) {
+      return cached.info;
+    }
+    
+    // Generate fresh info
     const organelle = this.getOrganelleAtTile(coord);
-    if (!organelle) return [];
+    if (!organelle) {
+      this.infoCache.delete(coordKey); // Clear cache if no organelle
+      return [];
+    }
 
     const ioProfile = getOrganelleIOProfile(organelle.type);
     const info = [
@@ -416,7 +436,7 @@ export class OrganelleSystem {
       
       // Show current processing state
       if (organelle.currentThroughput > 0) {
-        info.push("=== CURRENT PROCESSING ===");
+        info.push("=== PROCESSING SPEED ===");
         for (const input of ioProfile.inputs) {
           const consumed = organelle.currentThroughput * input.rate;
           info.push(`Consuming ${input.id}: ${consumed.toFixed(3)}/tick`);
@@ -445,24 +465,38 @@ export class OrganelleSystem {
         }
       }
       
-      // Show local concentrations on this tile
+      // Show local concentrations on this tile (rounded to reduce flicker)
       const tile = this.hexGrid.getTile(coord);
       if (tile) {
         info.push("=== LOCAL CONCENTRATIONS ===");
         for (const input of ioProfile.inputs) {
           const amount = tile.concentrations[input.id] || 0;
-          info.push(`${input.id}: ${amount.toFixed(2)}`);
+          info.push(`${input.id}: ${amount.toFixed(1)}`); // Reduced precision to minimize flicker
         }
         for (const output of ioProfile.outputs) {
           const amount = tile.concentrations[output.id] || 0;
-          info.push(`${output.id}: ${amount.toFixed(2)}`);
+          info.push(`${output.id}: ${amount.toFixed(1)}`); // Reduced precision to minimize flicker
         }
       }
     } else {
       info.push("No I/O profile defined");
     }
 
+    // Cache the result
+    this.infoCache.set(coordKey, { info, lastUpdate: now });
+    
     return info;
+  }
+
+  /**
+   * Clear info cache for a specific organelle (call when organelle state changes significantly)
+   */
+  public clearInfoCache(coord?: HexCoord): void {
+    if (coord) {
+      this.infoCache.delete(this.coordToKey(coord));
+    } else {
+      this.infoCache.clear(); // Clear all cache
+    }
   }
 
   /**
