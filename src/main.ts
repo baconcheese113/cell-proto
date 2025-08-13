@@ -2,6 +2,13 @@ import Phaser from "phaser";
 import { GameScene } from "./scenes/game-scene";
 import { MotilityCourseScene } from "./scenes/motility-course-scene";
 
+// Prevent right-click context menu on the game canvas
+document.addEventListener('contextmenu', (e) => {
+  if (e.target instanceof HTMLCanvasElement) {
+    e.preventDefault();
+  }
+});
+
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: "game",

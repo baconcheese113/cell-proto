@@ -248,7 +248,6 @@ function routeVesicleToGolgi(worldRefs: WorldRefs, vesicle: Vesicle): void {
   vesicle.state = 'EN_ROUTE_GOLGI';
   vesicle.routeCache = calculateRoute(worldRefs, vesicle.atHex, golgiHex);
   notifyVesicleStateChange(worldRefs, vesicle, oldState, vesicle.state);
-  console.log(`🎯 Vesicle ${vesicle.id} routing to Golgi at (${golgiHex.q}, ${golgiHex.r})`);
 }
 
 /**
@@ -295,7 +294,6 @@ function moveVesicleTowardTarget(
       if (canInstallAtMembrane(vesicle)) {
         vesicle.state = 'INSTALLING';
         vesicle.processingTimer = 2.0; // 2 seconds for membrane installation
-        console.log(`🎯 Vesicle ${vesicle.id} arrived at membrane - starting installation`);
       } else {
         console.warn(`⚠️ Vesicle ${vesicle.id} too far from membrane for installation - blocking`);
         vesicle.state = 'BLOCKED';

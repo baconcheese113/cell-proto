@@ -31,6 +31,12 @@ import { CellOverlays } from "../systems/cell-overlays";
 import { CellSpaceSystem } from "../core/cell-space-system";
 import { SubstrateSystem } from "../core/substrate-system";
 import { CellMotility } from "../systems/cell-motility";
+// Milestone 12: Throw & Membrane Interactions v1
+import { ThrowSystem } from "../systems/throw-system";
+import { UnifiedCargoSystem } from "../systems/unified-cargo-system";
+import { MembraneTrampoline } from "../systems/membrane-trampoline";
+import { ThrowInputController } from "../systems/throw-input-controller";
+import { CargoHUD } from "../systems/cargo-hud";
 import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
 
 type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L", Phaser.Input.Keyboard.Key>;
@@ -61,6 +67,7 @@ export class GameScene extends Phaser.Scene {
   private hexInteractionGraphics!: Phaser.GameObjects.Graphics;
   private tileInfoPanel!: Phaser.GameObjects.Text;
   private debugInfoPanel!: Phaser.GameObjects.Text;
+  private buildDateText!: Phaser.GameObjects.Text;
 
   // Milestone 6: Membrane debug visualization
   private membraneGraphics!: Phaser.GameObjects.Graphics;
@@ -134,6 +141,13 @@ export class GameScene extends Phaser.Scene {
   private cellSpaceSystem!: CellSpaceSystem;
   private substrateSystem!: SubstrateSystem;
   private cellMotility!: CellMotility;
+  
+  // Milestone 12: Throw & Membrane Interactions v1
+  private throwSystem!: ThrowSystem;
+  private unifiedCargoSystem!: UnifiedCargoSystem;
+  private membraneTrampoline!: MembraneTrampoline;
+  private throwInputController!: ThrowInputController;
+  private cargoHUD!: CargoHUD;
   
   // Milestone 9: Cell motility mode
   private cellDriveMode = false;
@@ -268,6 +282,20 @@ export class GameScene extends Phaser.Scene {
     this.cellProduction = new CellProduction(this, worldRefs, this.cellRoot);
     this.cellTransport = new CellTransport(this, worldRefs);
     this.cellOverlays = new CellOverlays(this, worldRefs, this.cellRoot); // Now cellMotility is defined
+
+    // Milestone 12: Initialize Throw & Membrane Interactions v1
+    this.unifiedCargoSystem = new UnifiedCargoSystem(this, worldRefs);
+    this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem);
+    this.membraneTrampoline = new MembraneTrampoline(this, worldRefs);
+    this.throwInputController = new ThrowInputController(
+      this, 
+      worldRefs, 
+      this.throwSystem, 
+      this.unifiedCargoSystem
+    );
+    this.cargoHUD = new CargoHUD(this, this.unifiedCargoSystem, {
+      position: { x: 20, y: 130 } // Position below other HUD elements
+    });
 
     // Input keys
     this.keys = {
@@ -471,8 +499,8 @@ export class GameScene extends Phaser.Scene {
     // CRITICAL: Restore essential build system functionality that was lost
     this.handleEssentialBuildInput();
 
-    // Milestone 7 Task 6: Transcript pickup/carry mechanics (still manual for now)
-    this.handleTranscriptInput();
+    // Milestone 12: Unified cargo pickup/drop mechanics (R key)
+    this.handleUnifiedCargoInput();
 
     // Update hex interaction
     this.updateHexInteraction();
@@ -493,8 +521,24 @@ export class GameScene extends Phaser.Scene {
       this.playerActor.update(deltaSeconds, disabledKeys);
       this.cellMotility.updateInput(this.keys);
     } else {
-      // Normal mode: player actor handles WASD, cellMotility ignores input
-      this.playerActor.update(deltaSeconds, this.keys);
+      // Check for membrane trampoline control reduction
+      const controlReduction = this.membraneTrampoline.getControlReduction();
+      
+      if (controlReduction < 0.9) {
+        // Significantly reduce or disable control during strong trampoline lockout
+        const reducedKeys = {
+          W: { isDown: false, _justDown: false },
+          A: { isDown: false, _justDown: false },
+          S: { isDown: false, _justDown: false },
+          D: { isDown: false, _justDown: false },
+          SPACE: this.keys.SPACE // Allow dash input
+        } as any;
+        this.playerActor.update(deltaSeconds, reducedKeys);
+        console.log(`🏀 Control locked out (${(controlReduction * 100).toFixed(0)}% control)`);
+      } else {
+        // Normal mode: player actor handles WASD, cellMotility ignores input
+        this.playerActor.update(deltaSeconds, this.keys);
+      }
     }
     
     // Milestone 6 Task 1: Update current tile tracking
@@ -522,6 +566,14 @@ export class GameScene extends Phaser.Scene {
     
     // Update build palette position to maintain fixed screen location
     this.buildPalette.updatePosition();
+    
+    // Milestone 12: Update throw & membrane interaction systems
+    this.throwInputController.update();
+    this.cargoHUD.update();
+    
+    // Update player cargo indicator
+    const carriedCargo = this.unifiedCargoSystem.getCarriedCargo();
+    this.playerActor.updateCargoIndicator(carriedCargo ? carriedCargo.type : null);
     
     // Update HUD with current information
     this.updateHUD();
@@ -1245,6 +1297,25 @@ export class GameScene extends Phaser.Scene {
     this.toastText.setDepth(1003);
     this.toastText.setScrollFactor(0);
     this.toastText.setVisible(false);
+
+    // Build info debug text at bottom of screen
+    const buildInfo = __BUILD_INFO__; // Injected at build time by Vite
+    const buildText = [
+      `Current Build: ${buildInfo.buildTime}`,
+      ...buildInfo.commits.map(commit => `• ${commit}`)
+    ].join('\n');
+    
+    this.buildDateText = this.add.text(this.scale.width - 10, this.scale.height - 10, buildText, {
+      fontFamily: "monospace",
+      fontSize: "12px",
+      color: "#666666",
+      backgroundColor: "#000000aa",
+      padding: { x: 6, y: 4 },
+      lineSpacing: 2,
+    });
+    this.buildDateText.setOrigin(1, 1); // Anchor to bottom-right
+    this.buildDateText.setDepth(1000);
+    this.buildDateText.setScrollFactor(0);
   }
 
   // Milestone 7 Task 1: Initialize transcript system
@@ -1377,11 +1448,13 @@ export class GameScene extends Phaser.Scene {
       blueprintStatus = ` | 🔨 Building: ${recipe?.label}`;
     }
     
-    // Milestone 7 Task 8: Transcript and order status
-    const carriedCount = this.carriedTranscripts.length;
+    // Milestone 7 Task 8: Transcript and order status (updated for unified cargo)
+    const carriedCargo = this.unifiedCargoSystem.getCarriedCargo();
+    const carriedCount = carriedCargo ? 1 : 0;
+    const carriedType = carriedCargo ? carriedCargo.type : 'none';
     const totalTranscripts = this.transcripts.size;
     const pendingOrders = this.installOrders.size;
-    const transcriptStatus = `Transcripts: ${carriedCount}/2 carried, ${totalTranscripts} total | Orders: ${pendingOrders} pending`;
+    const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalTranscripts} transcripts total | Orders: ${pendingOrders} pending`;
     
     // Milestone 10: Updated control hints for motility modes
     // Milestone 7: Added transcript controls
@@ -1681,114 +1754,19 @@ export class GameScene extends Phaser.Scene {
    * Milestone 7 Task 6: Transcript pickup/carry mechanics
    * Handle R key for pickup/drop and Shift+R key for carry management
    */
-  private handleTranscriptInput(): void {
-    // R key: Pick up or drop transcript at current tile
+  private handleUnifiedCargoInput(): void {
+    // R key: Pick up or drop cargo using unified cargo system
     if (Phaser.Input.Keyboard.JustDown(this.keys.R)) {
-      // Check if SHIFT is held for "drop all" functionality
-      const shiftHeld = this.input.keyboard?.checkDown(this.input.keyboard.addKey('SHIFT'), 0);
-      
-      if (shiftHeld) {
-        this.handleDropAllTranscripts();
+      const playerHex = this.getPlayerHexCoord();
+      if (!playerHex) return;
+
+      // Try to pickup cargo if nothing carried, otherwise drop current cargo
+      if (!this.unifiedCargoSystem.isCarrying()) {
+        const result = this.unifiedCargoSystem.attemptPickup(playerHex);
+        this.showToast(result.message);
       } else {
-        this.handleTranscriptPickupDrop();
-      }
-    }
-  }
-
-  /**
-   * Handle pickup/drop of transcript at current tile
-   */
-  private handleTranscriptPickupDrop(): void {
-    const playerHex = this.getPlayerHexCoord();
-    if (!playerHex) return;
-    
-    const CARRY_CAPACITY = 2; // Maximum transcripts player can carry
-    
-    // Check if player is carrying transcripts at this location - drop one if so
-    if (this.carriedTranscripts.length > 0) {
-      const transcriptToDrop = this.carriedTranscripts[0];
-      transcriptToDrop.isCarried = false;
-      transcriptToDrop.atHex = { ...playerHex };
-      transcriptToDrop.worldPos = this.hexGrid.hexToWorld(playerHex).clone();
-      
-      // Remove from carried list
-      this.carriedTranscripts.splice(0, 1);
-      
-      // Check if dropped at ER organelle - if so, process immediately
-      this.checkAndProcessTranscriptAtER(transcriptToDrop);
-      
-      this.showToast(`Dropped ${transcriptToDrop.proteinId} transcript`);
-      return;
-    }
-    
-    // Check if there are transcripts at current location to pick up
-    const transcriptsAtLocation = this.getTranscriptsAtHex(playerHex);
-    if (transcriptsAtLocation.length === 0) {
-      this.showToast("No transcripts here to pick up");
-      return;
-    }
-    
-    // Check carrying capacity
-    if (this.carriedTranscripts.length >= CARRY_CAPACITY) {
-      this.showToast(`Already carrying ${CARRY_CAPACITY} transcripts (max capacity)`);
-      return;
-    }
-    
-    // Pick up first available transcript
-    const transcriptToPickup = transcriptsAtLocation[0];
-    transcriptToPickup.isCarried = true;
-    this.carriedTranscripts.push(transcriptToPickup);
-    
-    this.showToast(`Picked up ${transcriptToPickup.proteinId} transcript`);
-  }
-
-  /**
-   * Drop all carried transcripts at current location
-   */
-  private handleDropAllTranscripts(): void {
-    if (this.carriedTranscripts.length === 0) {
-      this.showToast("Not carrying any transcripts");
-      return;
-    }
-    
-    const playerHex = this.getPlayerHexCoord();
-    if (!playerHex) return;
-    
-    const droppedCount = this.carriedTranscripts.length;
-    
-    // Drop all carried transcripts
-    for (const transcript of this.carriedTranscripts) {
-      transcript.isCarried = false;
-      transcript.atHex = { ...playerHex };
-      transcript.worldPos = this.hexGrid.hexToWorld(playerHex).clone();
-      
-      // Check if dropped at ER organelle - if so, process immediately
-      this.checkAndProcessTranscriptAtER(transcript);
-    }
-    
-    // Clear carried list
-    this.carriedTranscripts.length = 0;
-    
-    this.showToast(`Dropped ${droppedCount} transcript${droppedCount === 1 ? '' : 's'}`);
-  }
-
-  /**
-   * Check if transcript is at ER organelle and process if so
-   */
-  private checkAndProcessTranscriptAtER(transcript: Transcript): void {
-    // Find all ER organelles
-    const erOrganelles = this.organelleSystem.getAllOrganelles()
-      .filter(org => org.type === 'proto-er' && org.isActive);
-    
-    // Check if transcript is at any ER organelle
-    for (const er of erOrganelles) {
-      const distance = this.calculateHexDistance(transcript.atHex, er.coord);
-      if (distance <= 1) { // At or adjacent to ER
-        console.log(`🏭 Manually dropped transcript at ER - starting processing`);
-        transcript.state = 'processing_at_er';
-        transcript.processingTimer = 0;
-        this.showToast(`${transcript.proteinId} being processed at ER...`);
-        return;
+        const result = this.unifiedCargoSystem.dropCargo(playerHex);
+        this.showToast(result.message);
       }
     }
   }
@@ -1987,24 +1965,6 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * Get transcripts at a specific hex
-   */
-  private getTranscriptsAtHex(hex: HexCoord): Transcript[] {
-    return Array.from(this.transcripts.values()).filter(
-      transcript => !transcript.isCarried && 
-                   transcript.atHex.q === hex.q && 
-                   transcript.atHex.r === hex.r
-    );
-  }
-
-
-  /**
-   * Calculate distance between two hex coordinates
-   */
-  private calculateHexDistance(hex1: HexCoord, hex2: HexCoord): number {
-    return (Math.abs(hex1.q - hex2.q) + Math.abs(hex1.q + hex1.r - hex2.q - hex2.r) + Math.abs(hex1.r - hex2.r)) / 2;
-  }
-
-
   /**
    * Debug command: Print status of consolidated systems
    */
@@ -2018,6 +1978,10 @@ export class GameScene extends Phaser.Scene {
       console.log(`🏃 Motility: ${state.mode}, Speed: ${state.speed.toFixed(2)}, Polarity: ${state.polarity.magnitude.toFixed(2)}`);
       console.log(`📍 Cell Center: (${this.cellCenter.x.toFixed(1)}, ${this.cellCenter.y.toFixed(1)})`);
     }
+    
+    // MILESTONE 12: Throw & Membrane systems
+    console.log(`📦 Unified Cargo: ${this.unifiedCargoSystem.isCarrying() ? 'Carrying cargo' : 'Empty'}`);
+    console.log(`🏀 Membrane Trampoline: ${this.membraneTrampoline.isOnCooldown() ? 'On cooldown' : 'Ready'}`);
     
     // CellProduction metrics
     const transcriptCount = this.transcripts.size;

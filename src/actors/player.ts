@@ -21,6 +21,7 @@ interface PlayerConfig {
 export class Player extends Phaser.GameObjects.Container {
   private sprite: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
   private ring: Phaser.GameObjects.Image;
+  private cargoIndicator?: Phaser.GameObjects.Image; // Changed to Image for better positioning
   private hexGrid: HexGrid;
   
   // Movement properties
@@ -68,8 +69,15 @@ export class Player extends Phaser.GameObjects.Container {
     this.ring = config.scene.add.image(0, 0, rkey);
     this.ring.setDepth(3).setAlpha(0.9);
 
+    // Create cargo indicator textures and initial indicator
+    this.makeCargoIndicatorTextures();
+    this.cargoIndicator = this.scene.add.image(0, 0, 'cargo_transcript');
+    this.cargoIndicator.setPosition(20, -20); // Set relative position within container
+    this.cargoIndicator.setDepth(5);
+    this.cargoIndicator.setVisible(false); // Initially hidden
+    
     // Add to container
-    this.add([this.sprite, this.ring]);
+    this.add([this.sprite, this.ring, this.cargoIndicator]);
     
     // Add container to scene
     config.scene.add.existing(this);
@@ -102,6 +110,31 @@ export class Player extends Phaser.GameObjects.Container {
     graphics.destroy();
     
     return key;
+  }
+
+  private makeCargoIndicatorTextures(): void {
+    // Create transcript indicator texture (red)
+    const transcriptGraphics = this.scene.add.graphics();
+    transcriptGraphics.fillStyle(0xff4444, 0.8);
+    transcriptGraphics.fillCircle(8, 8, 8);
+    transcriptGraphics.lineStyle(2, 0xffffff, 1);
+    transcriptGraphics.strokeCircle(8, 8, 8);
+    transcriptGraphics.generateTexture('cargo_transcript', 16, 16);
+    transcriptGraphics.destroy();
+
+    // Create vesicle indicator texture (blue)
+    const vesicleGraphics = this.scene.add.graphics();
+    vesicleGraphics.fillStyle(0x4444ff, 0.8);
+    vesicleGraphics.fillCircle(8, 8, 8);
+    vesicleGraphics.lineStyle(2, 0xffffff, 1);
+    vesicleGraphics.strokeCircle(8, 8, 8);
+    vesicleGraphics.generateTexture('cargo_vesicle', 16, 16);
+    vesicleGraphics.destroy();
+
+    // Create empty texture for when not carrying
+    const emptyGraphics = this.scene.add.graphics();
+    emptyGraphics.generateTexture('cargo_none', 1, 1);
+    emptyGraphics.destroy();
   }
 
   /**
@@ -189,6 +222,11 @@ export class Player extends Phaser.GameObjects.Container {
 
     // Update ring position to follow sprite
     this.ring.setPosition(this.sprite.x, this.sprite.y);
+    
+    // Update cargo indicator to follow sprite
+    if (this.cargoIndicator) {
+      this.cargoIndicator.setPosition(this.sprite.x + 20, this.sprite.y - 20);
+    }
     
     // Update current tile tracking
     this.updateCurrentTile();
@@ -434,6 +472,65 @@ export class Player extends Phaser.GameObjects.Container {
    */
   getPhysicsBody(): Phaser.Physics.Arcade.Body {
     return this.sprite.body as Phaser.Physics.Arcade.Body;
+  }
+
+  /**
+   * Update cargo indicator based on what's being carried
+   */
+  public updateCargoIndicator(cargoType: string | null): void {
+    if (!this.cargoIndicator) return;
+    
+    if (cargoType) {
+      this.cargoIndicator.setVisible(true);
+      
+      if (cargoType === 'transcript') {
+        this.cargoIndicator.setTexture('cargo_transcript');
+      } else if (cargoType === 'vesicle') {
+        this.cargoIndicator.setTexture('cargo_vesicle');
+      }
+    } else {
+      this.cargoIndicator.setVisible(false);
+    }
+  }
+
+  /**
+   * Update cargo indicator position for throw preview
+   */
+  public updateCargoIndicatorPosition(relativePosition: Phaser.Math.Vector2, chargeLevel: number): void {
+    if (!this.cargoIndicator || !this.cargoIndicator.visible) return;
+    
+    // Position cargo indicator relative to sprite
+    this.cargoIndicator.setPosition(
+      this.sprite.x + relativePosition.x,
+      this.sprite.y + relativePosition.y
+    );
+    
+    // Scale and pulse based on charge level
+    const scale = 1.0 + (chargeLevel * 0.3); // Grow up to 30% with charge
+    const alpha = 0.7 + (chargeLevel * 0.3); // Brighten with charge
+    
+    this.cargoIndicator.setScale(scale);
+    this.cargoIndicator.setAlpha(alpha);
+    
+    // Add a subtle rotation to show it's "ready to throw"
+    if (chargeLevel > 0) {
+      const rotation = Math.sin(this.scene.time.now / 200) * 0.1; // Subtle oscillation
+      this.cargoIndicator.setRotation(rotation);
+    } else {
+      this.cargoIndicator.setRotation(0);
+    }
+  }
+
+  /**
+   * Reset cargo indicator to default position
+   */
+  public resetCargoIndicatorPosition(): void {
+    if (!this.cargoIndicator) return;
+    
+    this.cargoIndicator.setPosition(this.sprite.x + 20, this.sprite.y - 20);
+    this.cargoIndicator.setScale(1.0);
+    this.cargoIndicator.setAlpha(1.0);
+    this.cargoIndicator.setRotation(0);
   }
 
   /**

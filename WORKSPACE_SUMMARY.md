@@ -16,8 +16,9 @@ This is a **cellular simulation game prototype** built with **TypeScript** and *
 - **Consolidated SystemObject architecture with automatic Phaser lifecycle management**
 - **Milestone 9: Complete cell motility system with unified visual transform (cellRoot container)**
 - **Milestone 10: Advanced motility modes system (Amoeboid, Blebbing, Mesenchymal)**
+- **Milestone 12: Throw & membrane interactions v1 (charge-based projectile system)**
 
-The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles. **Milestone 9** introduced unified cell movement where all visual elements move together as a single entity. **Milestone 10** revolutionizes locomotion with three biologically-grounded motility modes, each optimized for different terrain types and movement strategies.
+The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles. **Milestone 9** introduced unified cell movement where all visual elements move together as a single entity. **Milestone 10** revolutionizes locomotion with three biologically-grounded motility modes, each optimized for different terrain types and movement strategies. **Milestone 12** adds sophisticated interaction mechanics through charge-based projectile throwing with realistic membrane physics and boundary detection.
 
 **Technology Stack:**
 - **Core**: TypeScript 5.8.3, Phaser 3.90.0, Vite 7.1.0
@@ -320,6 +321,110 @@ src/
 - **HeatmapSystem**: parentContainer support for graphics
 - **BlueprintRenderer**: parentContainer support for construction visuals
 - **Player**: cellRoot reference for membrane ripple effects
+
+---
+
+## Milestone 12: Throw & Membrane Interactions v1
+
+**Revolutionary Achievement**: Complete throw system implementation with charge-based aiming, projectile physics, boundary detection, and membrane trampoline interactions.
+
+### **Core Throw Mechanics**
+
+#### **ThrowSystem** (`systems/throw-system.ts`)
+**Purpose**: Physics and visual rendering for charged projectile throws
+
+**Key Features:**
+- **Charge-Based Throwing**: Hold right mouse button or gamepad trigger to charge throw (1.5 second max)
+- **Visual Feedback**: Trajectory preview with charge-based thickness and brightness
+- **Projectile Physics**: Realistic projectile creation with speed based on charge level
+- **Boundary Detection**: Prevents projectiles from leaving the cellular environment
+- **State Management**: AimState interface with chargeLevel, target position, and visual elements
+
+**Technical Implementation:**
+- **Charge System**: 0-1 charge level affects throw speed and visual feedback
+- **Trajectory Rendering**: Dynamic arc preview showing throw path with visual charge indicators
+- **Coordinate Conversion**: Proper world-to-cell-local coordinate transformation
+- **Physics Integration**: Uses effectivePower calculated from charge level for realistic throws
+
+#### **ThrowInputController** (`systems/throw-input-controller.ts`)
+**Purpose**: Input handling for charge-based throwing with mouse and gamepad support
+
+**Key Features:**
+- **Mouse Controls**: Right mouse button hold-to-charge with mouse cursor aiming
+- **Gamepad Support**: Right bumper (R1) charging with right stick aiming
+- **Coordinate System**: Proper mouse coordinate conversion to cell-local space
+- **Input Conflict Resolution**: Disabled keyboard input when mouse is active to prevent conflicts
+- **Minimum Hold Time**: 50ms minimum to prevent accidental immediate throws
+
+**Visual Feedback:**
+- **Cargo Indicator Rotation**: Cargo rotates around player based on aim direction
+- **Charge-Based Scaling**: Cargo indicator grows with charge level
+- **Trajectory Preview**: Real-time arc showing throw direction and power
+
+#### **UnifiedCargoSystem** (`systems/unified-cargo-system.ts`)
+**Purpose**: Complete cargo management system for picking up, carrying, and throwing objects
+
+**Key Features:**
+- **Cargo State Management**: Tracks what player is carrying and cargo position
+- **Pickup System**: Ability to pick up thrown cargo and other objects
+- **Throw Integration**: Seamless integration with throw system for cargo release
+- **State Persistence**: Maintains cargo state across throw attempts
+
+#### **MembraneTrampoline** (`systems/membrane-trampoline.ts`)
+**Purpose**: Realistic membrane physics for projectile interactions
+
+**Key Features:**
+- **Bounce Physics**: Projectiles bounce off membrane boundaries with realistic physics
+- **Velocity Conservation**: Proper momentum transfer during membrane collisions
+- **Visual Effects**: Membrane ripple effects at impact points
+- **Boundary Enforcement**: Prevents projectiles from escaping the cellular environment
+
+### **User Interface & Controls**
+
+#### **Throw Controls**
+- **Right Mouse Button**: Hold to charge throw, aim with mouse cursor movement
+- **Mouse Movement**: Aim direction while charging (cargo indicator rotates to show direction)
+- **Gamepad R1**: Alternative throw charging for gamepad users
+- **Gamepad Right Stick**: Aiming direction for gamepad throwing
+
+#### **Visual Feedback System**
+- **Trajectory Preview**: Shows throw arc with charge-based visual intensity
+- **Cargo Indicator**: Rotates around player to show throw direction, scales with charge
+- **Charge Level Display**: Visual feedback through trajectory thickness and cargo scaling
+- **Toast Messages**: Displays charge percentage and throw feedback
+
+### **Technical Achievements**
+
+#### **Coordinate System Mastery**
+- **World-to-Cell Conversion**: Proper coordinate transformation using cellRoot offset
+- **Mouse Coordinate Handling**: Fixed spazzing issue with clean coordinate conversion pipeline
+- **Unified Transform**: All throw elements work seamlessly with cellRoot container system
+
+#### **Input System Integration**
+- **Conflict Resolution**: Eliminated keyboard/mouse input conflicts
+- **Event Timing**: Proper event handling with minimum hold times
+- **Cross-Platform Support**: Works with mouse, keyboard, and gamepad inputs
+
+#### **Physics & Rendering**
+- **Projectile System**: Complete physics simulation for thrown objects
+- **Boundary Detection**: Robust system preventing projectiles from leaving game area
+- **Visual Polish**: Smooth animations, charge feedback, and trajectory previews
+
+### **Milestone 12 Controls Summary**
+- **Right Mouse**: Hold to charge throw, move mouse to aim
+- **Release Mouse**: Execute throw at current charge level
+- **Q/E Keys**: Pick up and drop cargo (existing inventory system)
+- **Gamepad R1**: Alternative throw charging
+- **Gamepad Right Stick**: Aiming for gamepad users
+
+### **Integration with Existing Systems**
+- **Player System**: Cargo indicator positioning and rotation during aiming
+- **CellRoot Container**: All throw visuals properly integrated with unified transform system
+- **Inventory System**: Seamless integration with existing Q/E pickup/drop mechanics
+- **Physics System**: Proper collision detection and boundary enforcement
+- **Visual System**: Trajectory preview and charge feedback rendered at correct depths
+
+---
 
 ### **Core Data Systems**
 
@@ -839,6 +944,20 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Clean Code**: Removed 500+ lines of unused legacy methods  
 ✅ **"Calm, Minimal Path Forward"**: Achieved through elimination of manual coordination
 
+### **Milestone 12: Throw & Membrane Interactions v1 Achievements**
+✅ **Charge-Based Throw System**: Right mouse button hold-to-charge with 1.5 second charge time and visual feedback  
+✅ **Mouse & Gamepad Controls**: Comprehensive input system with right mouse button and gamepad R1 charging  
+✅ **Trajectory Preview System**: Real-time arc visualization with charge-based thickness and brightness feedback  
+✅ **Coordinate System Mastery**: Fixed mouse coordinate conversion to eliminate aiming spazzing during movement  
+✅ **Cargo Indicator Rotation**: Dynamic cargo positioning around player showing throw direction with charge scaling  
+✅ **Projectile Physics**: Complete physics simulation with realistic speed calculation from charge level  
+✅ **Boundary Detection**: Robust system preventing projectiles from leaving cellular environment  
+✅ **Membrane Trampoline System**: Realistic bounce physics with membrane collision and velocity conservation  
+✅ **Input Conflict Resolution**: Clean separation of mouse and keyboard inputs to prevent control conflicts  
+✅ **Visual Polish**: Smooth animations, charge feedback, trajectory preview, and cargo state management  
+✅ **CellRoot Integration**: All throw visuals properly integrated with unified container transform system  
+✅ **Cross-Platform Support**: Seamless operation with mouse, keyboard, and gamepad input methods  
+
 ### **Milestone 10: Advanced Motility Modes Achievements**
 ✅ **Three Biological Movement Modes**: Amoeboid, Blebbing, Mesenchymal with distinct physics and energy costs  
 ✅ **Substrate Optimization Matrix**: Real-time movement modifiers for soft, adhesive, and structured substrates  
@@ -862,4 +981,4 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Collision System**: Realistic obstacle interaction with collision normals and damping  
 ✅ **Energy Integration**: ATP costs for movement, dash ability, and adhesion maintenance  
 
-The project has achieved a **revolutionary biological simulation** with a solid, maintainable, and performant foundation. **Milestone 10** completes the vision of biologically-grounded cellular locomotion where cells can adapt their movement strategy to environmental conditions, just like real cellular organisms. The three motility modes (Amoeboid, Blebbing, Mesenchymal) provide a comprehensive framework for realistic cellular behavior in diverse biological environments.
+The project has achieved a **revolutionary biological simulation** with a solid, maintainable, and performant foundation. **Milestone 12** introduces sophisticated cellular interaction mechanics through charge-based projectile throwing with membrane physics, while **Milestone 10** completed the vision of biologically-grounded cellular locomotion where cells can adapt their movement strategy to environmental conditions. Together, these systems provide a comprehensive framework for realistic cellular behavior and interaction in diverse biological environments, from precise locomotion control to dynamic object manipulation and membrane-mediated physics.
