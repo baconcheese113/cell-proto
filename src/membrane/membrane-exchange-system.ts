@@ -227,8 +227,8 @@ export class MembraneExchangeSystem {
       this.stats.totalExports[speciesId] = (this.stats.totalExports[speciesId] || 0) + actualFlux;
     }
 
-    // Debug output (throttled)
-    if (Math.random() < 0.01) { // More frequent debug output to test
+    // Debug output (much less frequent to reduce spam)
+    if (Math.random() < 0.001) { // Very infrequent debug output
       const glycoStatus = installedProtein.glycosylationStatus || 'complete';
       console.log(`🚛 ${protein.label} (${glycoStatus}, ${Math.round(throughputMultiplier * 100)}%): ${direction === 'in' ? '+' : '-'}${actualFlux.toFixed(3)} ${speciesId}`);
       console.log(`   Rate: ${effectiveRate.toFixed(3)}/tick, Delta: ${deltaSeconds.toFixed(3)}s, Flux: ${fluxAmount.toFixed(3)}`);

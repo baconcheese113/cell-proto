@@ -116,7 +116,11 @@ export const ORGANELLE_REGISTRY: Record<OrganelleType, OrganelleDefinition> = {
     throughputCap: 20,
     priority: 4,
     buildCost: { 'PROTEIN': 35, 'CARGO': 15 },
-    buildRatePerTick: 0.6
+    buildRatePerTick: 0.6,
+    starterPlacement: {
+      coord: { q: 5, r: -1 },
+      instanceId: 'golgi-1'
+    }
   },
 
   'peroxisome': {

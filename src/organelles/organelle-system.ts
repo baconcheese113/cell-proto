@@ -30,6 +30,14 @@ export interface OrganelleConfig {
   priority: number;
 }
 
+// Simple seat info for vesicle capacity tracking
+interface SeatInfo {
+  vesicleId: string;
+  reservedAt: number;
+  expectedArrival?: number;
+  position: HexCoord; // Specific hex coordinate within organelle footprint
+}
+
 export interface Organelle {
   id: string;
   type: OrganelleType;
@@ -39,6 +47,10 @@ export interface Organelle {
   // Runtime state (for later tasks)
   currentThroughput: number;
   isActive: boolean;
+  
+  // Milestone 13: Seat-based capacity management
+  seats: Map<string, SeatInfo>; // seatId -> seat info
+  capacity: number; // Max concurrent vesicles (defaults to 1)
 }
 
 export class OrganelleSystem {
@@ -54,6 +66,9 @@ export class OrganelleSystem {
   private readonly INFO_CACHE_DURATION = 250; // Cache for 250ms (4 updates per second max)
   // Task 8: Batch tile changes to avoid intermediate state inconsistency
   private tileChanges: Map<string, Map<SpeciesId, number>> = new Map(); // tile key -> species changes
+  
+  // Milestone 13: Seat reservation events
+  private seatEventListeners: Set<(event: 'seatReserved' | 'seatReleased', organelleId: string, seatId: string) => void> = new Set();
 
   constructor(hexGrid: HexGrid) {
     this.hexGrid = hexGrid;
@@ -80,7 +95,9 @@ export class OrganelleSystem {
           id: definition.starterPlacement.instanceId,
           type: definition.type,
           coord: definition.starterPlacement.coord,
-          config: fullConfig
+          config: fullConfig,
+          seats: new Map(),
+          capacity: ORGANELLE_FOOTPRINTS[definition.footprint].tiles.length // Use footprint size as capacity
         });
       }
     }
@@ -207,7 +224,9 @@ export class OrganelleSystem {
       id: config.id,
       type: config.type,
       coord,
-      config: fullConfig
+      config: fullConfig,
+      seats: new Map(),
+      capacity: footprint.tiles.length // Use footprint size as capacity
     };
 
     console.log(`🔧 About to call addOrganelle with:`, organelleData);
@@ -429,6 +448,19 @@ export class OrganelleSystem {
       `Status: ${organelle.isActive ? 'Active' : 'Inactive'}`
     ];
 
+    // Milestone 13: Add seat usage and queue information
+    const seatInfo = this.getSeatInfo(organelle.id);
+    if (seatInfo) {
+      info.push(`Seats: ${seatInfo.occupied}/${seatInfo.capacity}`);
+      
+      // Check for queued cargo at rim (simplified check)
+      // Note: Full queue implementation would require checking rail system
+      const hasQueuedCargo = this.hasQueuedCargoAtRim(organelle);
+      if (hasQueuedCargo > 0) {
+        info.push(`Queue at rim: ${hasQueuedCargo}`);
+      }
+    }
+
     if (ioProfile) {
       const throughputPct = ((organelle.currentThroughput / ioProfile.capPerTick) * 100).toFixed(1);
       info.push(`Throughput: ${organelle.currentThroughput.toFixed(2)}/${ioProfile.capPerTick} (${throughputPct}%)`);
@@ -504,5 +536,235 @@ export class OrganelleSystem {
    */
   private coordToKey(coord: HexCoord): string {
     return `${coord.q},${coord.r}`;
+  }
+
+  // === Milestone 13: Seat-based capacity management ===
+
+  /**
+   * Add a listener for seat events
+   */
+  public addSeatEventListener(listener: (event: 'seatReserved' | 'seatReleased', organelleId: string, seatId: string) => void): void {
+    this.seatEventListeners.add(listener);
+  }
+
+  /**
+   * Remove a listener for seat events
+   */
+  public removeSeatEventListener(listener: (event: 'seatReserved' | 'seatReleased', organelleId: string, seatId: string) => void): void {
+    this.seatEventListeners.delete(listener);
+  }
+
+  /**
+   * Emit seat events to all listeners
+   */
+  private emitSeatEvent(event: 'seatReserved' | 'seatReleased', organelleId: string, seatId: string): void {
+    for (const listener of this.seatEventListeners) {
+      listener(event, organelleId, seatId);
+    }
+  }
+
+  /**
+   * Get a free seat in an organelle (without reserving it)
+   * @param organelleId The organelle to check
+   * @returns available seat position or null if full
+   */
+  public getFreeSeat(organelleId: string): HexCoord | null {
+    const organelle = this.organelles.get(organelleId);
+    if (!organelle) {
+      return null;
+    }
+
+    // Check capacity
+    if (organelle.seats.size >= organelle.capacity) {
+      return null;
+    }
+
+    // Find an available position within the footprint
+    const footprintTiles = getFootprintTiles(organelle.config.footprint, organelle.coord.q, organelle.coord.r);
+    const occupiedPositions = new Set<string>();
+    
+    // Mark positions already taken by other seats
+    for (const existingSeat of organelle.seats.values()) {
+      occupiedPositions.add(`${existingSeat.position.q},${existingSeat.position.r}`);
+    }
+    
+    // Find first available footprint position
+    for (const tile of footprintTiles) {
+      const tileKey = `${tile.q},${tile.r}`;
+      if (!occupiedPositions.has(tileKey)) {
+        return tile;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Reserve a seat in an organelle for an incoming vesicle
+   * @param organelleId The organelle to reserve a seat in
+   * @param vesicleId The vesicle that needs the seat
+   * @param expectedArrival Optional expected arrival time
+   * @returns seat ID if successful, null if organelle is full
+   */
+  public reserveSeat(organelleId: string, vesicleId: string, expectedArrival?: number): string | null {
+    const organelle = this.organelles.get(organelleId);
+    if (!organelle) {
+      console.warn(`Cannot reserve seat: organelle ${organelleId} not found`);
+      return null;
+    }
+
+    console.log(`🔍 SEAT DEBUG: Attempting to reserve seat in ${organelleId} for vesicle ${vesicleId}`);
+    console.log(`🔍 SEAT DEBUG: Current seats: ${organelle.seats.size}, Capacity: ${organelle.capacity}`);
+
+    // Check capacity
+    if (organelle.seats.size >= organelle.capacity) {
+      // Organelle is full
+      console.log(`🔍 SEAT DEBUG: Organelle ${organelleId} is full (${organelle.seats.size}/${organelle.capacity})`);
+      return null;
+    }
+
+    // Find an available position within the footprint
+    const footprintTiles = getFootprintTiles(organelle.config.footprint, organelle.coord.q, organelle.coord.r);
+    console.log(`🔍 SEAT DEBUG: Footprint has ${footprintTiles.length} tiles`);
+    
+    const occupiedPositions = new Set<string>();
+    
+    // Mark positions already taken by other seats
+    for (const existingSeat of organelle.seats.values()) {
+      occupiedPositions.add(`${existingSeat.position.q},${existingSeat.position.r}`);
+    }
+    
+    console.log(`🔍 SEAT DEBUG: Occupied positions: ${Array.from(occupiedPositions).join(', ')}`);
+    
+    // Find first available footprint position
+    let availablePosition: HexCoord | null = null;
+    for (const tile of footprintTiles) {
+      const tileKey = `${tile.q},${tile.r}`;
+      if (!occupiedPositions.has(tileKey)) {
+        availablePosition = tile;
+        console.log(`🔍 SEAT DEBUG: Found available position: (${tile.q},${tile.r})`);
+        break;
+      }
+    }
+    
+    if (!availablePosition) {
+      console.warn(`Cannot reserve seat: no available positions in organelle ${organelleId}`);
+      return null;
+    }
+
+    // Assert that position is truly free (guards against stacking)
+    const positionKey = `${availablePosition.q},${availablePosition.r}`;
+    if (occupiedPositions.has(positionKey)) {
+      console.error(`ASSERTION FAILED: Attempted to reserve already occupied position ${positionKey} in organelle ${organelleId}`);
+      return null;
+    }
+
+    // Milestone 13: Additional validation for seat management
+    if (organelle.seats.size >= organelle.capacity) {
+      console.error(`VALIDATION FAILED: Attempted to reserve seat when organelle ${organelleId} is at capacity (${organelle.seats.size}/${organelle.capacity})`);
+      return null;
+    }
+
+    // Generate unique seat ID
+    const seatId = `seat_${organelleId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const seat: SeatInfo = {
+      vesicleId,
+      reservedAt: Date.now(),
+      expectedArrival,
+      position: availablePosition
+    };
+
+    organelle.seats.set(seatId, seat);
+    console.log(`🎫 Reserved seat ${seatId} for vesicle ${vesicleId} in organelle ${organelleId} at position (${availablePosition.q},${availablePosition.r})`);
+    
+    // Emit seat reserved event
+    this.emitSeatEvent('seatReserved', organelleId, seatId);
+    
+    return seatId;
+  }
+
+  /**
+   * Release a seat in an organelle
+   * @param organelleId The organelle containing the seat
+   * @param seatId The seat to release
+   * @returns true if seat was released, false if not found
+   */
+  public releaseSeat(organelleId: string, seatId: string): boolean {
+    const organelle = this.organelles.get(organelleId);
+    if (!organelle) {
+      console.warn(`Cannot release seat: organelle ${organelleId} not found`);
+      return false;
+    }
+
+    const released = organelle.seats.delete(seatId);
+    if (released) {
+      console.log(`🎫 Released seat ${seatId} in organelle ${organelleId}`);
+      // Emit seat released event
+      this.emitSeatEvent('seatReleased', organelleId, seatId);
+    }
+    
+    return released;
+  }
+
+  /**
+   * Check if an organelle has available capacity
+   * @param organelleId The organelle to check
+   * @returns true if seats are available, false if full or not found
+   */
+  public hasAvailableSeats(organelleId: string): boolean {
+    const organelle = this.organelles.get(organelleId);
+    if (!organelle) {
+      return false;
+    }
+    
+    return organelle.seats.size < organelle.capacity;
+  }
+
+  /**
+   * Get the position assigned to a specific seat
+   * @param organelleId The organelle containing the seat
+   * @param seatId The seat to get position for
+   * @returns hex coordinate of the seat, or null if not found
+   */
+  public getSeatPosition(organelleId: string, seatId: string): HexCoord | null {
+    const organelle = this.organelles.get(organelleId);
+    if (!organelle) {
+      return null;
+    }
+    
+    const seat = organelle.seats.get(seatId);
+    return seat ? seat.position : null;
+  }
+
+  /**
+   * Get seat information for an organelle
+   * @param organelleId The organelle to check
+   * @returns seat occupancy info or null if organelle not found
+   */
+  public getSeatInfo(organelleId: string): { occupied: number; capacity: number; seats: SeatInfo[] } | null {
+    const organelle = this.organelles.get(organelleId);
+    if (!organelle) {
+      return null;
+    }
+    
+    return {
+      occupied: organelle.seats.size,
+      capacity: organelle.capacity,
+      seats: Array.from(organelle.seats.values())
+    };
+  }
+
+  /**
+   * Check for queued cargo at organelle rim
+   * Simplified implementation - in full system would check cytoskeleton graph
+   * @param _organelle The organelle to check (unused in simplified implementation)
+   * @returns number of cargo items queued at rim
+   */
+  private hasQueuedCargoAtRim(_organelle: Organelle): number {
+    // Simplified check - in full implementation this would check 
+    // the cytoskeleton graph for cargo with handoffKind='actin-end-dwell'
+    // near this organelle's rim coordinates
+    return 0; // Placeholder - would need integration with cytoskeleton system
   }
 }

@@ -12,11 +12,12 @@ import { OrganelleRenderer } from "../organelles/organelle-renderer";
 import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 import { PlayerInventorySystem } from "../player/player-inventory";
 import { BlueprintSystem } from "../construction/blueprint-system";
-import { BuildPaletteUI } from "../construction/build-palette-ui";
+import { BuildPaletteUI, type BuildContext } from "../construction/build-palette-ui";
 import type { OrganelleType } from "../organelles/organelle-registry";
 import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
+import { getFootprintTiles } from "../organelles/organelle-footprints";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
 import { MembranePortSystem } from "../membrane/membrane-port-system";
 
@@ -37,9 +38,14 @@ import { UnifiedCargoSystem } from "../systems/unified-cargo-system";
 import { MembraneTrampoline } from "../systems/membrane-trampoline";
 import { ThrowInputController } from "../systems/throw-input-controller";
 import { CargoHUD } from "../systems/cargo-hud";
+// Milestone 13: Cytoskeleton Transport v1
+import { CytoskeletonSystem } from "../systems/cytoskeleton-system";
+import { CytoskeletonRenderer } from "../systems/cytoskeleton-renderer";
+import { FilamentBuilder } from "../systems/filament-builder";
+import { initializeEnhancedVesicleRouting, updateEnhancedVesicleRouting } from "../systems/cytoskeleton-vesicle-integration";
 import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "ESC", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -108,7 +114,7 @@ export class GameScene extends Phaser.Scene {
   private blueprintSystem!: BlueprintSystem;
   private buildPalette!: BuildPaletteUI;
   private blueprintRenderer!: BlueprintRenderer;
-  private selectedRecipeId: OrganelleType | null = null;
+  private selectedRecipeId: string | null = null; // Milestone 13: Support all recipe types (organelles, filaments, upgrades)
   private isInBuildMode: boolean = false;
 
   // Milestone 6: Current tile tracking - Task 1
@@ -150,6 +156,11 @@ export class GameScene extends Phaser.Scene {
   private membraneTrampoline!: MembraneTrampoline;
   private throwInputController!: ThrowInputController;
   private cargoHUD!: CargoHUD;
+  
+  // Milestone 13: Cytoskeleton Transport v1
+  private cytoskeletonSystem!: CytoskeletonSystem;
+  private cytoskeletonRenderer!: CytoskeletonRenderer;
+  private filamentBuilder!: FilamentBuilder;
   
   // Milestone 9: Cell motility mode
   private cellDriveMode = false;
@@ -263,16 +274,17 @@ export class GameScene extends Phaser.Scene {
       refreshTileInfo: () => this.updateTileInfoPanel()
     };
 
-    // Create CellMotility now that we have cellSpaceSystem
-    this.cellMotility = new CellMotility(this, baseWorldRefs, this.cellSpaceSystem);
-    
-    // Update worldRefs with cellMotility
-    baseWorldRefs.cellMotility = this.cellMotility;
-
     // Now create complete WorldRefs with all systems (old individual systems removed)
     const worldRefs: WorldRefs = {
-      ...baseWorldRefs
+      ...baseWorldRefs,
+      cellMotility: null as any, // Placeholder, will be set after creation
+      cytoskeletonSystem: null as any, // Placeholder, will be set after creation
+      cytoskeletonGraph: null as any // Placeholder, will be set after cytoskeleton system creation
     };
+
+    // Create CellMotility now that we have worldRefs structure
+    this.cellMotility = new CellMotility(this, worldRefs, this.cellSpaceSystem);
+    worldRefs.cellMotility = this.cellMotility;
 
     // Create modular controllers and systems
     this.tileActionController = new TileActionController({
@@ -298,6 +310,16 @@ export class GameScene extends Phaser.Scene {
     this.cargoHUD = new CargoHUD(this, this.unifiedCargoSystem, {
       position: { x: 20, y: 130 } // Position below other HUD elements
     });
+    
+    // Milestone 13: Initialize Cytoskeleton Transport v1
+    this.cytoskeletonSystem = new CytoskeletonSystem(this, worldRefs);
+    worldRefs.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
+    worldRefs.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
+    this.cytoskeletonRenderer = new CytoskeletonRenderer(this, worldRefs, this.cytoskeletonSystem);
+    this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem);
+    
+    // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
+    initializeEnhancedVesicleRouting(worldRefs);
 
     // Input keys
     this.keys = {
@@ -317,6 +339,7 @@ export class GameScene extends Phaser.Scene {
       FOUR: this.input.keyboard!.addKey("FOUR"),
       FIVE: this.input.keyboard!.addKey("FIVE"),
       SIX: this.input.keyboard!.addKey("SIX"),
+      SEVEN: this.input.keyboard!.addKey("SEVEN"),
       H: this.input.keyboard!.addKey("H"),
       LEFT: this.input.keyboard!.addKey("LEFT"),
       RIGHT: this.input.keyboard!.addKey("RIGHT"),
@@ -334,6 +357,10 @@ export class GameScene extends Phaser.Scene {
       O: this.input.keyboard!.addKey("O"), // Toggle vesicle debug
       K: this.input.keyboard!.addKey("K"), // Debug ATP injection
       L: this.input.keyboard!.addKey("L"), // Launch motility course
+      N: this.input.keyboard!.addKey("N"), // Toggle infrastructure overlay
+      F1: this.input.keyboard!.addKey("F1"), // Build actin filaments
+      F2: this.input.keyboard!.addKey("F2"), // Build microtubules
+      ESC: this.input.keyboard!.addKey("ESC"), // Exit build mode
     };
 
     // Initialize remaining UI systems
@@ -475,10 +502,6 @@ export class GameScene extends Phaser.Scene {
       // Milestone 8: Toggle queue badges
       this.cellOverlays.toggleQueueBadges();
     }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.O)) {
-      // Milestone 8: Toggle vesicle debug info
-      this.cellOverlays.toggleVesicleDebug();
-    }
     
     // MILESTONE 9 FIX 4: Debug ATP injection for testing dash
     if (Phaser.Input.Keyboard.JustDown(this.keys.K)) {
@@ -489,6 +512,52 @@ export class GameScene extends Phaser.Scene {
     // MILESTONE 10: Launch motility course
     if (Phaser.Input.Keyboard.JustDown(this.keys.L)) {
       this.scene.start('MotilityCourse');
+    }
+
+    // MILESTONE 13: Toggle infrastructure overlay
+    if (Phaser.Input.Keyboard.JustDown(this.keys.N)) {
+      this.cytoskeletonRenderer.toggleInfrastructureOverlay();
+      const state = this.cytoskeletonRenderer.isInfrastructureOverlayEnabled() ? 'ON' : 'OFF';
+      this.showToast(`Infrastructure overlay: ${state}`);
+    }
+
+    // MILESTONE 13 TESTING: Cytoskeleton integration debugging
+    if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
+      // Debug key: Log cytoskeleton and vesicle stats
+      console.log("=== CYTOSKELETON INTEGRATION DEBUG ===");
+      
+      // Log cytoskeleton graph stats
+      console.log("🚂 Cytoskeleton System Stats:");
+      console.log(`📊 Cytoskeleton Graph: nodes and edges available`);
+      
+      // Log vesicle stats
+      console.log(`📦 Vesicle Stats: ${this.vesicles.size} active vesicles`);
+      let railVesicles = 0;
+      for (const vesicle of this.vesicles.values()) {
+        if (vesicle.railState) railVesicles++;
+      }
+      console.log(`🚂 Rail Transport: ${railVesicles} vesicles on rails`);
+      
+      this.showToast("Cytoskeleton stats logged to console");
+    }
+
+    // MILESTONE 13: Filament building
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F1)) {
+      this.filamentBuilder.setFilamentType('actin');
+      this.filamentBuilder.setEnabled(true);
+      this.showToast("Actin building mode: Click and drag to place filaments");
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F2)) {
+      this.filamentBuilder.setFilamentType('microtubule');
+      this.filamentBuilder.setEnabled(true);
+      this.showToast("Microtubule building mode: Click and drag to place filaments");
+    }
+
+    // MILESTONE 13: Exit filament building mode
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) {
+      this.filamentBuilder.setEnabled(false);
+      this.showToast("Exited filament building mode");
     }
 
     // Debug species controls - Task 4
@@ -583,6 +652,9 @@ export class GameScene extends Phaser.Scene {
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
     this.updateConservationPanel();
+    
+    // Milestone 13 Part D: Update enhanced vesicle routing
+    updateEnhancedVesicleRouting();
   }
 
   /**
@@ -1088,8 +1160,13 @@ export class GameScene extends Phaser.Scene {
   private renderBlueprintPreview(): void {
     if (!this.selectedRecipeId || !this.currentTileRef) return;
     
+    // Milestone 13: For now, only handle organelle recipes through blueprint system
+    // TODO: Add filament and upgrade preview rendering
+    const recipe = CONSTRUCTION_RECIPES.getRecipe(this.selectedRecipeId);
+    if (!recipe || recipe.type !== 'organelle') return;
+    
     const validation = this.blueprintSystem.validatePlacement(
-      this.selectedRecipeId,
+      this.selectedRecipeId as OrganelleType,
       this.currentTileRef.coord.q,
       this.currentTileRef.coord.r
     );
@@ -1166,6 +1243,30 @@ export class GameScene extends Phaser.Scene {
         info.push(''); // Add spacing
       }
       
+      // Milestone 13: Show cargo (transcripts/vesicles) at this tile
+      const cargoAtTile = this.getCargoAtTile(tile.coord);
+      if (cargoAtTile.length > 0) {
+        info.push(`📦 Cargo at this tile:`);
+        for (const cargo of cargoAtTile) {
+          if (cargo.type === 'transcript') {
+            const transcript = cargo.item as Transcript;
+            const stageInfo = transcript.itinerary 
+              ? `${transcript.itinerary.stageIndex + 1}/${transcript.itinerary.stages.length} (${transcript.itinerary.stages[transcript.itinerary.stageIndex]?.kind || 'unknown'})`
+              : 'legacy';
+            info.push(`  📝 Transcript ${transcript.proteinId} - Stage ${stageInfo}`);
+            info.push(`    TTL: ${transcript.ttlSeconds.toFixed(1)}s, State: ${transcript.state}`);
+          } else {
+            const vesicle = cargo.item as Vesicle;
+            const stageInfo = vesicle.itinerary 
+              ? `${vesicle.itinerary.stageIndex + 1}/${vesicle.itinerary.stages.length} (${vesicle.itinerary.stages[vesicle.itinerary.stageIndex]?.kind || 'unknown'})`
+              : 'legacy';
+            info.push(`  🧬 Vesicle ${vesicle.proteinId} - Stage ${stageInfo}`);
+            info.push(`    TTL: ${(vesicle.ttlMs / 1000).toFixed(1)}s, State: ${vesicle.state}`);
+          }
+        }
+        info.push(''); // Add spacing
+      }
+      
       // Check for blueprint on this tile
       const blueprint = this.blueprintSystem.getBlueprintAtTile(tile.coord.q, tile.coord.r);
       if (blueprint) {
@@ -1234,6 +1335,19 @@ export class GameScene extends Phaser.Scene {
         info.push(''); // Add spacing
       }
       
+      // Milestone 13: Show cytoskeleton segments at this tile
+      const cytoskeletonSegments = this.cytoskeletonSystem.getSegmentsAtTile(tile.coord);
+      if (cytoskeletonSegments.length > 0) {
+        info.push(`🚂 Cytoskeleton Rails:`);
+        for (const segment of cytoskeletonSegments) {
+          const utilization = Math.round(segment.utilization * 100);
+          const utilizationIcon = utilization > 70 ? '🔴' : utilization > 30 ? '🟡' : '🟢';
+          info.push(`  ${segment.type} - ${utilizationIcon} ${utilization}% utilization`);
+          info.push(`    Capacity: ${segment.capacity}/tick, Speed: ${segment.speed}x`);
+        }
+        info.push(''); // Add spacing
+      }
+      
       info.push(`Species Concentrations:`);
       
       // Show all species concentrations with reduced precision to minimize flicker
@@ -1257,6 +1371,29 @@ export class GameScene extends Phaser.Scene {
   private forceUpdateTileInfoPanel(): void {
     this.lastInfoUpdateTime = 0; // Reset timer to force update
     this.updateTileInfoPanel();
+  }
+
+  /**
+   * Milestone 13: Get cargo (transcripts/vesicles) at a specific tile
+   */
+  private getCargoAtTile(coord: HexCoord): Array<{type: 'transcript' | 'vesicle', item: Transcript | Vesicle}> {
+    const cargo: Array<{type: 'transcript' | 'vesicle', item: Transcript | Vesicle}> = [];
+    
+    // Check transcripts
+    for (const transcript of this.transcripts.values()) {
+      if (!transcript.isCarried && transcript.atHex.q === coord.q && transcript.atHex.r === coord.r) {
+        cargo.push({ type: 'transcript', item: transcript });
+      }
+    }
+    
+    // Check vesicles
+    for (const vesicle of this.vesicles.values()) {
+      if (!vesicle.isCarried && vesicle.atHex.q === coord.q && vesicle.atHex.r === coord.r) {
+        cargo.push({ type: 'vesicle', item: vesicle });
+      }
+    }
+    
+    return cargo;
   }
 
   // Debug Info Panel - Task 4
@@ -1415,7 +1552,7 @@ export class GameScene extends Phaser.Scene {
     
     // Initialize build palette UI
     this.buildPalette = new BuildPaletteUI(this, 350, 50);
-    this.buildPalette.onRecipeSelected = (recipeId: OrganelleType) => {
+    this.buildPalette.onRecipeSelected = (recipeId: string) => {
       this.selectedRecipeId = recipeId;
       this.isInBuildMode = true;
       console.log(`Entered build mode with recipe: ${recipeId}`);
@@ -1621,6 +1758,9 @@ export class GameScene extends Phaser.Scene {
       if (Phaser.Input.Keyboard.JustDown(this.keys.SIX)) {
         this.injectSpecies('PRE_MRNA', injectionAmount);
       }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.SEVEN)) {
+        this.injectSpecies('PROTEIN', injectionAmount);
+      }
     }
 
     // Show player inventory status (Debug)
@@ -1722,8 +1862,16 @@ export class GameScene extends Phaser.Scene {
           return;
         }
 
+        // Milestone 13: For now, only handle organelle recipes through blueprint system
+        // TODO: Add filament and upgrade construction
+        const recipe = CONSTRUCTION_RECIPES.getRecipe(this.selectedRecipeId);
+        if (!recipe || recipe.type !== 'organelle') {
+          this.showToast(`Building ${recipe?.type || 'unknown'} not yet implemented`);
+          return;
+        }
+
         const result = this.blueprintSystem.placeBlueprint(
-          this.selectedRecipeId,
+          this.selectedRecipeId as OrganelleType,
           this.currentTileRef.coord.q,
           this.currentTileRef.coord.r
         );
@@ -1795,18 +1943,84 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Milestone 6 Task 4: Update build palette filter based on current tile (where player stands)
-   * This determines which recipes are available in the build menu
+   * Milestone 13: Context-aware build palette update
+   * This determines which recipes are available based on tile type and organelle proximity
    */
   private updateBuildPaletteFilter(): void {
     if (!this.currentTileRef) {
+      // Player outside grid - show all recipes (legacy behavior)
       this.buildPalette.rebuildPalette('all');
       return;
     }
 
-    const isMembraneTile = this.hexGrid.isMembraneCoord(this.currentTileRef.coord);
-    const filter = isMembraneTile ? 'membrane' : 'cytosol';
-    this.buildPalette.rebuildPalette(filter);
+    // Build context from current tile and surroundings
+    const context: BuildContext = {
+      isMembrane: this.hexGrid.isMembraneCoord(this.currentTileRef.coord),
+      isCytosol: !this.hexGrid.isMembraneCoord(this.currentTileRef.coord)
+    };
+
+    // Check if player is inside an organelle footprint
+    const organelleAtTile = this.organelleSystem.getOrganelleAtTile(this.currentTileRef.coord);
+    if (organelleAtTile) {
+      // Player is inside an organelle - check if it's a rim tile for upgrades
+      const isRimTile = this.isOrganelleRimTile(this.currentTileRef.coord, organelleAtTile);
+      if (isRimTile) {
+        // Player is on the rim of an organelle - show upgrades for this organelle type
+        context.isOrganelleRim = true;
+        context.organelleType = organelleAtTile.type;
+        context.isCytosol = false; // Override cytosol since we're inside organelle
+        context.isMembrane = false;
+      } else {
+        // Player is inside organelle but not on rim - no building allowed
+        this.buildPalette.rebuildForContext({});
+        return;
+      }
+    }
+
+    // Update build palette with context
+    this.buildPalette.rebuildForContext(context);
+  }
+
+  /**
+   * Milestone 13: Check if a tile inside an organelle is on the rim (borders unoccupied space)
+   */
+  private isOrganelleRimTile(coord: HexCoord, organelle: any): boolean {
+    // Get all tiles occupied by this organelle
+    const footprintTiles = getFootprintTiles(organelle.config.footprint, organelle.coord.q, organelle.coord.r);
+    if (!footprintTiles || footprintTiles.length === 0) return false;
+    
+    // Check if this coordinate is part of the organelle footprint
+    const isPartOfOrganelle = footprintTiles.some((tile: HexCoord) => 
+      tile.q === coord.q && tile.r === coord.r
+    );
+    
+    if (!isPartOfOrganelle) return false;
+    
+    // Check if this footprint tile borders any unoccupied space
+    const adjacentOffsets = [
+      { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
+      { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }
+    ];
+    
+    for (const offset of adjacentOffsets) {
+      const adjacentQ = coord.q + offset.q;
+      const adjacentR = coord.r + offset.r;
+      const adjacentCoord = { q: adjacentQ, r: adjacentR };
+      
+      // Check if adjacent tile is NOT part of this organelle
+      const isAdjacentPartOfOrganelle = footprintTiles.some((tile: HexCoord) => 
+        tile.q === adjacentQ && tile.r === adjacentR
+      );
+      
+      // Check if adjacent tile exists in the grid and is unoccupied by this organelle
+      const adjacentTile = this.hexGrid.getTile(adjacentCoord);
+      if (adjacentTile && !isAdjacentPartOfOrganelle) {
+        // This organelle tile borders unoccupied space - it's a rim tile
+        return true;
+      }
+    }
+    
+    return false;
   }
 
   /**

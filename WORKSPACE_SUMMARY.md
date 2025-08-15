@@ -17,13 +17,149 @@ This is a **cellular simulation game prototype** built with **TypeScript** and *
 - **Milestone 9: Complete cell motility system with unified visual transform (cellRoot container)**
 - **Milestone 10: Advanced motility modes system (Amoeboid, Blebbing, Mesenchymal)**
 - **Milestone 12: Throw & membrane interactions v1 (charge-based projectile system)**
+- **Milestone 13: Cytoskeleton Transport v1 (blueprint-based filament construction system)**
 
-The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles. **Milestone 9** introduced unified cell movement where all visual elements move together as a single entity. **Milestone 10** revolutionizes locomotion with three biologically-grounded motility modes, each optimized for different terrain types and movement strategies. **Milestone 12** adds sophisticated interaction mechanics through charge-based projectile throwing with realistic membrane physics and boundary detection.
+The codebase uses a **revolutionary consolidated system architecture** that eliminates manual update coordination through three main systems (CellProduction, CellTransport, CellOverlays) extending a common SystemObject base class, achieving "calm, minimal path forward" design principles. **Milestone 9** introduced unified cell movement where all visual elements move together as a single entity. **Milestone 10** revolutionizes locomotion with three biologically-grounded motility modes, each optimized for different terrain types and movement strategies. **Milestone 12** adds sophisticated interaction mechanics through charge-based projectile throwing with realistic membrane physics and boundary detection. **Milestone 13** implements a complete cytoskeleton transport system with blueprint-based filament construction, enabling actin and microtubule network building through gradual resource consumption.
 
 **Technology Stack:**
 - **Core**: TypeScript 5.8.3, Phaser 3.90.0, Vite 7.1.0
 - **Utilities**: chroma-js (color manipulation), seedrandom (deterministic randomization), simplex-noise (procedural generation)
 - **State Management**: XState 5.20.2 (finite state machines)
+
+---
+
+## Revolutionary Architecture: SystemObject Pattern
+
+---
+
+## Complete Source Code Inventory
+
+### **Core Architecture & Entry Point**
+- **`src/main.ts`**: Application entry point, Phaser game configuration, scene registration
+- **`src/vite-env.d.ts`**: TypeScript environment definitions for Vite build system
+
+### **Scenes & Game Management**
+- **`src/scenes/game-scene.ts`**: Main game scene (2,500+ lines) - central coordination, input handling, system initialization, camera management, UI wiring
+- **`src/scenes/motility-course-scene.ts`**: Dedicated motility testing environment with substrate zones and performance metrics
+
+### **Core Systems & Data Management**
+- **`src/core/world-refs.ts`**: Central data interface, type definitions, shared state management
+- **`src/core/cell-space-system.ts`**: Cellular space management and boundaries
+- **`src/core/substrate-system.ts`**: Substrate type management for motility interactions
+
+### **Player & Actor Systems**
+- **`src/actors/player.ts`**: Player entity (560+ lines) - movement, cargo visualization, membrane effects, dash mechanics
+- **`src/player/player-inventory.ts`**: Inventory system with species storage and management
+
+### **Hexagonal Grid System**
+- **`src/hex/hex-grid.ts`**: Complete hexagonal grid implementation (1,000+ lines) - coordinate conversion, neighbor finding, membrane detection, tile management
+
+### **Consolidated Production Systems (Revolutionary Architecture)**
+- **`src/systems/cell-production.ts`**: Complete secretory pathway (750+ lines) - transcript creation, ER processing, vesicle transport, membrane installation
+- **`src/systems/cell-transport.ts`**: All transport processes - diffusion, membrane exchange, passive effects, conservation tracking
+- **`src/systems/cell-overlays.ts`**: Visual overlays - heatmaps, blueprints, vesicle visualization, queue indicators
+- **`src/systems/system-object.ts`**: Base class for automatic Phaser lifecycle management
+
+### **Cytoskeleton Transport System (Milestone 13)**
+- **`src/systems/cytoskeleton-system.ts`**: Core cytoskeleton management (810+ lines) - filament placement, network topology, transport capacity
+- **`src/systems/cytoskeleton-graph.ts`**: Graph theory implementation for transport routing and pathfinding
+- **`src/systems/cytoskeleton-renderer.ts`**: Visual rendering (650+ lines) - filament visualization, infrastructure overlay, construction progress
+- **`src/systems/cytoskeleton-router.ts`**: Advanced routing algorithms for cargo transport
+- **`src/systems/cytoskeleton-vesicle-integration.ts`**: Integration layer between vesicle system and cytoskeleton transport
+- **`src/systems/filament-builder.ts`**: Interactive blueprint-based filament construction system
+
+### **Legacy Vesicle & Transport Systems**
+- **`src/systems/vesicle-system.ts`**: Vesicle lifecycle management (700+ lines) - state machine, transport, installation
+- **`src/systems/unified-cargo-system.ts`**: Unified cargo pickup/drop mechanics for player interaction
+
+### **Motility & Movement Systems**
+- **`src/systems/cell-motility.ts`**: Unified cell locomotion with drive mode, polarity, adhesion mechanics
+- **`src/systems/motility-mode-registry.ts`**: Registry pattern for locomotion mode management
+- **`src/systems/motility-modes.config.ts`**: Configuration system for motility parameters and presets
+- **`src/systems/motility-telemetry.ts`**: Performance metrics and movement analytics
+
+### **Interaction & Physics Systems**
+- **`src/systems/throw-system.ts`**: Projectile physics and cargo throwing mechanics
+- **`src/systems/throw-input-controller.ts`**: Input handling for charge-based throwing system
+- **`src/systems/membrane-trampoline.ts`**: Membrane bounce physics and collision detection
+
+### **User Interface & HUD**
+- **`src/ui/hud.ts`**: HUD display system with resource monitoring and visual feedback
+- **`src/systems/cargo-hud.ts`**: Cargo-specific UI elements and status displays
+
+### **Controller & Input Systems**
+- **`src/controllers/tile-action-controller.ts`**: Tile-based action handling, protein request system, build mode coordination
+
+### **Construction & Building Systems**
+- **`src/construction/blueprint-system.ts`**: Blueprint management (400+ lines) - construction validation, progress tracking, resource consumption
+- **`src/construction/blueprint-renderer.ts`**: Visual rendering of construction blueprints and progress indicators
+- **`src/construction/build-palette-ui.ts`**: User interface for construction options and recipes
+- **`src/construction/construction-recipes.ts`**: Recipe database and building cost definitions
+
+### **Organelle Systems**
+- **`src/organelles/organelle-system.ts`**: Core organelle management (760+ lines) - placement, seat reservation, processing
+- **`src/organelles/organelle-registry.ts`**: Central organelle database and starter placements
+- **`src/organelles/organelle-renderer.ts`**: Visual rendering of organelles and effects
+- **`src/organelles/organelle-selection.ts`**: Selection and interaction system for organelles
+- **`src/organelles/organelle-footprints.ts`**: Multi-hex footprint definitions and validation
+- **`src/organelles/organelle-io-profiles.ts`**: Input/output specifications for organelle processing
+
+### **Membrane & Transport Systems**
+- **`src/membrane/membrane-exchange-system.ts`**: External environment exchange via membrane proteins
+- **`src/membrane/membrane-port-system.ts`**: Membrane port management and coordination
+- **`src/membrane/membrane-protein-registry.ts`**: Database of membrane protein types and functions
+
+### **Species & Chemical Systems**
+- **`src/species/species-registry.ts`**: Complete chemical species database and properties
+- **`src/species/diffusion-system.ts`**: Chemical diffusion with 30Hz timestep and conservation
+- **`src/species/heatmap-system.ts`**: Real-time concentration visualization system
+- **`src/species/passive-effects-system.ts`**: Environmental effects (ATP decay, ROS accumulation)
+- **`src/species/conservation-tracker.ts`**: Mass balance monitoring and simulation integrity
+
+### **Graphics & Visual Systems**
+- **`src/gfx/textures.ts`**: Procedural texture generation for grid, cells, and effects
+
+---
+
+## Milestone 13: Cytoskeleton Transport System Achievements
+
+### **Complete Infrastructure Implementation**
+✅ **Dual Filament System**: Actin (flexible, local transport) vs Microtubules (rigid, long-distance) with distinct biological properties  
+✅ **Blueprint Construction**: Progressive filament building through resource consumption (AA for actin, PROTEIN for microtubules)  
+✅ **MTOC Integration**: Microtubule organizing center with realistic nucleation rules and starter network generation  
+✅ **Network Topology**: Automatic connectivity tracking and transport graph rebuilding  
+✅ **Visual Construction System**: Dashed blueprint previews with circular progress indicators  
+
+### **Advanced Transport Capabilities**
+✅ **Graph-Based Routing**: Sophisticated pathfinding system with A* algorithms and capacity constraints  
+✅ **Vesicle Integration**: Complete integration with existing vesicle transport for ER→Golgi→membrane pathway  
+✅ **Capacity Management**: Realistic transport limits with bottleneck detection and flow optimization  
+✅ **Edge Occupancy System**: Prevents deadlocks and maintains realistic movement constraints  
+
+### **Interactive Building System**
+✅ **Mode-Based Construction**: F1 (actin) / F2 (microtubules) mode switching with visual feedback  
+✅ **Drag-and-Drop Placement**: Intuitive filament placement with real-time validation  
+✅ **Resource Validation**: Prevents construction without sufficient materials  
+✅ **ESC Cancellation**: Clean mode exit with preview cleanup  
+
+### **Infrastructure Visualization**
+✅ **Infrastructure Overlay**: Comprehensive visualization system (N key toggle)  
+✅ **Utilization Display**: Real-time color-coded capacity usage  
+✅ **Flow Arrows**: Directional indicators showing cargo movement  
+✅ **Junction Activity**: Visual feedback at network connection points  
+✅ **Speed Chevrons**: Animated indicators showing design transport speeds  
+
+### **System Architecture Excellence**
+✅ **Three-System Design**: CytoskeletonSystem (logic), CytoskeletonRenderer (visuals), FilamentBuilder (interaction)  
+✅ **SystemObject Integration**: Follows established automatic lifecycle management pattern  
+✅ **WorldRefs Integration**: Clean dependency injection through central interface  
+✅ **Performance Optimization**: Efficient graph operations and selective rendering updates  
+
+### **Biological Accuracy**
+✅ **Realistic Construction Timing**: Progressive building matches biological assembly rates  
+✅ **Material Requirements**: Accurate resource costs for actin vs microtubule construction  
+✅ **Spatial Organization**: MTOC-centered microtubule networks with proper nucleation rules  
+✅ **Transport Differentiation**: Actin for local flexibility, microtubules for long-range transport  
 
 ---
 
@@ -321,6 +457,111 @@ src/
 - **HeatmapSystem**: parentContainer support for graphics
 - **BlueprintRenderer**: parentContainer support for construction visuals
 - **Player**: cellRoot reference for membrane ripple effects
+
+---
+
+## Milestone 13: Cytoskeleton Transport v1
+
+**Revolutionary Achievement**: Complete cytoskeleton transport system with blueprint-based filament construction, enabling realistic actin and microtubule network building through gradual resource consumption.
+
+### **Core Cytoskeleton Architecture**
+
+#### **Three-System Implementation**
+
+**1. CytoskeletonSystem** (`systems/cytoskeleton-system.ts`)
+- **Purpose**: Core logic for filament networks, blueprints, upgrades, and validation
+- **Blueprint Management**: FilamentBlueprint interface with progressive AA/PROTEIN consumption  
+- **Network Topology**: Automatic network rebuilding and connectivity tracking
+- **MTOC Integration**: Microtubule organizing center for realistic microtubule nucleation
+- **Filament Rules**: Distinct placement and construction rules for actin vs microtubules
+- **Starter Networks**: Automatic initialization of basic cytoskeleton near nucleus
+
+**2. CytoskeletonRenderer** (`systems/cytoskeleton-renderer.ts`)  
+- **Purpose**: Visual rendering with infrastructure overlay support
+- **Filament Visualization**: Distinct actin (meandering, red) vs microtubule (straight, cyan) styles
+- **Blueprint Rendering**: Dashed lines with progressive construction indicators
+- **Progress Visualization**: Circular progress indicators showing AA/PROTEIN consumption
+- **Infrastructure Overlay**: Utilization colors, flow arrows, junction activity (N key toggle)
+- **Performance Optimization**: Efficient rendering with proper depth layering
+
+**3. FilamentBuilder** (`systems/filament-builder.ts`)
+- **Purpose**: Interactive drag-and-drop filament placement with validation
+- **Blueprint Creation**: Creates construction blueprints instead of instant filaments
+- **Placement Validation**: Enforces biological rules (microtubules from MTOC, actin flexibility)
+- **Visual Feedback**: Real-time preview during drag placement
+- **Cost Display**: Shows build requirements and validates placement constraints
+
+### **Filament Blueprint System**
+
+#### **Biological Construction Process**
+```typescript
+// Blueprint gradually consumes resources from tiles
+interface FilamentBlueprint {
+  progress: { AA: number; PROTEIN: number };
+  required: { AA: number; PROTEIN: number };
+  buildRatePerTick: number; // Actin: 2.0, Microtubules: 1.5
+}
+```
+
+**Construction Workflow:**
+1. **Placement**: Player drags to place filament blueprint (F1=actin, F2=microtubules)
+2. **Resource Consumption**: Blueprint gradually consumes AA/PROTEIN from starting tile  
+3. **Visual Progress**: Dashed line becomes more solid as construction progresses
+4. **Completion**: When resources are satisfied, blueprint becomes actual filament segment
+5. **Network Integration**: Completed segments automatically join cytoskeleton networks
+
+#### **Filament Type Differences**
+
+**Actin Filaments** 🔴
+- **Cost**: 5 AA + 3 PROTEIN per segment
+- **Build Rate**: 2.0 units/tick (faster construction)
+- **Placement Rules**: Can start anywhere except MTOC, flexible connection points
+- **Max Chain Length**: 8 segments per continuous filament
+- **Visual Style**: Meandering lines with slight curves (organic appearance)
+- **Biology**: Short, flexible filaments for local transport and cell shape
+
+**Microtubules** 🔵  
+- **Cost**: 8 AA + 12 PROTEIN per segment
+- **Build Rate**: 1.5 units/tick (slower, more complex construction)
+- **Placement Rules**: Must start from MTOC or existing microtubule  
+- **Max Chain Length**: 20 segments per continuous filament
+- **Visual Style**: Straight lines with plus-end tips (rigid highways)
+- **Biology**: Long, rigid highways for fast long-distance transport
+
+### **Advanced Features**
+
+#### **Infrastructure Overlay System** (N Key)
+- **Utilization Visualization**: Color-coded segments (green→yellow→red) based on cargo load
+- **Flow Arrows**: Directional indicators showing active cargo movement
+- **Junction Activity**: Visual badges showing upgrade connections and activity
+- **Network Metrics**: Real-time display of network performance and capacity
+
+#### **Blueprint Visualization**
+- **Construction State**: Dashed lines indicate "under construction" status
+- **Progress Indicators**: Small circular progress bars at blueprint midpoints
+- **Resource Tracking**: Visual feedback showing AA vs PROTEIN consumption progress  
+- **Completion Animation**: Smooth transition from dashed blueprint to solid filament
+
+#### **Starter Cytoskeleton**
+- **MTOC Placement**: Automatically positioned adjacent to nucleus  
+- **Microtubule Spokes**: 3-5 short microtubule segments radiating from MTOC
+- **Cortical Actin**: Sparse actin ring near cell periphery
+- **Biological Accuracy**: Reflects real cell organization with organelle-cytoskeleton integration
+
+### **User Interface & Controls**
+
+#### **Construction Controls**
+- **F1**: Switch to actin filament building mode
+- **F2**: Switch to microtubule filament building mode  
+- **ESC**: Cancel current filament placement
+- **Mouse Drag**: Click and drag to place filament segments
+- **N**: Toggle infrastructure overlay (utilization, flow, junctions)
+
+#### **Visual Feedback**
+- **Mode Indicator**: Toast notifications showing current filament type and costs
+- **Preview Rendering**: Real-time preview during drag placement
+- **Validation Errors**: Clear error messages for invalid placements
+- **Construction Progress**: "Started building X segments" confirmation messages
 
 ---
 
@@ -944,6 +1185,20 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Clean Code**: Removed 500+ lines of unused legacy methods  
 ✅ **"Calm, Minimal Path Forward"**: Achieved through elimination of manual coordination
 
+### **Milestone 13: Cytoskeleton Transport v1 Achievements**
+✅ **Blueprint Construction System**: Filaments built gradually through resource consumption rather than instant placement  
+✅ **Dual Filament Types**: Distinct actin (flexible, local) vs microtubule (rigid, long-distance) with unique costs and rules  
+✅ **Progressive Resource Consumption**: AA and PROTEIN consumed from tiles at realistic rates (actin 2.0, microtubules 1.5 units/tick)  
+✅ **MTOC Integration**: Microtubule organizing center with realistic nucleation rules and starter network generation  
+✅ **Visual Construction Feedback**: Dashed blueprint lines with circular progress indicators showing build completion  
+✅ **Biological Placement Rules**: Microtubules must start from MTOC, actin flexible placement, proper validation system  
+✅ **Network Topology**: Automatic network rebuilding and connectivity tracking for completed filaments  
+✅ **Infrastructure Overlay**: Real-time utilization visualization, flow arrows, and junction activity (N key toggle)  
+✅ **Starter Cytoskeleton**: Automatic basic network initialization with MTOC placement and radiating spokes  
+✅ **Interactive Building**: F1/F2 mode switching, drag-and-drop placement, ESC cancellation with real-time preview  
+✅ **CytoskeletonSystem Integration**: Three-system architecture (System, Renderer, Builder) following established patterns  
+✅ **Blueprint Visualization**: Smooth construction state transitions from dashed to solid with progress tracking  
+
 ### **Milestone 12: Throw & Membrane Interactions v1 Achievements**
 ✅ **Charge-Based Throw System**: Right mouse button hold-to-charge with 1.5 second charge time and visual feedback  
 ✅ **Mouse & Gamepad Controls**: Comprehensive input system with right mouse button and gamepad R1 charging  
@@ -981,4 +1236,4 @@ This codebase demonstrates a **revolutionary architectural transformation** from
 ✅ **Collision System**: Realistic obstacle interaction with collision normals and damping  
 ✅ **Energy Integration**: ATP costs for movement, dash ability, and adhesion maintenance  
 
-The project has achieved a **revolutionary biological simulation** with a solid, maintainable, and performant foundation. **Milestone 12** introduces sophisticated cellular interaction mechanics through charge-based projectile throwing with membrane physics, while **Milestone 10** completed the vision of biologically-grounded cellular locomotion where cells can adapt their movement strategy to environmental conditions. Together, these systems provide a comprehensive framework for realistic cellular behavior and interaction in diverse biological environments, from precise locomotion control to dynamic object manipulation and membrane-mediated physics.
+The project has achieved a **revolutionary biological simulation** with a solid, maintainable, and performant foundation. **Milestone 13** introduces a sophisticated cytoskeleton transport system with blueprint-based filament construction, enabling realistic actin and microtubule network building through progressive resource consumption. **Milestone 12** adds cellular interaction mechanics through charge-based projectile throwing with membrane physics, while **Milestone 10** completed biologically-grounded cellular locomotion with three distinct movement modes. Together, these systems provide a comprehensive framework for realistic cellular behavior, from precise locomotion control to dynamic object manipulation, membrane-mediated physics, and now cytoskeletal infrastructure development.

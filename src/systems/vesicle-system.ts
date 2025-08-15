@@ -35,9 +35,223 @@
 
 import type { WorldRefs, Vesicle, ProteinId } from "../core/world-refs";
 import type { HexCoord } from "../hex/hex-grid";
+import { getFootprintTiles } from "../organelles/organelle-footprints";
 
-// Story 8.3: Per-tile hop capacity to create intentional jams
-const TILE_HOP_CAPACITY = 2; // vesicles per tile per tick
+/**
+ * NEW: Rail-based pathfinding - replaces calculateRouteWithCytoskeleton
+ */
+function calculateRailRoute(worldRefs: WorldRefs, start: HexCoord, end: HexCoord): HexCoord[] {
+  const graph = worldRefs.cytoskeletonSystem.graph;
+  
+  const pathResult = graph.findPath(start, end, 'vesicle', true); // Prefer organelles for membrane installation
+  
+  if (pathResult.success) {
+    return [start, end]; // Simplified for now - vesicle will follow rail path
+  } else {
+    console.warn(`🚫 No rail path: ${pathResult.reason}`);
+    return []; // Block movement - no rail path available
+  }
+}
+
+/**
+ * NEW: Move vesicle via rail system - replaces moveVesicleWithCytoskeletonSupport
+ */
+function moveVesicleViaRails(
+  worldRefs: WorldRefs,
+  vesicle: Vesicle,
+  deltaSeconds: number,
+  targetType: 'golgi' | 'membrane'
+): void {
+  const graph = worldRefs.cytoskeletonSystem.graph;
+  
+  // If vesicle has no rail state, try to start a rail journey
+  if (!vesicle.railState) {
+    const targetHex = targetType === 'golgi' 
+      ? findNearestGolgiHex(worldRefs) 
+      : vesicle.destHex;
+      
+    if (!targetHex) {
+      console.warn(`⚠️ No target found for ${targetType}`);
+      return;
+    }
+    
+    // Clean up any existing edge occupancy before starting new journey
+    graph.releaseVesicleEdges(vesicle.id);
+    
+    const pathResult = graph.findPath(vesicle.atHex, targetHex, 'vesicle', targetType === 'membrane');
+    
+    if (pathResult.success) {
+      vesicle.railState = {
+        nodeId: pathResult.path[0],
+        status: 'queued',
+        plannedPath: pathResult.path,
+        pathIndex: 0
+      };
+      console.log(`🚂 Vesicle ${vesicle.id} started rail journey (${pathResult.path.length} nodes)`);
+      console.log(`🗺️ Path: ${pathResult.path.join(' → ')}`);
+    } else {
+      console.warn(`🚫 Vesicle ${vesicle.id} blocked: ${pathResult.reason}`);
+      vesicle.state = 'BLOCKED';
+      return;
+    }
+  }
+
+  const shouldLog = Math.random() < 0.01; // 1% chance to log for performance
+  
+  if(shouldLog) console.log(`⏱️ Vesicle movement deltaSeconds: ${deltaSeconds.toFixed(3)}s`);
+  const reached = graph.moveCargo(vesicle, deltaSeconds, shouldLog);
+  
+  if (reached) {
+    // Successfully reached target via rails
+    if (targetType === 'golgi') {
+      // B) Check organelle seat availability before entering
+      const golgiOrganelle = findGolgiOrganelleAtPosition(worldRefs, vesicle.atHex);
+      
+      if (golgiOrganelle) {
+        // Get seat info for debugging
+        const seatInfo = worldRefs.organelleSystem.getSeatInfo(golgiOrganelle.id);
+        
+        // Check if Golgi has available seats
+        if (!worldRefs.organelleSystem.hasAvailableSeats(golgiOrganelle.id)) {
+          // Organelle is full - keep vesicle in transit, block until seat available
+          console.log(`🚫 Vesicle ${vesicle.id} blocked: Golgi ${golgiOrganelle.id} is full (${seatInfo?.occupied || 'unknown'}/${seatInfo?.capacity || 'unknown'})`);
+          vesicle.state = 'BLOCKED';
+          vesicle.railState = undefined; // Clear rail state to allow reattempt
+          releaseSeatIfReserved(worldRefs, vesicle); // Clean up any prior reservations
+          return;
+        }
+        
+        console.log(`🎫 Vesicle ${vesicle.id} attempting to reserve seat in Golgi ${golgiOrganelle.id} (${seatInfo?.occupied || 0}/${seatInfo?.capacity || 'unknown'} occupied)`);
+        
+        // Reserve a seat for this vesicle
+        
+        // Reserve a seat for this vesicle
+        const seatId = worldRefs.organelleSystem.reserveSeat(golgiOrganelle.id, vesicle.id);
+        if (!seatId) {
+          console.warn(`⚠️ Failed to reserve seat in ${golgiOrganelle.id} despite showing availability`);
+          vesicle.state = 'BLOCKED';
+          releaseSeatIfReserved(worldRefs, vesicle); // Clean up any prior reservations
+          return;
+        }
+        
+        // Store seat info for later release
+        if (!vesicle.railState) vesicle.railState = {} as any;
+        (vesicle.railState as any).reservedSeatId = seatId;
+        (vesicle.railState as any).targetOrganelleId = golgiOrganelle.id;
+        
+        // Position vesicle at the assigned seat position
+        const seatPosition = worldRefs.organelleSystem.getSeatPosition(golgiOrganelle.id, seatId);
+        if (seatPosition) {
+          vesicle.atHex = seatPosition;
+          vesicle.worldPos = worldRefs.hexGrid.hexToWorld(seatPosition);
+          console.log(`🎫 Vesicle ${vesicle.id} positioned at seat ${seatId} at (${seatPosition.q},${seatPosition.r})`);
+        } else {
+          console.warn(`⚠️ Failed to get position for seat ${seatId} in ${golgiOrganelle.id}`);
+          // Fallback to old positioning logic
+          const golgiPosition = findGolgiFootprintPosition(worldRefs, vesicle);
+          if (golgiPosition) {
+            vesicle.atHex = golgiPosition;
+            vesicle.worldPos = worldRefs.hexGrid.hexToWorld(golgiPosition);
+          }
+        }
+      } else {
+        // No golgi organelle found - use fallback positioning
+        const golgiPosition = findGolgiFootprintPosition(worldRefs, vesicle);
+        if (golgiPosition) {
+          vesicle.atHex = golgiPosition;
+          vesicle.worldPos = worldRefs.hexGrid.hexToWorld(golgiPosition);
+        }
+      }
+      
+      vesicle.state = 'QUEUED_GOLGI';
+      vesicle.processingTimer = 3.0; // Golgi processing: 3 seconds
+    } else {
+      // Reached membrane destination via rails - vesicle should already be positioned correctly
+      // by the rail system at the end of the path. Just change state to INSTALLING.
+      console.log(`🚂 Vesicle ${vesicle.id} reached membrane destination via rails at (${vesicle.atHex.q}, ${vesicle.atHex.r})`);
+      console.log(`🎯 Target membrane destination: (${vesicle.destHex.q}, ${vesicle.destHex.r})`);
+      console.log(`📏 Distance to target: ${calculateHexDistance(vesicle.atHex, vesicle.destHex)} hexes`);
+      
+      vesicle.state = 'INSTALLING';
+      vesicle.processingTimer = 2.5; // Membrane installation: 2.5 seconds
+    }
+  }
+}
+
+function findNearestGolgiHex(worldRefs: WorldRefs): HexCoord | null {
+  // Find first Golgi organelle
+  const golgis = worldRefs.organelleSystem.getOrganellesByType('golgi');
+  if (golgis.length > 0) {
+    return golgis[0].coord;
+  }
+  return null;
+}
+
+/**
+ * Find the Golgi organelle at a specific position (used for seat management)
+ */
+function findGolgiOrganelleAtPosition(worldRefs: WorldRefs, position: HexCoord): any | null {
+  // Check if there's a Golgi organelle at this exact position
+  const organelle = worldRefs.organelleSystem.getOrganelleAtTile(position);
+  if (organelle && organelle.type === 'golgi') {
+    return organelle;
+  }
+  
+  // Only check exact position - vesicle must be exactly at Golgi to be processed
+  // The previous logic of checking "within 1 hex" was causing premature glycosylation
+  // when vesicles were near but not at the Golgi
+  
+  return null;
+}
+
+/**
+ * Find an available position within the Golgi footprint for a vesicle to sit
+ */
+function findGolgiFootprintPosition(worldRefs: WorldRefs, vesicle: Vesicle): HexCoord | null {
+  const golgis = worldRefs.organelleSystem.getOrganellesByType('golgi');
+  if (golgis.length === 0) return null;
+  
+  // Find the nearest Golgi
+  let nearestGolgi = null;
+  let minDistance = Infinity;
+  
+  for (const golgi of golgis) {
+    const distance = calculateHexDistance(vesicle.atHex, golgi.coord);
+    if (distance < minDistance) {
+      minDistance = distance;
+      nearestGolgi = golgi;
+    }
+  }
+  
+  if (!nearestGolgi) return null;
+  
+  // Get all tiles in the Golgi footprint
+  const footprintTiles = getFootprintTiles(
+    nearestGolgi.config.footprint,
+    nearestGolgi.coord.q,
+    nearestGolgi.coord.r
+  );
+  
+  // Find the first available tile (not occupied by other vesicles)
+  const occupiedTiles = new Set<string>();
+  for (const otherVesicle of worldRefs.vesicles.values()) {
+    if (otherVesicle.id !== vesicle.id && otherVesicle.state === 'QUEUED_GOLGI') {
+      occupiedTiles.add(`${otherVesicle.atHex.q},${otherVesicle.atHex.r}`);
+    }
+  }
+  
+  // Try to find an unoccupied footprint tile
+  for (const tile of footprintTiles) {
+    const tileKey = `${tile.q},${tile.r}`;
+    if (!occupiedTiles.has(tileKey)) {
+      return tile;
+    }
+  }
+  
+  // If all tiles are occupied, use the first tile anyway (stacking)
+  return footprintTiles[0] || null;
+}
+
 const VESICLE_LIFETIME_MS = 90000; // 90 seconds before expiry
 
 // Story 8.8: Proximity enforcement for new interactions
@@ -123,7 +337,8 @@ export function updateVesicles(worldRefs: WorldRefs, deltaSeconds: number, scene
         break;
         
       case 'EN_ROUTE_GOLGI':
-        moveVesicleTowardTarget(worldRefs, vesicle, deltaSeconds, 'golgi');
+        // Use enhanced movement with cytoskeleton support
+        moveVesicleViaRails(worldRefs, vesicle, deltaSeconds, 'golgi');
         break;
         
       case 'QUEUED_GOLGI':
@@ -131,7 +346,8 @@ export function updateVesicles(worldRefs: WorldRefs, deltaSeconds: number, scene
         break;
         
       case 'EN_ROUTE_MEMBRANE':
-        moveVesicleTowardTarget(worldRefs, vesicle, deltaSeconds, 'membrane');
+        // Use enhanced movement with cytoskeleton support
+        moveVesicleViaRails(worldRefs, vesicle, deltaSeconds, 'membrane');
         break;
         
       case 'INSTALLING':
@@ -143,6 +359,9 @@ export function updateVesicles(worldRefs: WorldRefs, deltaSeconds: number, scene
         
       case 'EXPIRED':
       case 'DONE':
+        // Clean up any stranded vesicle tracking before removal
+        worldRefs.cytoskeletonGraph.cleanupStrandedVesicle(vesicle.id);
+        
         // Remove completed/expired vesicles
         worldRefs.vesicles.delete(vesicle.id);
         break;
@@ -239,69 +458,20 @@ function routeVesicleToGolgi(worldRefs: WorldRefs, vesicle: Vesicle): void {
     console.warn(`⚠️ No Golgi found for vesicle ${vesicle.id}, routing directly to membrane`);
     const oldState = vesicle.state;
     vesicle.state = 'EN_ROUTE_MEMBRANE';
-    vesicle.routeCache = calculateRoute(worldRefs, vesicle.atHex, vesicle.destHex);
+    vesicle.routeCache = calculateRailRoute(worldRefs, vesicle.atHex, vesicle.destHex);
     notifyVesicleStateChange(worldRefs, vesicle, oldState, vesicle.state);
     return;
   }
   
   const oldState = vesicle.state;
   vesicle.state = 'EN_ROUTE_GOLGI';
-  vesicle.routeCache = calculateRoute(worldRefs, vesicle.atHex, golgiHex);
+  vesicle.routeCache = calculateRailRoute(worldRefs, vesicle.atHex, golgiHex);
   notifyVesicleStateChange(worldRefs, vesicle, oldState, vesicle.state);
 }
 
 /**
  * Move vesicle toward target using cached route with capacity limits
  */
-function moveVesicleTowardTarget(
-  worldRefs: WorldRefs,
-  vesicle: Vesicle,
-  _deltaSeconds: number,
-  targetType: 'golgi' | 'membrane'
-): void {
-  if (!vesicle.routeCache || vesicle.routeCache.length === 0) {
-    console.warn(`⚠️ Vesicle ${vesicle.id} has no route to ${targetType}`);
-    vesicle.state = 'BLOCKED';
-    return;
-  }
-  
-  // Check if we can move (tile capacity limit)
-  const nextHex = vesicle.routeCache[0];
-  if (!canMoveToHex(worldRefs, nextHex, vesicle.id)) {
-    vesicle.state = 'BLOCKED';
-    return;
-  }
-  
-  // Move at vesicle speed
-  vesicle.atHex = nextHex;
-  vesicle.worldPos = worldRefs.hexGrid.hexToWorld(nextHex);
-  vesicle.routeCache.shift(); // Remove reached hex from route
-  
-  // Check if arrived at target
-  if (vesicle.routeCache.length === 0) {
-    if (targetType === 'golgi') {
-      // Story 8.8: Proximity enforcement - must be close enough to interact with Golgi
-      if (canInteractWithGolgi(worldRefs, vesicle)) {
-        vesicle.state = 'QUEUED_GOLGI';
-        vesicle.processingTimer = 2.0; // 2 seconds for glycosylation
-        console.log(`🏭 Vesicle ${vesicle.id} arrived at Golgi - starting glycosylation`);
-      } else {
-        console.warn(`⚠️ Vesicle ${vesicle.id} too far from Golgi for interaction - blocking`);
-        vesicle.state = 'BLOCKED';
-      }
-    } else {
-      // Story 8.8: Proximity enforcement - must be close enough to install at membrane
-      if (canInstallAtMembrane(vesicle)) {
-        vesicle.state = 'INSTALLING';
-        vesicle.processingTimer = 2.0; // 2 seconds for membrane installation
-      } else {
-        console.warn(`⚠️ Vesicle ${vesicle.id} too far from membrane for installation - blocking`);
-        vesicle.state = 'BLOCKED';
-      }
-    }
-  }
-}
-
 /**
  * Process vesicle at Golgi (glycosylation)
  */
@@ -316,10 +486,25 @@ function processVesicleAtGolgi(worldRefs: WorldRefs, vesicle: Vesicle, deltaSeco
   vesicle.processingTimer -= deltaSeconds;
   
   if (vesicle.processingTimer <= 0) {
-    // Complete glycosylation
+    // Complete glycosylation and move vesicle to rail-accessible exit position
     vesicle.glyco = 'complete';
+    
+    // B) Release seat when leaving organelle
+    if (vesicle.railState && (vesicle.railState as any).reservedSeatId && (vesicle.railState as any).targetOrganelleId) {
+      const seatId = (vesicle.railState as any).reservedSeatId;
+      const organelleId = (vesicle.railState as any).targetOrganelleId;
+      
+      worldRefs.organelleSystem.releaseSeat(organelleId, seatId);
+      console.log(`🎫 Released seat ${seatId} from ${organelleId} as vesicle ${vesicle.id} exits`);
+    }
+    
+    // TEMP: Disable teleportation - force vesicle to use cytoskeleton for Golgi→Membrane
+    console.log(`✨ Vesicle ${vesicle.id} completed glycosylation - routing to membrane via cytoskeleton`);
     vesicle.state = 'EN_ROUTE_MEMBRANE';
-    vesicle.routeCache = calculateRoute(worldRefs, vesicle.atHex, vesicle.destHex);
+    // Clean up any existing edge occupancy and rail state before starting new journey
+    worldRefs.cytoskeletonSystem.graph.releaseVesicleEdges(vesicle.id);
+    vesicle.railState = undefined; // Clear old rail state to force new path calculation
+    vesicle.routeCache = calculateRailRoute(worldRefs, vesicle.atHex, vesicle.destHex);
     console.log(`✨ Vesicle ${vesicle.id} completed glycosylation - routing to membrane`);
   }
 }
@@ -343,14 +528,15 @@ function completeMembraneInstallation(worldRefs: WorldRefs, vesicle: Vesicle, sc
   );
   if (success) {
     vesicle.state = 'DONE';
+    
+    // Clean up any stranded vesicle tracking
+    worldRefs.cytoskeletonGraph.cleanupStrandedVesicle(vesicle.id);
+    
     console.log(`✅ Vesicle ${vesicle.id} completed installation of ${vesicle.proteinId} at (${vesicle.destHex.q}, ${vesicle.destHex.r}) with ${vesicle.glyco} glycosylation`);
     
     // Story 8.7: Trigger immediate membrane icon refresh
     if (scene) {
       scene.events.emit('refresh-membrane-glyphs');
-      console.log(`🔄 Membrane protein installed - triggered icon refresh`);
-    } else {
-      console.log(`🔄 Membrane protein installed - no scene available for refresh`);
     }
   } else {
     console.warn(`❌ Failed to install ${vesicle.proteinId} at (${vesicle.destHex.q}, ${vesicle.destHex.r}) - membrane occupied or invalid`);
@@ -381,103 +567,51 @@ function findNearestGolgi(worldRefs: WorldRefs, fromHex: HexCoord): HexCoord | n
 }
 
 /**
- * Calculate route between two hexes using BFS pathfinding
- */
-function calculateRoute(worldRefs: WorldRefs, start: HexCoord, end: HexCoord): HexCoord[] {
-  // Simple BFS pathfinding on hex grid
-  const visited = new Set<string>();
-  const queue: { hex: HexCoord; path: HexCoord[] }[] = [{ hex: start, path: [] }];
-  
-  while (queue.length > 0) {
-    const { hex, path } = queue.shift()!;
-    const hexKey = `${hex.q},${hex.r}`;
-    
-    if (visited.has(hexKey)) continue;
-    visited.add(hexKey);
-    
-    if (hex.q === end.q && hex.r === end.r) {
-      return path;
-    }
-    
-    // Add neighbors to queue
-    const neighbors = worldRefs.hexGrid.getNeighbors(hex);
-    for (const neighborTile of neighbors) {
-      const neighborCoord = neighborTile.coord;
-      const neighborKey = `${neighborCoord.q},${neighborCoord.r}`;
-      if (!visited.has(neighborKey) && isValidPathHex(worldRefs, neighborCoord)) {
-        queue.push({
-          hex: neighborCoord,
-          path: [...path, neighborCoord]
-        });
-      }
-    }
-  }
-  
-  console.warn(`⚠️ No route found from (${start.q}, ${start.r}) to (${end.q}, ${end.r})`);
-  return [];
-}
-
-/**
- * Check if a hex is valid for pathfinding (inside cell, not blocked by organelles)
- */
-function isValidPathHex(worldRefs: WorldRefs, hex: HexCoord): boolean {
-  const tile = worldRefs.hexGrid.getTile(hex);
-  if (!tile) return false;
-  
-  // Must be inside cell (either cytosol or membrane)
-  if (!tile.isMembrane) {
-    // For non-membrane tiles, we assume they are cytosol if they exist
-    // (the hex grid only contains tiles inside the cell)
-  }
-  
-  // Large organelles might block movement (check for nucleus specifically)
-  const organelle = worldRefs.organelleSystem.getOrganelleAtTile(hex);
-  if (organelle && organelle.type === 'nucleus') return false; // nucleus blocks movement
-  
-  return true;
-}
-
-/**
- * Check if vesicle can move to hex (tile capacity limit)
- */
-function canMoveToHex(worldRefs: WorldRefs, hex: HexCoord, vesicleId: string): boolean {
-  // Count vesicles currently at this hex
-  let vesicleCount = 0;
-  for (const vesicle of worldRefs.vesicles.values()) {
-    if (vesicle.id !== vesicleId && vesicle.atHex.q === hex.q && vesicle.atHex.r === hex.r) {
-      vesicleCount++;
-    }
-  }
-  
-  return vesicleCount < TILE_HOP_CAPACITY;
-}
-
-/**
  * Retry movement for blocked vesicle
  */
 function retryVesicleMovement(worldRefs: WorldRefs, vesicle: Vesicle): void {
-  // Recalculate route in case obstacles moved
-  let targetHex: HexCoord;
+  if (vesicle.state !== 'BLOCKED') return;
   
-  if (vesicle.state === 'BLOCKED') {
-    // Determine target based on current progress
-    if (vesicle.glyco === 'partial') {
+  // Clear any old rail state that might be invalid
+  vesicle.railState = undefined;
+  
+  // Check if vesicle is now in a valid state to proceed
+  if (vesicle.glyco === 'partial') {
+    // Vesicle needs to go to Golgi first
+    if (canInteractWithGolgi(worldRefs, vesicle)) {
+      // Close enough to Golgi for processing - position inside footprint
+      const golgiPosition = findGolgiFootprintPosition(worldRefs, vesicle);
+      if (golgiPosition) {
+        vesicle.atHex = golgiPosition;
+        vesicle.worldPos = worldRefs.hexGrid.hexToWorld(golgiPosition);
+      }
+      
+      vesicle.state = 'QUEUED_GOLGI';
+      vesicle.processingTimer = Math.random() * 1.5 + 2.0; // Golgi processing: 2-3.5 seconds
+      return;
+    } else {
+      // Try to route to Golgi with fresh pathfinding
       const golgiHex = findNearestGolgi(worldRefs, vesicle.atHex);
       if (golgiHex) {
-        targetHex = golgiHex;
-        vesicle.state = 'EN_ROUTE_GOLGI';
-      } else {
-        targetHex = vesicle.destHex;
-        vesicle.state = 'EN_ROUTE_MEMBRANE';
+        vesicle.state = 'EN_ROUTE_GOLGI'; // Let normal movement logic handle it
+        return;
       }
-    } else {
-      targetHex = vesicle.destHex;
-      vesicle.state = 'EN_ROUTE_MEMBRANE';
     }
-    
-    vesicle.routeCache = calculateRoute(worldRefs, vesicle.atHex, targetHex);
-    console.log(`🔄 Vesicle ${vesicle.id} retry: new route to target`);
+  } else {
+    // Vesicle has complete glycosylation, needs to go to membrane
+    if (canInstallAtMembrane(vesicle)) {
+      // Close enough to membrane for installation
+      vesicle.state = 'INSTALLING';
+      vesicle.processingTimer = Math.random() * 1.0 + 2.0; // Membrane installation: 2-3 seconds
+      return;
+    } else {
+      // Try to route to membrane with fresh pathfinding
+      vesicle.state = 'EN_ROUTE_MEMBRANE'; // Let normal movement logic handle it
+      return;
+    }
   }
+  
+  // If we get here, vesicle is still blocked - keep retrying
 }
 
 /**
@@ -504,6 +638,23 @@ function canInstallAtMembrane(vesicle: Vesicle): boolean {
  */
 function calculateHexDistance(hex1: HexCoord, hex2: HexCoord): number {
   return (Math.abs(hex1.q - hex2.q) + Math.abs(hex1.q + hex1.r - hex2.q - hex2.r) + Math.abs(hex1.r - hex2.r)) / 2;
+}
+
+/**
+ * Release any reserved seat when vesicle leaves or gets blocked
+ */
+function releaseSeatIfReserved(worldRefs: WorldRefs, vesicle: Vesicle): void {
+  if (vesicle.railState && (vesicle.railState as any).reservedSeatId && (vesicle.railState as any).targetOrganelleId) {
+    const seatId = (vesicle.railState as any).reservedSeatId;
+    const organelleId = (vesicle.railState as any).targetOrganelleId;
+    
+    worldRefs.organelleSystem.releaseSeat(organelleId, seatId);
+    console.log(`🎫 Auto-released seat ${seatId} from ${organelleId} for vesicle ${vesicle.id}`);
+    
+    // Clear seat info
+    delete (vesicle.railState as any).reservedSeatId;
+    delete (vesicle.railState as any).targetOrganelleId;
+  }
 }
 
 /**

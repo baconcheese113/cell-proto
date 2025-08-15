@@ -29,7 +29,7 @@ export class CellTransport extends SystemObject {
     const now = Date.now();
     if (now - this.lastPerformanceLog > 5000) {
       const diffusionSteps = Math.round(this.diffusionTimeAccumulator / this.diffusionTimestep);
-      console.log(`🚚 CellTransport: ${diffusionSteps} diffusion steps queued, ${Math.round(this.updateCount / 5)} updates/sec`);
+      console.log(`🚚 Cell-Transport: ${diffusionSteps} diffusion steps queued, ${Math.round(this.updateCount / 5)} updates/sec`);
       this.updateCount = 0;
       this.lastPerformanceLog = now;
     }

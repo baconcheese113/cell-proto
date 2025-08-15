@@ -296,8 +296,8 @@ export class BlueprintSystem {
     if (allRequirementsMet) {
       console.log(`Blueprint ${blueprint.id} completed! All requirements met. Spawning ${recipe.onCompleteType}`);
       
-      // Spawn organelle if callback is provided
-      if (this.spawnOrganelle) {
+      // Spawn organelle if callback is provided and recipe specifies an organelle to create
+      if (this.spawnOrganelle && recipe.onCompleteType) {
         this.spawnOrganelle(recipe.onCompleteType, blueprint.anchorCoord);
       }
       

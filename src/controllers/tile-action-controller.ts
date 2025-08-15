@@ -96,6 +96,12 @@ export class TileActionController {
    * Create a new install order for protein production
    */
   private createInstallOrder(proteinId: ProteinId, destHex: HexCoord) {
+    // Check if there's already a pending installation for this destination
+    if (this.hasPendingInstallation(destHex)) {
+      this.worldRefs.showToast(`Installation already pending for (${destHex.q}, ${destHex.r})`);
+      return;
+    }
+
     const order: InstallOrder = {
       id: `order_${this.nextOrderId++}`,
       proteinId,
@@ -105,6 +111,45 @@ export class TileActionController {
 
     this.worldRefs.installOrders.set(order.id, order);
     this.worldRefs.showToast(`Requested ${proteinId} for (${destHex.q}, ${destHex.r})`);
+  }
+
+  /**
+   * Check if there's already a pending installation for the given destination
+   */
+  private hasPendingInstallation(destHex: HexCoord): boolean {
+    // Check for existing install orders targeting this destination
+    for (const order of this.worldRefs.installOrders.values()) {
+      if (order.destHex.q === destHex.q && order.destHex.r === destHex.r) {
+        console.log(`🚫 Blocking duplicate request: Install order ${order.id} already targeting (${destHex.q}, ${destHex.r})`);
+        return true;
+      }
+    }
+
+    // Check for transcripts heading to this destination
+    for (const transcript of this.worldRefs.transcripts.values()) {
+      if (transcript.destHex && 
+          transcript.destHex.q === destHex.q && 
+          transcript.destHex.r === destHex.r) {
+        console.log(`🚫 Blocking duplicate request: Transcript ${transcript.id} already heading to (${destHex.q}, ${destHex.r})`);
+        return true;
+      }
+    }
+
+    // Check for vesicles heading to this destination
+    for (const vesicle of this.worldRefs.vesicles.values()) {
+      if (vesicle.destHex && 
+          vesicle.destHex.q === destHex.q && 
+          vesicle.destHex.r === destHex.r &&
+          (vesicle.state === 'EN_ROUTE_MEMBRANE' || 
+           vesicle.state === 'INSTALLING' ||
+           vesicle.state === 'QUEUED_GOLGI' ||
+           vesicle.state === 'EN_ROUTE_GOLGI')) {
+        console.log(`🚫 Blocking duplicate request: Vesicle ${vesicle.id} already targeting (${destHex.q}, ${destHex.r}) with state ${vesicle.state}`);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**

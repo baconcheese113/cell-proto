@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import type { WorldRefs, Transcript, InstallOrder } from "../core/world-refs";
+import type { WorldRefs, Transcript, InstallOrder, CargoItinerary, CargoStage } from "../core/world-refs";
 import type { HexCoord } from "../hex/hex-grid";
 import { SystemObject } from "./system-object";
 import { updateVesicles, createVesicleAtER } from "./vesicle-system";
@@ -15,6 +15,9 @@ export class CellProduction extends SystemObject {
   // Performance tracking
   private updateCount = 0;
   private lastPerformanceLog = 0;
+  
+  // Milestone 13: Spawn gate FIFO queue
+  private pendingSpawnQueue: InstallOrder[] = [];
 
   constructor(scene: Phaser.Scene, worldRefs: WorldRefs, cellRoot?: Phaser.GameObjects.Container) {
     super(scene, 'CellProduction', (deltaSeconds: number) => this.update(deltaSeconds));
@@ -28,6 +31,13 @@ export class CellProduction extends SystemObject {
     if (cellRoot) {
       cellRoot.add(this.transcriptGraphics);
     }
+    
+    // Milestone 13: Listen for seat events to retry pending spawns
+    this.worldRefs.organelleSystem.addSeatEventListener((event, _organelleId, _seatId) => {
+      if (event === 'seatReleased') {
+        this.retryPendingSpawns();
+      }
+    });
   }
 
   /**
@@ -41,7 +51,7 @@ export class CellProduction extends SystemObject {
     if (now - this.lastPerformanceLog > 5000) {
       const transcriptCount = this.worldRefs.transcripts.size;
       const vesicleCount = this.worldRefs.vesicles.size;
-      console.log(`🔬 CellProduction: ${transcriptCount} transcripts, ${vesicleCount} vesicles, ${Math.round(this.updateCount / 5)} updates/sec`);
+      console.log(`🔬 Cell-Production: ${transcriptCount} transcripts, ${vesicleCount} vesicles, ${Math.round(this.updateCount / 5)} updates/sec`);
       this.updateCount = 0;
       this.lastPerformanceLog = now;
     }
@@ -104,6 +114,36 @@ export class CellProduction extends SystemObject {
         // Check if arrived at ER
         const distance = this.calculateHexDistance(transcript.atHex, nearestER);
         if (distance <= 1) {
+          // Check for available ER seat before processing
+          const erOrganelle = this.findEROrganelleAtPosition(transcript.atHex);
+          if (erOrganelle) {
+            // Check if ER has available seats
+            if (!this.worldRefs.organelleSystem.hasAvailableSeats(erOrganelle.id)) {
+              // ER is full - keep transcript traveling, don't start processing
+              console.log(`🚫 Transcript ${transcript.proteinId} blocked: ER ${erOrganelle.id} is full`);
+              continue; // Keep traveling, try again next tick
+            }
+            
+            // Reserve a seat for this transcript
+            const seatId = this.worldRefs.organelleSystem.reserveSeat(erOrganelle.id, transcript.id);
+            if (!seatId) {
+              console.warn(`⚠️ Failed to reserve ER seat for transcript ${transcript.proteinId}`);
+              continue;
+            }
+            
+            // Position transcript at the assigned seat
+            const seatPosition = this.worldRefs.organelleSystem.getSeatPosition(erOrganelle.id, seatId);
+            if (seatPosition) {
+              transcript.atHex = seatPosition;
+              transcript.worldPos = this.worldRefs.hexGrid.hexToWorld(seatPosition);
+              console.log(`🎫 Transcript ${transcript.proteinId} positioned at ER seat ${seatId} at (${seatPosition.q},${seatPosition.r})`);
+            }
+            
+            // Store seat info for later release (add to transcript interface if needed)
+            (transcript as any).reservedSeatId = seatId;
+            (transcript as any).targetOrganelleId = erOrganelle.id;
+          }
+          
           // Arrived at ER - transition to processing state
           transcript.state = 'processing_at_er';
           transcript.processingTimer = 3.0; // 3 seconds ER processing
@@ -149,17 +189,39 @@ export class CellProduction extends SystemObject {
   // === TRANSCRIPT SPAWNING HELPERS ===
 
   private processInstallOrders() {
-    if (this.worldRefs.installOrders.size === 0) return;
+    // Move new install orders to pending queue
+    for (const [orderId, order] of this.worldRefs.installOrders) {
+      this.pendingSpawnQueue.push(order);
+      this.worldRefs.installOrders.delete(orderId);
+    }
+    
+    // Try to spawn from pending queue
+    this.retryPendingSpawns();
+  }
+
+  // Milestone 13: Retry spawning pending transcripts when seats become available
+  private retryPendingSpawns() {
+    if (this.pendingSpawnQueue.length === 0) return;
 
     const nucleusCoord = this.findNucleus();
     if (!nucleusCoord) return;
 
-    // Process one order per frame to avoid spam
-    const orderEntry = this.worldRefs.installOrders.entries().next().value;
-    if (orderEntry) {
-      const [orderId, order] = orderEntry;
-      this.createTranscriptAtNucleus(order, nucleusCoord);
-      this.worldRefs.installOrders.delete(orderId);
+    const nucleusOrganelle = this.worldRefs.organelleSystem.getOrganelleAtTile(nucleusCoord);
+    if (!nucleusOrganelle) return;
+
+    // Try to spawn one transcript at a time (FIFO)
+    const freeSeat = this.worldRefs.organelleSystem.getFreeSeat(nucleusOrganelle.id);
+    if (freeSeat) {
+      const order = this.pendingSpawnQueue.shift();
+      if (order) {
+        this.createTranscriptAtNucleus(order, nucleusCoord);
+      }
+    } else {
+      // Milestone 13: Log when nucleus seats are full (helps with validation)
+      const seatInfo = this.worldRefs.organelleSystem.getSeatInfo(nucleusOrganelle.id);
+      if (seatInfo && this.pendingSpawnQueue.length > 0) {
+        console.log(`🎫 Nucleus seats full: ${seatInfo.occupied}/${seatInfo.capacity}, ${this.pendingSpawnQueue.length} transcripts waiting`);
+      }
     }
   }
 
@@ -174,25 +236,117 @@ export class CellProduction extends SystemObject {
   }
 
   private createTranscriptAtNucleus(order: InstallOrder, nucleusCoord: HexCoord) {
+    const nucleusOrganelle = this.worldRefs.organelleSystem.getOrganelleAtTile(nucleusCoord);
+    if (!nucleusOrganelle) {
+      console.warn(`No nucleus organelle found at ${nucleusCoord.q},${nucleusCoord.r}`);
+      return;
+    }
+
+    // Reserve a seat in the nucleus
+    const seatId = this.worldRefs.organelleSystem.reserveSeat(nucleusOrganelle.id, `transcript_${this.worldRefs.nextTranscriptId}`);
+    if (!seatId) {
+      console.warn(`Failed to reserve nucleus seat for transcript - this should not happen if spawn gate is working`);
+      return;
+    }
+
+    // Get the seat position
+    const seatPosition = this.worldRefs.organelleSystem.getSeatPosition(nucleusOrganelle.id, seatId);
+    if (!seatPosition) {
+      console.warn(`Failed to get seat position for ${seatId}`);
+      return;
+    }
+
+    // Build itinerary for this order
+    const itinerary = this.buildItinerary(order);
+
+    // Create transcript at the assigned seat position
     const transcript: Transcript = {
       id: `transcript_${this.worldRefs.nextTranscriptId++}`,
       proteinId: order.proteinId,
-      atHex: { q: nucleusCoord.q, r: nucleusCoord.r },
+      atHex: { q: seatPosition.q, r: seatPosition.r },
       ttlSeconds: 60, // 1 minute lifetime
-      worldPos: this.worldRefs.hexGrid.hexToWorld(nucleusCoord),
+      worldPos: this.worldRefs.hexGrid.hexToWorld(seatPosition),
       isCarried: false,
       moveAccumulator: 0,
       destHex: { q: order.destHex.q, r: order.destHex.r },
       state: 'traveling', // Start traveling to ER
-      processingTimer: 0,
-      glycosylationState: 'none' // Start with no glycosylation
+      processingTimer: 1000, // 1 second in nucleus for processing
+      glycosylationState: 'none', // Start with no glycosylation
+      itinerary // Attach route plan
     };
     
     this.worldRefs.transcripts.set(transcript.id, transcript);
-    console.log(`📝 Created transcript for ${order.proteinId} at nucleus (${nucleusCoord.q}, ${nucleusCoord.r}) - traveling to ER`);
+    console.log(`📝 Created transcript for ${order.proteinId} at nucleus seat (${seatPosition.q}, ${seatPosition.r}) with ${itinerary.stages.length} stage itinerary`);
+  }
+
+  // Milestone 13: Build itinerary for membrane transporter orders
+  private buildItinerary(order: InstallOrder): CargoItinerary {
+    const stages: CargoStage[] = [];
+    
+    // Stage 1: Nucleus processing
+    stages.push({
+      kind: 'NUCLEUS',
+      requires: 'either',
+      enterMs: 1000,
+      processMs: 1000
+    });
+
+    // Stage 2: ER processing
+    const erOrganelle = this.findNearestEROrganelle();
+    stages.push({
+      kind: 'ER',
+      targetOrgId: erOrganelle?.id,
+      requires: 'either', // Short path can use either, long path prefers microtubule
+      enterMs: 1000,
+      processMs: 2000
+    });
+
+    // Stage 3: Golgi processing
+    const golgiOrganelle = this.findNearestGolgiOrganelle();
+    stages.push({
+      kind: 'GOLGI',
+      targetOrgId: golgiOrganelle?.id,
+      requires: 'microtubule',
+      enterMs: 1000,
+      processMs: 2000
+    });
+
+    // Stage 4: Membrane installation
+    stages.push({
+      kind: 'MEMBRANE_HOTSPOT',
+      targetHex: { q: order.destHex.q, r: order.destHex.r },
+      requires: 'actin',
+      enterMs: 1000,
+      processMs: 2000
+    });
+
+    return {
+      stages,
+      stageIndex: 0
+    };
   }
 
   // === TRANSCRIPT ROUTING HELPERS ===
+
+  private findNearestEROrganelle() {
+    const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
+    for (const organelle of organelles) {
+      if (organelle.type === 'proto-er') {
+        return organelle;
+      }
+    }
+    return null;
+  }
+
+  private findNearestGolgiOrganelle() {
+    const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
+    for (const organelle of organelles) {
+      if (organelle.type === 'golgi') {
+        return organelle;
+      }
+    }
+    return null;
+  }
 
   private findNearestER(fromHex: HexCoord): HexCoord | null {
     const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
@@ -210,6 +364,27 @@ export class CellProduction extends SystemObject {
     }
 
     return nearestER;
+  }
+
+  private findEROrganelleAtPosition(position: HexCoord): any | null {
+    // Check if there's an organelle at this exact position
+    const organelle = this.worldRefs.organelleSystem.getOrganelleAtTile(position);
+    if (organelle && organelle.type === 'proto-er') {
+      return organelle;
+    }
+    
+    // Also check nearby positions (within 1 hex) for ER organelles
+    const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
+    for (const org of organelles) {
+      if (org.type === 'proto-er') {
+        const distance = this.calculateHexDistance(position, org.coord);
+        if (distance <= 1) {
+          return org;
+        }
+      }
+    }
+    
+    return null;
   }
 
   private getNextHexToward(from: HexCoord, to: HexCoord): HexCoord | null {
@@ -243,6 +418,22 @@ export class CellProduction extends SystemObject {
     }
 
     return bestNeighbor;
+  }
+
+  private releaseTranscriptSeat(transcript: Transcript): void {
+    const reservedSeatId = (transcript as any).reservedSeatId;
+    const targetOrganelleId = (transcript as any).targetOrganelleId;
+    
+    if (reservedSeatId && targetOrganelleId) {
+      const released = this.worldRefs.organelleSystem.releaseSeat(targetOrganelleId, reservedSeatId);
+      if (released) {
+        console.log(`🎫 Released ER seat ${reservedSeatId} for transcript ${transcript.proteinId}`);
+      }
+      
+      // Clear seat references
+      delete (transcript as any).reservedSeatId;
+      delete (transcript as any).targetOrganelleId;
+    }
   }
 
   private calculateHexDistance(from: HexCoord, to: HexCoord): number {
@@ -288,6 +479,9 @@ export class CellProduction extends SystemObject {
         );
         
         if (vesicle) {
+          // Release ER seat before removing transcript
+          this.releaseTranscriptSeat(transcript);
+          
           // Remove transcript (replaced by vesicle)
           this.worldRefs.transcripts.delete(transcript.id);
           console.log(`📦 ${transcript.proteinId} transcript converted to vesicle at ER`);
@@ -295,13 +489,16 @@ export class CellProduction extends SystemObject {
           console.log(`⚠️ Cannot create vesicle for ${transcript.proteinId} - budget exceeded, keeping transcript`);
         }
       } else {
+        // Release ER seat before removing transcript
+        this.releaseTranscriptSeat(transcript);
+        
         // Remove transcript even if no destination
         this.worldRefs.transcripts.delete(transcript.id);
       }
     } else {
       // Insufficient resources - wait and try again next frame
       transcript.processingTimer = 0.1; // Short retry delay
-      console.log(`⚠️ ER lacks resources for ${transcript.proteinId}: AA=${aaAvailable.toFixed(1)}/${aaRequired}, ATP=${atpAvailable.toFixed(1)}/${atpRequired}`);
+      // console.log(`⚠️ ER lacks resources for ${transcript.proteinId}: AA=${aaAvailable.toFixed(1)}/${aaRequired}, ATP=${atpAvailable.toFixed(1)}/${atpRequired}`);
     }
   }
 

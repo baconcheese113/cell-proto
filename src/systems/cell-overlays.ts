@@ -1,6 +1,5 @@
 import type { WorldRefs } from "../core/world-refs";
 import { SystemObject } from "./system-object";
-import { getVesicleMetrics } from "./vesicle-system";
 
 /**
  * Consolidated Cell Overlays System
@@ -10,11 +9,7 @@ export class CellOverlays extends SystemObject {
   private worldRefs: WorldRefs;
   private overlayGraphics: Phaser.GameObjects.Graphics;
   private showQueueBadges = true;
-  private showVesicleDebug = false;
   private cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Store cellRoot container reference
-  
-  // Persistent debug panel (like other HUD elements)
-  private vesicleDebugPanel?: Phaser.GameObjects.Text;
   
   // Milestone 8: Story 8.7 - Dirty tile redraw system
   private dirtyTiles: Set<string> = new Set(); // hex coordinates that need redraw
@@ -32,9 +27,6 @@ export class CellOverlays extends SystemObject {
     if (parentContainer) {
       parentContainer.add(this.overlayGraphics);
     }
-    
-    // Create persistent debug panel (like other HUD elements)
-    this.createVesicleDebugPanel();
   }
 
   /**
@@ -59,10 +51,8 @@ export class CellOverlays extends SystemObject {
       this.renderIncomingVesicleIndicators();
     }
     
-    // Optional debug information
-    if (this.showVesicleDebug) {
-      this.renderVesicleDebugInfo();
-    }
+    // Milestone 13: Render transport progress indicators
+    this.renderTransportProgress();
   }
 
   /**
@@ -225,62 +215,11 @@ export class CellOverlays extends SystemObject {
   }
 
   /**
-   * Create persistent vesicle debug panel (like other HUD elements)
-   */
-  private createVesicleDebugPanel(): void {
-    this.vesicleDebugPanel = this.scene.add.text(14, 150, '', {
-      fontSize: '12px',
-      fontFamily: 'monospace',
-      color: '#ffffff',
-      backgroundColor: '#000000',
-      padding: { x: 5, y: 5 }
-    });
-    this.vesicleDebugPanel.setDepth(1000); // Same depth as HUD
-    this.vesicleDebugPanel.setScrollFactor(0); // Screen-fixed like HUD
-    this.vesicleDebugPanel.setVisible(false); // Hidden by default
-  }
-
-  /**
-   * Render debug information about vesicle system
-   */
-  private renderVesicleDebugInfo(): void {
-    if (!this.vesicleDebugPanel) return;
-    
-    const metrics = getVesicleMetrics(this.worldRefs);
-    
-    const debugText = [
-      'Vesicle Debug:',
-      `Active: ${metrics.activeVesicles}`,
-      `Avg Path: ${metrics.avgPathLength.toFixed(1)}`,
-      `Queued@Golgi: ${metrics.queuedAtGolgi}`,
-      `→Membrane: ${metrics.enRouteToMembrane}`,
-      `Installing: ${metrics.installing}`,
-      `Blocked: ${metrics.blocked}`
-    ].join('\n');
-    
-    this.vesicleDebugPanel.setText(debugText);
-    this.vesicleDebugPanel.setVisible(true);
-  }
-
-  /**
    * Toggle queue badge visibility
    */
   public toggleQueueBadges(): void {
     this.showQueueBadges = !this.showQueueBadges;
     console.log(`Queue badges: ${this.showQueueBadges ? 'ON' : 'OFF'}`);
-  }
-
-  /**
-   * Toggle vesicle debug info
-   */
-  public toggleVesicleDebug(): void {
-    this.showVesicleDebug = !this.showVesicleDebug;
-    console.log(`Vesicle debug: ${this.showVesicleDebug ? 'ON' : 'OFF'}`);
-    
-    // Hide panel when debug is turned off
-    if (!this.showVesicleDebug && this.vesicleDebugPanel) {
-      this.vesicleDebugPanel.setVisible(false);
-    }
   }
 
   /**
@@ -316,11 +255,6 @@ export class CellOverlays extends SystemObject {
     
     // Render membrane deformation
     this.renderMembraneDeformation(motilityState);
-    
-    // Render substrate areas (debug mode)
-    if (this.showVesicleDebug) {
-      this.renderSubstrateAreas();
-    }
   }
 
   /**
@@ -387,70 +321,85 @@ export class CellOverlays extends SystemObject {
   }
 
   /**
-   * Render substrate areas for debug purposes
+   * Milestone 13: Render progress indicators for vesicles in transit and processing
    */
-  private renderSubstrateAreas(): void {
-    // Get substrate system from world refs (will be added)
-    const substrate = (this.worldRefs as any).substrateSystem;
-    if (!substrate) return;
+  private renderTransportProgress(): void {
+    const vesicles = Array.from(this.worldRefs.vesicles.values());
     
-    // Render substrate areas
-    for (const area of substrate.getSubstrates()) {
-      const alpha = 0.2;
-      let color = 0x888888; // Default FIRM
-      
-      switch (area.type) {
-        case 'SOFT':
-          color = 0x4444AA;
-          break;
-        case 'STICKY':
-          color = 0xAA4444;
-          break;
+    for (const vesicle of vesicles) {
+      // Render rail transit progress
+      if (vesicle.railState?.status === 'moving' && vesicle.railState.transitProgress !== undefined) {
+        this.renderRailTransitProgress(vesicle);
       }
       
-      this.overlayGraphics.fillStyle(color, alpha);
-      
-      if (area.bounds.type === 'circle') {
-        this.overlayGraphics.fillCircle(area.bounds.x, area.bounds.y, area.bounds.radius);
-      } else {
-        // Polygon
-        this.overlayGraphics.beginPath();
-        const points = area.bounds.points;
-        this.overlayGraphics.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) {
-          this.overlayGraphics.lineTo(points[i].x, points[i].y);
-        }
-        this.overlayGraphics.closePath();
-        this.overlayGraphics.fillPath();
-      }
-    }
-    
-    // Render obstacles
-    for (const obstacle of substrate.getObstacles()) {
-      const alpha = obstacle.alpha || 0.8;
-      const color = obstacle.color || 0x666666;
-      
-      this.overlayGraphics.fillStyle(color, alpha);
-      
-      if (obstacle.bounds.type === 'circle') {
-        this.overlayGraphics.fillCircle(obstacle.bounds.x, obstacle.bounds.y, obstacle.bounds.radius);
-      } else {
-        // Polygon
-        this.overlayGraphics.beginPath();
-        const points = obstacle.bounds.points;
-        this.overlayGraphics.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) {
-          this.overlayGraphics.lineTo(points[i].x, points[i].y);
-        }
-        this.overlayGraphics.closePath();
-        this.overlayGraphics.fillPath();
+      // Render processing progress for vesicles with active timers
+      if (vesicle.processingTimer > 0 && 
+          (vesicle.state === 'QUEUED_GOLGI' || vesicle.state === 'INSTALLING')) {
+        this.renderProcessingProgress(vesicle);
       }
     }
   }
 
+  /**
+   * Render progress bar for vesicle moving along rail
+   */
+  private renderRailTransitProgress(vesicle: any): void {
+    const progress = vesicle.railState.transitProgress || 0;
+    const worldPos = vesicle.worldPos;
+    
+    // Progress bar background
+    this.overlayGraphics.fillStyle(0x000000, 0.6);
+    this.overlayGraphics.fillRect(worldPos.x - 15, worldPos.y - 25, 30, 4);
+    
+    // Progress bar fill
+    this.overlayGraphics.fillStyle(0x00ff00, 0.8);
+    this.overlayGraphics.fillRect(worldPos.x - 15, worldPos.y - 25, 30 * progress, 4);
+    
+    // Progress bar border
+    this.overlayGraphics.lineStyle(1, 0xffffff, 0.8);
+    this.overlayGraphics.strokeRect(worldPos.x - 15, worldPos.y - 25, 30, 4);
+  }
+
+  /**
+   * Render processing progress for vesicles at organelles
+   */
+  private renderProcessingProgress(vesicle: any): void {
+    let totalTime = 0;
+    let iconColor = 0xffffff;
+    
+    // Determine total processing time based on state
+    if (vesicle.state === 'QUEUED_GOLGI') {
+      totalTime = 3.5; // Max Golgi processing time
+      iconColor = 0x9d4edd; // Purple for Golgi
+    } else if (vesicle.state === 'INSTALLING') {
+      totalTime = 3.0; // Max installation time
+      iconColor = 0x06ffa5; // Green for membrane
+    }
+    
+    const progress = Math.max(0, 1.0 - (vesicle.processingTimer / totalTime));
+    const worldPos = vesicle.worldPos;
+    
+    // Processing indicator background (circle)
+    this.overlayGraphics.fillStyle(0x000000, 0.6);
+    this.overlayGraphics.fillCircle(worldPos.x, worldPos.y - 20, 8);
+    
+    // Processing progress (pie chart style)
+    if (progress > 0) {
+      this.overlayGraphics.fillStyle(iconColor, 0.8);
+      this.overlayGraphics.beginPath();
+      this.overlayGraphics.moveTo(worldPos.x, worldPos.y - 20);
+      this.overlayGraphics.arc(worldPos.x, worldPos.y - 20, 6, -Math.PI / 2, -Math.PI / 2 + (progress * 2 * Math.PI));
+      this.overlayGraphics.closePath();
+      this.overlayGraphics.fillPath();
+    }
+    
+    // Processing indicator border
+    this.overlayGraphics.lineStyle(1, 0xffffff, 0.8);
+    this.overlayGraphics.strokeCircle(worldPos.x, worldPos.y - 20, 8);
+  }
+
   override destroy() {
     this.overlayGraphics?.destroy();
-    this.vesicleDebugPanel?.destroy();
     super.destroy();
   }
 }

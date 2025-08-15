@@ -9,22 +9,30 @@ import type { ConstructionRecipe } from "./construction-recipes";
 import { CONSTRUCTION_RECIPES } from "./construction-recipes";
 import type { OrganelleType } from "../organelles/organelle-registry";
 
+// Milestone 13: Context types for tile-aware building
+export interface BuildContext {
+  isMembrane?: boolean;
+  isCytosol?: boolean;
+  organelleType?: OrganelleType;
+  isOrganelleRim?: boolean;
+}
+
 export class BuildPaletteUI {
   private scene: Phaser.Scene;
   private container: Phaser.GameObjects.Container;
-  private selectedRecipeId: OrganelleType | null = null;
-  private buttons: Map<OrganelleType, Phaser.GameObjects.Container> = new Map();
+  private selectedRecipeId: string | null = null; // Changed from OrganelleType to string
+  private buttons: Map<string, Phaser.GameObjects.Container> = new Map(); // Changed from OrganelleType to string
   private isVisible: boolean = false;
   
   // Store the desired screen position
   private screenOffsetX: number;
   private screenOffsetY: number;
   
-  // Milestone 6: Dynamic filtering
+  // Milestone 6: Dynamic filtering (legacy)
   private currentFilter: 'all' | 'membrane' | 'cytosol' = 'all';
 
   // Callbacks
-  public onRecipeSelected?: (recipeId: OrganelleType) => void;
+  public onRecipeSelected?: (recipeId: string) => void; // Changed from OrganelleType to string
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     this.scene = scene;
@@ -33,17 +41,12 @@ export class BuildPaletteUI {
     this.container = scene.add.container(x, y);
     // Remove setScrollFactor(0) to avoid coordinate system conflicts
     this.container.setDepth(100); // Ensure it appears above other UI
-    this.createPalette();
     // Initially position the container correctly
     this.updatePosition();
   }
 
-  private createPalette(): void {
-    this.rebuildPalette('all');
-  }
-
   /**
-   * Milestone 6: Rebuild palette with filtering
+   * Milestone 6: Rebuild palette with filtering (legacy)
    */
   public rebuildPalette(filter: 'all' | 'membrane' | 'cytosol'): void {
     this.currentFilter = filter;
@@ -60,20 +63,53 @@ export class BuildPaletteUI {
       return true; // 'all' shows everything
     });
 
+    this.buildPaletteFromRecipes(filteredRecipes, filter);
+  }
+
+  /**
+   * Milestone 13: Context-aware palette rebuild
+   */
+  public rebuildForContext(context: BuildContext): void {
+    // Clear existing palette
+    this.container.removeAll(true);
+    this.buttons.clear();
+    
+    // Get context-appropriate recipes
+    const contextRecipes = CONSTRUCTION_RECIPES.getRecipesForContext(context);
+    
+    // Create context description for title
+    const contextDescription = this.getContextDescription(context);
+    
+    this.buildPaletteFromRecipes(contextRecipes, contextDescription);
+  }
+
+  private getContextDescription(context: BuildContext): string {
+    if (context.isOrganelleRim && context.organelleType) {
+      return `${context.organelleType} upgrades`;
+    }
+    if (context.isMembrane) {
+      return 'membrane';
+    }
+    if (context.isCytosol) {
+      return 'cytosol';
+    }
+    return 'available';
+  }
+
+  private buildPaletteFromRecipes(recipes: ConstructionRecipe[], contextLabel: string): void {
     const buttonHeight = 40;
     const buttonWidth = 200;
     const spacing = 5;
     const titleHeight = 25;
 
     // Background panel
-    const panelHeight = Math.max(filteredRecipes.length * (buttonHeight + spacing) + titleHeight + 20, 80);
+    const panelHeight = Math.max(recipes.length * (buttonHeight + spacing) + titleHeight + 20, 80);
     const background = this.scene.add.rectangle(0, 0, buttonWidth + 20, panelHeight, 0x333333, 0.9);
     background.setStrokeStyle(2, 0x666666);
     this.container.add(background);
 
-    // Title with filter info
-    const filterText = filter === 'all' ? '' : ` (${filter})`;
-    const title = this.scene.add.text(0, -panelHeight/2 + titleHeight/2, `Build Menu${filterText}`, {
+    // Title with context info
+    const title = this.scene.add.text(0, -panelHeight/2 + titleHeight/2, `Build (${contextLabel})`, {
       fontSize: '14px',
       fontFamily: 'Arial',
       color: '#ffffff'
@@ -81,9 +117,9 @@ export class BuildPaletteUI {
     title.setOrigin(0.5, 0.5);
     this.container.add(title);
 
-    if (filteredRecipes.length === 0) {
+    if (recipes.length === 0) {
       // Show "no items" message
-      const noItemsText = this.scene.add.text(0, 0, `No ${filter} items available`, {
+      const noItemsText = this.scene.add.text(0, 0, `No ${contextLabel} items available`, {
         fontSize: '12px',
         fontFamily: 'Arial',
         color: '#888888'
@@ -92,7 +128,7 @@ export class BuildPaletteUI {
       this.container.add(noItemsText);
     } else {
       // Recipe buttons
-      filteredRecipes.forEach((recipe, index) => {
+      recipes.forEach((recipe, index) => {
         const buttonY = -panelHeight/2 + titleHeight + 15 + index * (buttonHeight + spacing);
         const button = this.createRecipeButton(recipe, buttonY, buttonWidth, buttonHeight);
         this.container.add(button);
@@ -151,7 +187,7 @@ export class BuildPaletteUI {
     return button;
   }
 
-  private selectRecipe(recipeId: OrganelleType): void {
+  private selectRecipe(recipeId: string): void {
     // Update visual selection
     if (this.selectedRecipeId) {
       const oldButton = this.buttons.get(this.selectedRecipeId);
@@ -176,7 +212,7 @@ export class BuildPaletteUI {
     console.log(`Selected recipe: ${recipeId}`);
   }
 
-  public getSelectedRecipe(): OrganelleType | null {
+  public getSelectedRecipe(): string | null {
     return this.selectedRecipeId;
   }
 
