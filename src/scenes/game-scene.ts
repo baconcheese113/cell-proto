@@ -44,8 +44,13 @@ import { CytoskeletonRenderer } from "../systems/cytoskeleton-renderer";
 import { FilamentBuilder } from "../systems/filament-builder";
 import { initializeEnhancedVesicleRouting, updateEnhancedVesicleRouting } from "../systems/cytoskeleton-vesicle-integration";
 import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
+// Milestone 14: Multiplayer Core v1
+import { NetworkTransport } from "../network/transport";
+import { RoomUI } from "../network/room-ui";
+import { NetHUD } from "../network/net-hud";
+import { NetSyncSystem } from "../network/net-sync-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "ESC", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F9" | "F10" | "F11" | "F12" | "ESC", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -143,6 +148,9 @@ export class GameScene extends Phaser.Scene {
   // Consolidated system architecture - NEW
   private cellProduction!: CellProduction;
   private cellTransport!: CellTransport;
+  
+  // Store WorldRefs instance to ensure consistent reference
+  private worldRefsInstance!: WorldRefs;
   private cellOverlays!: CellOverlays;
   
   // Milestone 9: Cell locomotion systems
@@ -161,6 +169,12 @@ export class GameScene extends Phaser.Scene {
   private cytoskeletonSystem!: CytoskeletonSystem;
   private cytoskeletonRenderer!: CytoskeletonRenderer;
   private filamentBuilder!: FilamentBuilder;
+  
+  // Milestone 14: Multiplayer Core v1
+  private networkTransport!: NetworkTransport;
+  private roomUI!: RoomUI;
+  private netHUD!: NetHUD;
+  private netSyncSystem!: NetSyncSystem;
   
   // Milestone 9: Cell motility mode
   private cellDriveMode = false;
@@ -236,6 +250,7 @@ export class GameScene extends Phaser.Scene {
     this.initializePassiveEffectsSystem();
     this.initializeDiffusionSystem();
     this.initializeMembraneExchangeSystem();
+    this.initializeBlueprintSystem(); // Initialize before WorldRefs creation
     this.initializeConservationTracker();
     
     // Milestone 9: Initialize cell locomotion systems
@@ -248,9 +263,11 @@ export class GameScene extends Phaser.Scene {
       hexGrid: this.hexGrid,
       cellRoot: this.cellRoot,
       playerInventory: this.playerInventory,
+      player: this.playerActor,
       organelleSystem: this.organelleSystem,
       organelleRenderer: this.organelleRenderer,
       blueprintSystem: this.blueprintSystem,
+      blueprintRenderer: this.blueprintRenderer,
       membraneExchangeSystem: this.membraneExchangeSystem,
       membranePortSystem: this.membranePortSystem, // Story 8.11: External interface
       diffusionSystem: this.diffusionSystem,
@@ -277,10 +294,18 @@ export class GameScene extends Phaser.Scene {
     // Now create complete WorldRefs with all systems (old individual systems removed)
     const worldRefs: WorldRefs = {
       ...baseWorldRefs,
+      scene: this, // Add scene reference for membrane visual refreshes
       cellMotility: null as any, // Placeholder, will be set after creation
       cytoskeletonSystem: null as any, // Placeholder, will be set after creation
-      cytoskeletonGraph: null as any // Placeholder, will be set after cytoskeleton system creation
+      cytoskeletonGraph: null as any, // Placeholder, will be set after cytoskeleton system creation
+      cytoskeletonRenderer: null as any, // Placeholder, will be set after creation
+      cellOverlays: null as any // Placeholder, will be set after creation
     };
+    
+    // Store worldRefs instance for consistent reference across systems
+    this.worldRefsInstance = worldRefs;
+    
+    console.log(`🧪 [SCENE] WorldRefs created with scene reference:`, !!worldRefs.scene);
 
     // Create CellMotility now that we have worldRefs structure
     this.cellMotility = new CellMotility(this, worldRefs, this.cellSpaceSystem);
@@ -296,11 +321,29 @@ export class GameScene extends Phaser.Scene {
     this.cellProduction = new CellProduction(this, worldRefs, this.cellRoot);
     this.cellTransport = new CellTransport(this, worldRefs);
     this.cellOverlays = new CellOverlays(this, worldRefs, this.cellRoot); // Now cellMotility is defined
+    worldRefs.cellOverlays = this.cellOverlays;
 
-    // Milestone 12: Initialize Throw & Membrane Interactions v1
+    // Milestone 12: Initialize Unified Cargo System (throw system after networking)
     this.unifiedCargoSystem = new UnifiedCargoSystem(this, worldRefs);
-    this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem);
     this.membraneTrampoline = new MembraneTrampoline(this, worldRefs);
+    
+    // Milestone 13: Initialize Cytoskeleton Transport v1
+    this.cytoskeletonSystem = new CytoskeletonSystem(this, worldRefs);
+    worldRefs.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
+    worldRefs.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
+    this.cytoskeletonRenderer = new CytoskeletonRenderer(this, worldRefs, this.cytoskeletonSystem);
+    worldRefs.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
+    this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem);
+    
+    // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
+    initializeEnhancedVesicleRouting(worldRefs);
+
+    // Milestone 14: Initialize Multiplayer Core v1
+    this.initializeNetworking();
+
+    // Milestone 12: Initialize Throw System (after networking for isHost check)
+    const isHost = (this.netSyncSystem as any)?.isHost ?? true; // Default to true if no network
+    this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem, isHost);
     this.throwInputController = new ThrowInputController(
       this, 
       worldRefs, 
@@ -310,16 +353,18 @@ export class GameScene extends Phaser.Scene {
     this.cargoHUD = new CargoHUD(this, this.unifiedCargoSystem, {
       position: { x: 20, y: 130 } // Position below other HUD elements
     });
-    
-    // Milestone 13: Initialize Cytoskeleton Transport v1
     this.cytoskeletonSystem = new CytoskeletonSystem(this, worldRefs);
     worldRefs.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
     worldRefs.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
     this.cytoskeletonRenderer = new CytoskeletonRenderer(this, worldRefs, this.cytoskeletonSystem);
+    worldRefs.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
     this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem);
     
     // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
     initializeEnhancedVesicleRouting(worldRefs);
+
+    // Milestone 14: Initialize Multiplayer Core v1
+    this.initializeNetworking();
 
     // Input keys
     this.keys = {
@@ -360,6 +405,10 @@ export class GameScene extends Phaser.Scene {
       N: this.input.keyboard!.addKey("N"), // Toggle infrastructure overlay
       F1: this.input.keyboard!.addKey("F1"), // Build actin filaments
       F2: this.input.keyboard!.addKey("F2"), // Build microtubules
+      F9: this.input.keyboard!.addKey("F9"), // Toggle network HUD
+      F10: this.input.keyboard!.addKey("F10"), // Toggle room UI
+      F11: this.input.keyboard!.addKey("F11"), // Simulate packet loss
+      F12: this.input.keyboard!.addKey("F12"), // Toggle network logging
       ESC: this.input.keyboard!.addKey("ESC"), // Exit build mode
     };
 
@@ -367,7 +416,6 @@ export class GameScene extends Phaser.Scene {
     addHud(this);
     this.initializeHexInteraction();
     this.initializeTileInfoPanel();
-    this.initializeBlueprintSystem(); // After membrane exchange system
     this.initializeDebugInfo();
     this.initializeTranscriptSystem(); // Milestone 7 Task 1
     
@@ -454,6 +502,30 @@ export class GameScene extends Phaser.Scene {
       const playerWorldX = this.cellRoot.x + this.playerActor.x;
       const playerWorldY = this.cellRoot.y + this.playerActor.y;
       this.cameras.main.centerOn(playerWorldX, playerWorldY);
+    }
+
+    // MILESTONE 14: Block game input when room UI input field has focus
+    if (this.roomUI.hasInputFocus()) {
+      // Only allow F10 to close room UI and other F keys for dev tools
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
+        this.roomUI.toggle();
+      }
+      
+      // Allow other F keys for dev tools
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F9)) {
+        this.netHUD.toggle();
+      }
+      
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F11)) {
+        // Toggle packet loss simulation
+        const currentLoss = this.networkTransport.getDevStats().packetLossRate;
+        const newLoss = currentLoss > 0 ? 0 : 0.1; // 10% packet loss
+        this.networkTransport.setPacketLossRate(newLoss);
+        this.showToast(`Packet loss: ${(newLoss * 100).toFixed(1)}%`);
+      }
+      
+      // Skip all other game input processing
+      return;
     }
 
     // Handle hex grid toggle
@@ -560,6 +632,43 @@ export class GameScene extends Phaser.Scene {
       this.showToast("Exited filament building mode");
     }
 
+    // MILESTONE 14: Network controls
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F9)) {
+      this.netHUD.toggle();
+    }
+    
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
+      this.roomUI.toggle();
+    }
+    
+    // Network dev tools
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F11)) {
+      // Toggle packet loss simulation
+      const currentLoss = this.networkTransport.getDevStats().packetLossRate;
+      const newLoss = currentLoss > 0 ? 0 : 0.1; // 10% packet loss
+      this.networkTransport.setPacketLossRate(newLoss);
+      this.showToast(`Packet loss: ${(newLoss * 100).toFixed(1)}%`);
+    }
+    
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F12)) {
+      // Toggle network logging
+      const loggingEnabled = this.networkTransport.toggleNetworkLogging();
+      this.showToast(`Network logging: ${loggingEnabled ? 'ON' : 'OFF'}`);
+    }
+    
+    // Shift+F10 for artificial latency
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F10) && this.input.keyboard!.checkDown(this.input.keyboard!.addKey('SHIFT'))) {
+      const currentLatency = this.networkTransport.getDevStats().artificialLatency;
+      const newLatency = currentLatency > 0 ? 0 : 150; // 150ms artificial latency
+      this.networkTransport.setArtificialLatency(newLatency);
+      this.showToast(`Artificial latency: ${newLatency}ms`);
+    }
+    
+    // O key for creating test entities (multiplayer testing)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.O)) {
+      this.createTestEntities();
+    }
+
     // Debug species controls - Task 4
     this.handleDebugControls();
 
@@ -648,6 +757,9 @@ export class GameScene extends Phaser.Scene {
     
     // Update HUD with current information
     this.updateHUD();
+    
+    // Milestone 14: Update network HUD
+    this.netHUD.update();
     
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
@@ -1722,6 +1834,112 @@ export class GameScene extends Phaser.Scene {
     // Note: This will be created after worldRefs is ready
   }
 
+  // Milestone 14: Multiplayer Core v1 - Networking initialization
+  private initializeNetworking(): void {
+    console.log('Initializing networking systems...');
+    
+    // Create network transport
+    this.networkTransport = new NetworkTransport();
+    
+    // Create room management UI
+    const view = this.scale.gameSize;
+    this.roomUI = new RoomUI({
+      scene: this,
+      x: view.width * 0.5,
+      y: view.height * 0.5
+    }, this.networkTransport);
+    
+    // Create network HUD (top-right corner)
+    this.netHUD = new NetHUD({
+      scene: this,
+      x: view.width - 120,
+      y: 80
+    }, this.networkTransport);
+    
+    // Set up event handlers for when networking is established
+    this.networkTransport.addEventListener('connection', (event: any) => {
+      const connectionEvent = event.detail;
+      if (connectionEvent.type === 'connected') {
+        this.initializeNetSyncSystem();
+      }
+    });
+    
+    console.log('Networking systems initialized');
+  }
+  
+  // Initialize NetSyncSystem after connection is established
+  private initializeNetSyncSystem(): void {
+    if (this.netSyncSystem) return; // Already initialized
+    
+    const isHost = this.roomUI.isHostPlayer();
+    
+    console.log(`Initializing NetSyncSystem as ${isHost ? 'HOST' : 'CLIENT'}`);
+    
+    this.netSyncSystem = new NetSyncSystem({
+      scene: this,
+      transport: this.networkTransport,
+      worldRefs: this.getWorldRefs(),
+      player: this.playerActor,
+      isHost: isHost
+    });
+    
+    // Connect NetHUD to NetSyncSystem for prediction stats
+    this.netHUD.setNetSyncSystem(this.netSyncSystem);
+  }
+  
+  /**
+   * Create test entities for multiplayer replication testing
+   */
+  private createTestEntities(): void {
+    const playerPos = this.getPlayerHexCoord();
+    if (!playerPos) return;
+    
+    // Create a test transcript near the player
+    const transcriptId = `transcript_${this.nextTranscriptId++}`;
+    const transcriptHex = { q: playerPos.q + 1, r: playerPos.r };
+    const transcript: Transcript = {
+      id: transcriptId,
+      proteinId: 'GLUT', // Test protein
+      atHex: transcriptHex,
+      ttlSeconds: 30, // 30 second TTL
+      worldPos: this.hexGrid.hexToWorld(transcriptHex),
+      isCarried: false,
+      moveAccumulator: 0,
+      state: 'traveling',
+      processingTimer: 0,
+      glycosylationState: 'none'
+    };
+    
+    this.transcripts.set(transcriptId, transcript);
+    
+    // Create a test vesicle near the player  
+    const vesicleId = `vesicle_${this.nextVesicleId++}`;
+    const vesicleHex = { q: playerPos.q - 1, r: playerPos.r };
+    const vesicle: Vesicle = {
+      id: vesicleId,
+      proteinId: 'GLUT',
+      atHex: vesicleHex,
+      ttlMs: 45000, // 45 second TTL
+      worldPos: this.hexGrid.hexToWorld(vesicleHex),
+      isCarried: false,
+      destHex: { q: playerPos.q, r: playerPos.r + 2 },
+      state: 'EN_ROUTE_GOLGI',
+      glyco: 'partial',
+      processingTimer: 0,
+      retryCounter: 0
+    };
+    
+    this.vesicles.set(vesicleId, vesicle);
+    
+    this.showToast(`Created test entities: 1 transcript, 1 vesicle`);
+    console.log(`🧪 Created test entities for entity replication testing`);
+  }
+
+  // Helper to get current world refs
+  private getWorldRefs(): WorldRefs {
+    return this.worldRefsInstance;
+  }
+
   
   private handleDebugControls(): void {
     const playerCoord = this.getPlayerHexCoord();
@@ -2046,6 +2264,13 @@ export class GameScene extends Phaser.Scene {
    */
   public getCurrentTile(): HexTile | null {
     return this.currentTileRef;
+  }
+
+  /**
+   * Public method to refresh membrane visuals (for network replication)
+   */
+  public refreshMembraneVisuals(): void {
+    this.renderMembraneDebug();
   }
 
   /**

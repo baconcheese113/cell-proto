@@ -78,6 +78,8 @@ export interface Transcript {
   ttlSeconds: number;
   worldPos: Phaser.Math.Vector2; // for smooth movement rendering
   isCarried: boolean; // true if player is carrying it
+  isThrown?: boolean; // true if currently being thrown
+  isNetworkControlled?: boolean; // true if controlled by network (remote player)
   moveAccumulator: number; // accumulated movement distance for discrete hex movement
   destHex?: { q: number; r: number }; // original destination from install order
   state: 'traveling' | 'processing_at_er' | 'packaged_for_transport' | 'installing_at_membrane';
@@ -96,6 +98,7 @@ export interface Vesicle {
   ttlMs: number; // lifetime in milliseconds
   worldPos: Phaser.Math.Vector2;
   isCarried: boolean;
+  isThrown?: boolean; // true if currently being thrown
   destHex: { q: number; r: number }; // final membrane destination
   state: VesicleState;
   glyco: Exclude<GlycosylationState, 'none'>; // vesicles always have some glycosylation
@@ -130,6 +133,9 @@ export interface Vesicle {
   
   // Milestone 13: Persistent route planning
   itinerary?: CargoItinerary;
+  
+  // Network multiplayer flag
+  isNetworkControlled?: boolean; // If true, local systems should not override state
 }
 
 export interface WorldRefs {
@@ -139,8 +145,12 @@ export interface WorldRefs {
   // HOTFIX: Root container for all cell visuals
   cellRoot: Phaser.GameObjects.Container;
   
+  // Scene reference for visual updates
+  scene?: any; // Game scene reference for membrane visual refreshes
+  
   // Player and inventory
   playerInventory: PlayerInventorySystem;
+  player?: any; // Player actor for position tracking
   
   // Organelle systems
   organelleSystem: OrganelleSystem;
@@ -148,6 +158,13 @@ export interface WorldRefs {
   
   // Construction systems
   blueprintSystem: BlueprintSystem;
+  blueprintRenderer: any; // Add blueprint renderer reference
+  
+  // Overlay systems
+  cellOverlays: any; // Add cell overlays for queue badges
+  
+  // Cytoskeleton rendering
+  cytoskeletonRenderer: any; // Add cytoskeleton renderer reference
   
   // Membrane systems
   membraneExchangeSystem: MembraneExchangeSystem;

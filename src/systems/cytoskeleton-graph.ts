@@ -10,7 +10,7 @@ import type { WorldRefs, Vesicle } from "../core/world-refs";
 import type { FilamentSegment, OrganelleUpgrade, UpgradeType } from "./cytoskeleton-system";
 
 // Debug flag for rail transport logging
-const DEBUG_RAILS = true;
+const DEBUG_RAILS = false;
 
 // Milestone 13: Edge base timing (milliseconds)
 const EDGE_BASE_MS = {
@@ -1069,5 +1069,18 @@ export class CytoskeletonGraph {
         }
       }
     }
+  }
+
+  // Get a specific edge by ID (for network replication)
+  getEdge(edgeId: string): GraphEdge | undefined {
+    return this.edges.get(edgeId);
+  }
+
+  // Get all edges (for network replication)
+  getAllEdges(): GraphEdge[] {
+    if (this.isDirty) {
+      this.rebuildGraph();
+    }
+    return Array.from(this.edges.values());
   }
 }

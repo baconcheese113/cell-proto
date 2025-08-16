@@ -79,6 +79,7 @@ export class ThrowSystem extends SystemObject {
   private config: ThrowConfig;
   private thrownCargos: Map<string, ThrownCargo> = new Map();
   private nextThrownId = 1;
+  private isHost: boolean;
   
   // Story 12.2: Aiming state
   private aimState: AimState = {
@@ -131,9 +132,12 @@ export class ThrowSystem extends SystemObject {
     scene: Phaser.Scene,
     private worldRefs: WorldRefs,
     private unifiedCargoSystem: any, // Will be properly typed when UnifiedCargoSystem is imported
+    isHost: boolean = true, // Default to true for standalone mode
     config: Partial<ThrowConfig> = {}
   ) {
     super(scene, "ThrowSystem", (deltaSeconds: number) => this.update(deltaSeconds));
+    
+    this.isHost = isHost;
     
     // Default configuration
     this.config = {
@@ -163,7 +167,10 @@ export class ThrowSystem extends SystemObject {
   }
   
   override update(deltaSeconds: number): void {
-    this.updateThrownCargos(deltaSeconds);
+    // Only run throw physics on the host; clients receive positions via network
+    if (this.isHost) {
+      this.updateThrownCargos(deltaSeconds);
+    }
     this.renderVFX();
   }
   
@@ -251,12 +258,31 @@ export class ThrowSystem extends SystemObject {
     const carriedItem = this.getCarriedItem();
     if (!carriedItem) return false;
     
-    // Story 12.3: Create thrown projectile
+    // Story 12.3: Create thrown projectile using the original cargo (not a copy)
     const thrownCargo = this.createThrownCargo(carriedItem);
     if (!thrownCargo) return false;
     
-    // Remove from carried items
-    this.removeFromCarried(carriedItem);
+    // Mark the original cargo as thrown and clear carried state
+    carriedItem.item.isCarried = false;
+    carriedItem.item.isThrown = true;
+    
+    // Move from carried arrays to world collections so it gets serialized
+    if (carriedItem.type === 'transcript') {
+      const transcriptIndex = this.worldRefs.carriedTranscripts.findIndex(t => t.id === carriedItem.item.id);
+      if (transcriptIndex !== -1) {
+        this.worldRefs.carriedTranscripts.splice(transcriptIndex, 1);
+        this.worldRefs.transcripts.set(carriedItem.item.id, carriedItem.item as any);
+      }
+    } else if (carriedItem.type === 'vesicle') {
+      const vesicleIndex = this.worldRefs.carriedVesicles.findIndex(v => v.id === carriedItem.item.id);
+      if (vesicleIndex !== -1) {
+        this.worldRefs.carriedVesicles.splice(vesicleIndex, 1);
+        this.worldRefs.vesicles.set(carriedItem.item.id, carriedItem.item as any);
+      }
+    }
+    
+    // Clear the unified cargo system
+    this.unifiedCargoSystem.clearCarriedCargo();
     
     // Reset aim state
     this.aimState.isAiming = false;
@@ -274,44 +300,6 @@ export class ThrowSystem extends SystemObject {
     this.aimState.showPreview = false;
   }
   
-  /**
-   * Create a deep copy of cargo to preserve state during throw
-   */
-  private createCargoCopy(carriedItem: { type: 'transcript' | 'vesicle'; item: Transcript | Vesicle }): Transcript | Vesicle {
-    if (carriedItem.type === 'transcript') {
-      const transcript = carriedItem.item as Transcript;
-      return {
-        id: transcript.id,
-        proteinId: transcript.proteinId,
-        atHex: { q: transcript.atHex.q, r: transcript.atHex.r },
-        ttlSeconds: transcript.ttlSeconds,
-        worldPos: transcript.worldPos.clone(),
-        isCarried: transcript.isCarried,
-        moveAccumulator: transcript.moveAccumulator,
-        destHex: transcript.destHex ? { q: transcript.destHex.q, r: transcript.destHex.r } : undefined,
-        state: transcript.state,
-        processingTimer: transcript.processingTimer,
-        glycosylationState: transcript.glycosylationState
-      };
-    } else {
-      const vesicle = carriedItem.item as Vesicle;
-      return {
-        id: vesicle.id,
-        proteinId: vesicle.proteinId,
-        atHex: { q: vesicle.atHex.q, r: vesicle.atHex.r },
-        ttlMs: vesicle.ttlMs,
-        worldPos: vesicle.worldPos.clone(),
-        isCarried: vesicle.isCarried,
-        destHex: { q: vesicle.destHex.q, r: vesicle.destHex.r },
-        state: vesicle.state,
-        glyco: vesicle.glyco,
-        processingTimer: vesicle.processingTimer,
-        routeCache: vesicle.routeCache ? [...vesicle.routeCache] : undefined,
-        retryCounter: vesicle.retryCounter
-      };
-    }
-  }
-
   /**
    * Story 12.3: Create thrown cargo projectile
    */
@@ -340,9 +328,7 @@ export class ThrowSystem extends SystemObject {
 
     const velocity = direction.scale(speed);
 
-    // Create a deep copy of the original cargo to preserve all state
-    const originalCargoCopy = this.createCargoCopy(carriedItem);
-
+    // Use the original cargo directly (no copy needed)
     const thrownCargo: ThrownCargo = {
       id: `thrown_${this.nextThrownId++}`,
       type: carriedItem.type,
@@ -352,7 +338,7 @@ export class ThrowSystem extends SystemObject {
       ttlMs: carriedItem.type === 'transcript' 
         ? (carriedItem.item as Transcript).ttlSeconds * 1000
         : (carriedItem.item as Vesicle).ttlMs,
-      originalCargo: originalCargoCopy,
+      originalCargo: carriedItem.item, // Reference original, not copy
       onGround: false,
       bounceCount: 0
     };
@@ -396,6 +382,9 @@ export class ThrowSystem extends SystemObject {
       // For top-down cell view: Move in straight line (no gravity)
       cargo.position.x += cargo.velocity.x * deltaSeconds;
       cargo.position.y += cargo.velocity.y * deltaSeconds;
+
+      // Update the original cargo's worldPos to match thrown position for network sync
+      cargo.originalCargo.worldPos.copy(cargo.position);
 
       // Check if cargo has hit hex grid boundaries or traveled far enough
       const startPosition = this.getPlayerPosition();
@@ -558,6 +547,7 @@ export class ThrowSystem extends SystemObject {
       
       // Restore transcript to world position, preserving all original state
       transcript.isCarried = false;
+      transcript.isThrown = false; // Clear thrown state
       transcript.atHex = { q: landingHex.q, r: landingHex.r };
       transcript.worldPos = worldPos.clone();
       transcript.ttlSeconds = thrownCargo.ttlMs / 1000; // Update TTL from throw
@@ -576,6 +566,7 @@ export class ThrowSystem extends SystemObject {
       
       // Restore vesicle to world position, preserving all original state
       vesicle.isCarried = false;
+      vesicle.isThrown = false; // Clear thrown state
       vesicle.atHex = { q: landingHex.q, r: landingHex.r };
       vesicle.worldPos = worldPos.clone();
       vesicle.ttlMs = thrownCargo.ttlMs; // Update TTL from throw
@@ -729,11 +720,6 @@ export class ThrowSystem extends SystemObject {
   }
   
   // Helper methods
-  private removeFromCarried(_carriedItem: { type: 'transcript' | 'vesicle'; item: Transcript | Vesicle }): void {
-    // Use unified cargo system to clear carried cargo state
-    this.unifiedCargoSystem.clearCarriedCargo();
-  }
-  
   private getPlayerPosition(): Phaser.Math.Vector2 {
     // Assuming player is accessible through scene or worldRefs
     // This will need to be adapted based on actual player access pattern

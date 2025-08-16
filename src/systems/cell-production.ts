@@ -614,8 +614,9 @@ export class CellProduction extends SystemObject {
     
     // Render transcripts
     for (const transcript of this.worldRefs.transcripts.values()) {
-      // Skip rendering carried transcripts (handled by player)
-      if (transcript.isCarried) continue;
+      // Skip rendering locally carried transcripts (handled by local player)
+      // But DO render network-controlled carried transcripts (from remote players)
+      if (transcript.isCarried && !transcript.isNetworkControlled) continue;
       
       // Choose color based on state
       let color = 0x88cc44; // Default green
@@ -684,8 +685,9 @@ export class CellProduction extends SystemObject {
     
     // Milestone 8: Render vesicles
     for (const vesicle of this.worldRefs.vesicles.values()) {
-      // Skip rendering carried vesicles (handled by player)
-      if (vesicle.isCarried) continue;
+      // Skip rendering locally carried vesicles (handled by local player)
+      // But DO render network-controlled carried vesicles (from remote players)
+      if (vesicle.isCarried && !vesicle.isNetworkControlled) continue;
       
       // Choose color based on vesicle state
       let color = 0x6699ff; // Default blue for vesicles

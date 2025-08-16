@@ -322,6 +322,9 @@ export function updateVesicles(worldRefs: WorldRefs, deltaSeconds: number, scene
   for (const vesicle of worldRefs.vesicles.values()) {
     if (vesicle.isCarried) continue;
     
+    // Skip network-controlled vesicles to prevent local system interference
+    if (vesicle.isNetworkControlled) continue;
+    
     // Update TTL for all vesicles
     vesicle.ttlMs -= deltaSeconds * 1000;
     if (vesicle.ttlMs <= 0) {

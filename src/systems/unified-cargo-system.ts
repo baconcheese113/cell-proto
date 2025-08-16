@@ -227,6 +227,10 @@ export class UnifiedCargoSystem extends SystemObject {
       
       if (transcript.ttlSeconds <= 0) {
         this.worldRefs.showToast("Carried transcript expired!");
+        
+        // Remove from carried arrays to prevent network sync of expired cargo
+        this.removeFromCarriedTranscripts(transcript.id);
+        
         this.carriedCargo = null;
       }
     } else {
@@ -235,6 +239,10 @@ export class UnifiedCargoSystem extends SystemObject {
       
       if (vesicle.ttlMs <= 0) {
         this.worldRefs.showToast("Carried vesicle expired!");
+        
+        // Remove from carried arrays to prevent network sync of expired cargo
+        this.removeFromCarriedVesicles(vesicle.id);
+        
         this.carriedCargo = null;
       }
     }
@@ -244,18 +252,35 @@ export class UnifiedCargoSystem extends SystemObject {
    * Update position of carried cargo to orbit around player
    */
   private updateCarriedCargoPosition(): void {
-    if (!this.carriedCargo) return;
-    
     const playerPos = this.getPlayerPosition();
     const orbitRadius = 25;
-    const angle = (this.scene.time.now / 1000) * 2; // Slow rotation
+    let cargoIndex = 0;
     
-    const cargoPos = new Phaser.Math.Vector2(
-      playerPos.x + Math.cos(angle) * orbitRadius,
-      playerPos.y + Math.sin(angle) * orbitRadius
-    );
+    // Update carried transcripts (skip thrown ones and network-controlled ones)
+    for (const transcript of this.worldRefs.carriedTranscripts) {
+      if (!transcript.isThrown && !transcript.isNetworkControlled) { // Skip thrown cargo and remote cargo
+        const angle = (this.scene.time.now / 1000) * 2 + (cargoIndex * Math.PI / 2); // Spread items around
+        const cargoPos = new Phaser.Math.Vector2(
+          playerPos.x + Math.cos(angle) * orbitRadius,
+          playerPos.y + Math.sin(angle) * orbitRadius
+        );
+        transcript.worldPos.copy(cargoPos);
+        cargoIndex++;
+      }
+    }
     
-    this.carriedCargo.item.worldPos.copy(cargoPos);
+    // Update carried vesicles (skip thrown ones and network-controlled ones)
+    for (const vesicle of this.worldRefs.carriedVesicles) {
+      if (!vesicle.isThrown && !vesicle.isNetworkControlled) { // Skip thrown cargo and remote cargo
+        const angle = (this.scene.time.now / 1000) * 2 + (cargoIndex * Math.PI / 2); // Spread items around
+        const cargoPos = new Phaser.Math.Vector2(
+          playerPos.x + Math.cos(angle) * orbitRadius,
+          playerPos.y + Math.sin(angle) * orbitRadius
+        );
+        vesicle.worldPos.copy(cargoPos);
+        cargoIndex++;
+      }
+    }
   }
   
   /**
@@ -268,6 +293,9 @@ export class UnifiedCargoSystem extends SystemObject {
     
     // Mark as carried
     transcript.isCarried = true;
+    
+    // Add to carried transcripts array for serialization
+    this.worldRefs.carriedTranscripts.push(transcript);
     
     // Set as carried cargo
     this.carriedCargo = {
@@ -292,6 +320,9 @@ export class UnifiedCargoSystem extends SystemObject {
     
     // Mark as carried
     vesicle.isCarried = true;
+    
+    // Add to carried vesicles array for serialization
+    this.worldRefs.carriedVesicles.push(vesicle);
     
     // Set as carried cargo
     this.carriedCargo = {
