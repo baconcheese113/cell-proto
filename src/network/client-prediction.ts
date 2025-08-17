@@ -74,19 +74,43 @@ export class ClientPrediction {
     const errorMagnitude = Math.sqrt(posError.x * posError.x + posError.y * posError.y);
     
     // If error is significant, perform reconciliation
-    if (errorMagnitude > 3) { // 3 pixel threshold
-      console.log(`Reconciling prediction, error: ${errorMagnitude.toFixed(1)}px`);
+    if (errorMagnitude > 50) { // Increased threshold since we now have exact physics match
+      console.log(`🔄 CLIENT: Large position error ${errorMagnitude.toFixed(1)}px, reconciling`);
+      console.log(`  Server: (${myPlayer.pos.x.toFixed(1)}, ${myPlayer.pos.y.toFixed(1)})`);
+      console.log(`  Client: (${predictedState.position.x.toFixed(1)}, ${predictedState.position.y.toFixed(1)})`);
       
       // Restore to server state
       this.restorePlayerState({
         position: myPlayer.pos,
         velocity: myPlayer.vel,
         dashCooldown: myPlayer.dashCooldown,
-        isDashing: myPlayer.dashCooldown > 0
+        isDashing: myPlayer.isDashing
       });
       
-      // Replay unacknowledged inputs
+      // Re-apply unacknowledged inputs with exact server physics
       this.replayInputs(snapshot.ackSeq);
+    } else if (errorMagnitude > 20) {
+      // For smaller errors, just do a gentle correction instead of hard snap
+      if (snapshot.tick % 60 === 0) { // Log smaller errors less frequently
+        console.log(`🔧 CLIENT: Small position error ${errorMagnitude.toFixed(1)}px, gentle correction`);
+        console.log(`  Server: (${myPlayer.pos.x.toFixed(1)}, ${myPlayer.pos.y.toFixed(1)})`);
+        console.log(`  Client: (${predictedState.position.x.toFixed(1)}, ${predictedState.position.y.toFixed(1)})`);
+      }
+      
+      const correctionFactor = 0.3; // Gradually correct over time
+      const currentPos = this.player.getWorldPosition();
+      
+      this.player.setPosition(
+        currentPos.x + (myPlayer.pos.x - currentPos.x) * correctionFactor,
+        currentPos.y + (myPlayer.pos.y - currentPos.y) * correctionFactor
+      );
+    } else {
+      // Log normal cases occasionally to see typical position differences
+      if (snapshot.tick % 120 === 0 && errorMagnitude > 1) { // Only log if there's some difference
+        console.log(`✅ CLIENT: Good sync, error: ${errorMagnitude.toFixed(1)}px`);
+        console.log(`  Server: (${myPlayer.pos.x.toFixed(1)}, ${myPlayer.pos.y.toFixed(1)})`);
+        console.log(`  Client: (${predictedState.position.x.toFixed(1)}, ${predictedState.position.y.toFixed(1)})`);
+      }
     }
   }
   
@@ -118,46 +142,89 @@ export class ClientPrediction {
     // Set velocity
     const sprite = (this.player as any).sprite;
     sprite.setVelocity(state.velocity.x, state.velocity.y);
+    sprite.setAcceleration(0, 0); // No acceleration in simple physics
     
-    // Set dash state
+    // Set dash state (corrected to use isDashing from server)
     (this.player as any).dashCooldown = state.dashCooldown;
     (this.player as any).isDashing = state.isDashing;
+    
+    // Sync dash timer with cooldown for visual consistency
+    if (state.isDashing) {
+      (this.player as any).dashTimer = 0.2; // Standard dash duration
+    }
   }
   
   /**
    * Apply input prediction locally
    */
   private applyInputPrediction(input: ClientInput): void {
-    // Simulate the same movement logic as the server
-    // TODO: Use input.dt for more accurate physics timing
+    // Use EXACTLY the same physics as the server to prevent desync
+    const networkDeltaTime = 1.0 / 15; // Match server's network tick rate
+    
+    // Get current player state for modification
+    const worldPos = this.player.getWorldPosition();
     const sprite = (this.player as any).sprite;
     
-    // Apply movement
+    // Extract current state
+    let pos = { x: worldPos.x, y: worldPos.y };
+    let vel = { x: sprite.body.velocity.x, y: sprite.body.velocity.y };
+    let isDashing = (this.player as any).isDashing || false;
+    let dashCooldown = (this.player as any).dashCooldown || 0;
+    
+    // EXACT COPY of server physics simulation
     if (input.moveAxis.x !== 0 || input.moveAxis.y !== 0) {
-      // TODO: Use speed=120 for velocity-based prediction instead of acceleration
-      const acceleration = 600;
+      // Simple velocity-based movement (same as server)
+      const speed = isDashing ? 300 : 150; // pixels per second
       
-      // Calculate input force
-      const inputForce = {
-        x: input.moveAxis.x * acceleration,
-        y: input.moveAxis.y * acceleration
-      };
+      // Handle dash (same logic as server)
+      if (input.dash && dashCooldown <= 0) {
+        isDashing = true;
+        dashCooldown = 1.2;
+      }
       
-      // Apply acceleration (simplified physics)
-      sprite.setAcceleration(inputForce.x, inputForce.y);
+      // Set velocity directly based on input (same as server)
+      vel.x = input.moveAxis.x * speed;
+      vel.y = input.moveAxis.y * speed;
     } else {
-      // Deceleration when no input
-      sprite.setAcceleration(0, 0);
-      sprite.setDrag(0.7);
+      // Stop when no input (same as server)
+      vel.x = 0;
+      vel.y = 0;
     }
     
-    // Handle dash
-    if (input.dash) {
-      (this.player as any).startDash();
+    // Update position based on velocity (same as server)
+    pos.x += vel.x * networkDeltaTime;
+    pos.y += vel.y * networkDeltaTime;
+    
+    // Apply boundary constraints (SAME as server)
+    const cellRadius = 216; // Same as server
+    const playerBoundaryRadius = cellRadius - 20; // Same margin as server
+    
+    const distanceFromCenter = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
+    if (distanceFromCenter > playerBoundaryRadius) {
+      // Push player back inside the boundary (same logic as server)
+      const normalizeX = pos.x / distanceFromCenter;
+      const normalizeY = pos.y / distanceFromCenter;
+      
+      pos.x = normalizeX * playerBoundaryRadius;
+      pos.y = normalizeY * playerBoundaryRadius;
+      
+      // Also stop velocity in the outward direction (same as server)
+      const velDotNormal = (vel.x * normalizeX + vel.y * normalizeY);
+      if (velDotNormal > 0) {
+        vel.x -= normalizeX * velDotNormal;
+        vel.y -= normalizeY * velDotNormal;
+      }
     }
-  }
-  
-  /**
+    
+    // Apply results to player
+    this.player.setPosition(pos.x, pos.y);
+    sprite.setVelocity(vel.x, vel.y);
+    sprite.setAcceleration(0, 0); // No acceleration in simple physics
+    
+    // Update dash state
+    (this.player as any).isDashing = isDashing;
+    (this.player as any).dashCooldown = dashCooldown;
+  }  /**
    * Replay inputs after a specific sequence number
    */
   private replayInputs(afterSeq: InputSeq): void {
@@ -178,7 +245,10 @@ export class ClientPrediction {
       this.applyInputPrediction(input);
     }
     
-    console.log(`Replayed ${inputsToReplay.length} inputs after seq ${afterSeq}`);
+    // Only log if replaying a significant number of inputs
+    if (inputsToReplay.length > 10) {
+      console.log(`Replayed ${inputsToReplay.length} inputs after seq ${afterSeq}`);
+    }
   }
   
   /**

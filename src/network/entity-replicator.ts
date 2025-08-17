@@ -28,7 +28,7 @@ import { getOrganelleDefinition, definitionToConfig } from "../organelles/organe
 // Debug flags - Set to true to enable specific logging categories
 const DEBUG_RAILS = false; // Set to true to see detailed rail replication logs
 const DEBUG_SPECIES = false; // Set to true to see species replication logs
-const DEBUG_CARGO = true; // Set to true to see cargo replication logs - ENABLED to debug membrane proteins
+const DEBUG_CARGO = true; // Set to true to see cargo replication logs - Re-enabling to debug client cargo visibility
 const DEBUG_SEATS = false; // Set to true to see seat replication logs
 const DEBUG_ORGANELLES = false; // Set to true to see organelle replication logs
 const DEBUG_BLUEPRINTS = false; // Set to true to see blueprint replication logs
@@ -50,9 +50,26 @@ export class EntityReplicator implements NetworkEntityManager {
   // private lastBuildSnapshot = new Map<string, NetworkBuild>();
   // private lastInstallSnapshot = new Map<string, NetworkInstall>();
   
+  // Callback to resolve which player is carrying a given cargo item
+  private carrierIdResolver?: (cargoId: string) => string | undefined;
+  // Callback to resolve the local player ID
+  private localPlayerIdResolver?: () => string;
+
   constructor(private worldRefs: WorldRefs) {}
   
-  // ============================================================================
+  /**
+   * Set callback to resolve carrier ID for cargo items
+   */
+  setCarrierIdResolver(resolver: (cargoId: string) => string | undefined): void {
+    this.carrierIdResolver = resolver;
+  }
+  
+  /**
+   * Set callback to resolve local player ID
+   */
+  setLocalPlayerIdResolver(resolver: () => string): void {
+    this.localPlayerIdResolver = resolver;
+  }  // ============================================================================
   // Entity ID Management
   // ============================================================================
   
@@ -128,11 +145,21 @@ export class EntityReplicator implements NetworkEntityManager {
     else if (transcript.isCarried) state = 'carried';
     else if (transcript.state === 'processing_at_er') state = 'processing';
     
+    // Get carrier ID if this transcript is carried
+    let carrierId: string | undefined;
+    if (state === 'carried' && this.carrierIdResolver) {
+      carrierId = this.carrierIdResolver(transcript.id);
+      if (DEBUG_CARGO && Math.random() < 0.01) {
+        console.log(`🔍 Serializing transcript ${transcript.id} carried by player: ${carrierId || 'unknown'}`);
+      }
+    }
+    
     return {
       id: transcript.id,
       type: `transcript:${transcript.proteinId}`,
       pos: { x: transcript.worldPos.x, y: transcript.worldPos.y },
       state,
+      carrierId,
       ttl: transcript.ttlSeconds,
       progress: transcript.processingTimer
     };
@@ -147,11 +174,21 @@ export class EntityReplicator implements NetworkEntityManager {
     else if (vesicle.state === 'INSTALLING') state = 'processing';
     else if (vesicle.state === 'BLOCKED') state = 'blocked'; // Add proper BLOCKED state mapping
     
+    // Get carrier ID if this vesicle is carried
+    let carrierId: string | undefined;
+    if (state === 'carried' && this.carrierIdResolver) {
+      carrierId = this.carrierIdResolver(vesicle.id);
+      if (DEBUG_CARGO) {
+        console.log(`🔍 Serializing vesicle ${vesicle.id} carried by player: ${carrierId || 'unknown'}`);
+      }
+    }
+    
     return {
       id: vesicle.id,
       type: `vesicle:${vesicle.proteinId}:${vesicle.glyco}`,
       pos: { x: vesicle.worldPos.x, y: vesicle.worldPos.y },
       state,
+      carrierId,
       routeStageIndex: vesicle.itinerary?.stageIndex,
       destHex: vesicle.destHex ? { ...vesicle.destHex } : undefined,
       ttl: vesicle.ttlMs / 1000, // Convert to seconds
@@ -464,6 +501,9 @@ export class EntityReplicator implements NetworkEntityManager {
       let transcript = this.worldRefs.transcripts.get(networkCargo.id);
       
       if (!transcript) {
+        const localPlayerId = this.localPlayerIdResolver?.();
+        const isLocallyOwned = networkCargo.carrierId === localPlayerId;
+        
         // Create new transcript
         transcript = {
           id: networkCargo.id,
@@ -477,17 +517,17 @@ export class EntityReplicator implements NetworkEntityManager {
           state: networkCargo.state === 'processing' ? 'processing_at_er' : 'traveling',
           processingTimer: networkCargo.progress || 0,
           glycosylationState: 'none',
-          isNetworkControlled: true // Mark as network-controlled to prevent local system interference
+          isNetworkControlled: !isLocallyOwned // Only network-controlled if not owned by local player
         };
         
         this.worldRefs.transcripts.set(networkCargo.id, transcript);
         
-        if (DEBUG_CARGO) {
-          console.log(`🔧 Created new transcript ${transcript.id} with isNetworkControlled: ${transcript.isNetworkControlled}, state: ${networkCargo.state}`);
+        if (DEBUG_CARGO && networkCargo.state === 'carried') {
+          console.log(`🔧 Created new transcript ${transcript.id} - localPlayerId: ${localPlayerId}, carrierId: ${networkCargo.carrierId}, isLocallyOwned: ${isLocallyOwned}, isNetworkControlled: ${transcript.isNetworkControlled}, state: ${networkCargo.state}`);
         }
         
         // Manage carried arrays for visual rendering
-        this.updateCarriedArrays(transcript, networkCargo.state, 'transcript');
+        this.updateCarriedArrays(transcript, networkCargo.state, 'transcript', networkCargo.carrierId);
       } else {
         // Update existing transcript
         transcript.worldPos.set(networkCargo.pos.x, networkCargo.pos.y);
@@ -496,14 +536,18 @@ export class EntityReplicator implements NetworkEntityManager {
         transcript.isThrown = networkCargo.state === 'thrown';
         transcript.ttlSeconds = networkCargo.ttl || transcript.ttlSeconds;
         transcript.processingTimer = networkCargo.progress || 0;
-        transcript.isNetworkControlled = true; // Mark as network-controlled
         
-        if (DEBUG_CARGO) {
-          console.log(`🔧 Updated transcript ${transcript.id} with isNetworkControlled: ${transcript.isNetworkControlled}, state: ${networkCargo.state}`);
+        // Update network control based on ownership
+        const localPlayerId = this.localPlayerIdResolver?.();
+        const isLocallyOwned = networkCargo.carrierId === localPlayerId;
+        transcript.isNetworkControlled = !isLocallyOwned; // Only network-controlled if not owned by local player
+        
+        if (DEBUG_CARGO && networkCargo.state === 'carried' && Math.random() < 0.005) {
+          console.log(`🔧 Updated transcript ${transcript.id} - localPlayerId: ${localPlayerId}, carrierId: ${networkCargo.carrierId}, isLocallyOwned: ${isLocallyOwned}, isNetworkControlled: ${transcript.isNetworkControlled}, state: ${networkCargo.state}`);
         }
         
         // Manage carried arrays for visual rendering
-        this.updateCarriedArrays(transcript, networkCargo.state, 'transcript');
+        this.updateCarriedArrays(transcript, networkCargo.state, 'transcript', networkCargo.carrierId);
       }
     } else if (type === 'vesicle') {
       const proteinId = parts[0] as any;
@@ -511,6 +555,9 @@ export class EntityReplicator implements NetworkEntityManager {
       let vesicle = this.worldRefs.vesicles.get(networkCargo.id);
       
       if (!vesicle) {
+        const localPlayerId = this.localPlayerIdResolver?.();
+        const isLocallyOwned = networkCargo.carrierId === localPlayerId;
+        
         // Create new vesicle
         vesicle = {
           id: networkCargo.id,
@@ -525,17 +572,17 @@ export class EntityReplicator implements NetworkEntityManager {
           glyco,
           processingTimer: networkCargo.progress || 0,
           retryCounter: 0,
-          isNetworkControlled: true // Mark as network-controlled to prevent local system interference
+          isNetworkControlled: !isLocallyOwned // Only network-controlled if not owned by local player
         };
         
         this.worldRefs.vesicles.set(networkCargo.id, vesicle);
         
-        if (DEBUG_CARGO) {
+        if (DEBUG_CARGO && networkCargo.state === 'carried') {
           console.log(`🔧 Created new vesicle ${vesicle.id} with isNetworkControlled: ${vesicle.isNetworkControlled}, state: ${networkCargo.state}`);
         }
         
         // Manage carried arrays for visual rendering
-        this.updateCarriedArrays(vesicle, networkCargo.state, 'vesicle');
+        this.updateCarriedArrays(vesicle, networkCargo.state, 'vesicle', networkCargo.carrierId);
       } else {
         // Update existing vesicle
         vesicle.worldPos.set(networkCargo.pos.x, networkCargo.pos.y);
@@ -545,7 +592,11 @@ export class EntityReplicator implements NetworkEntityManager {
         vesicle.ttlMs = (networkCargo.ttl || vesicle.ttlMs / 1000) * 1000;
         vesicle.state = this.networkStateToVesicleState(networkCargo.state, vesicle, networkCargo.destHex);
         vesicle.processingTimer = networkCargo.progress || 0;
-        vesicle.isNetworkControlled = true; // Mark as network-controlled
+        
+        // Update network control based on ownership
+        const localPlayerId = this.localPlayerIdResolver?.();
+        const isLocallyOwned = networkCargo.carrierId === localPlayerId;
+        vesicle.isNetworkControlled = !isLocallyOwned; // Only network-controlled if not owned by local player
         
         // Update destination if provided
         if (networkCargo.destHex) {
@@ -556,12 +607,12 @@ export class EntityReplicator implements NetworkEntityManager {
           vesicle.itinerary.stageIndex = networkCargo.routeStageIndex;
         }
         
-        if (DEBUG_CARGO) {
+        if (DEBUG_CARGO && networkCargo.state === 'carried') {
           console.log(`🔧 Updated vesicle ${vesicle.id} with isNetworkControlled: ${vesicle.isNetworkControlled}, state: ${networkCargo.state}`);
         }
         
         // Manage carried arrays for visual rendering
-        this.updateCarriedArrays(vesicle, networkCargo.state, 'vesicle');
+        this.updateCarriedArrays(vesicle, networkCargo.state, 'vesicle', networkCargo.carrierId);
       }
     }
   }
@@ -1670,10 +1721,12 @@ export class EntityReplicator implements NetworkEntityManager {
   private updateCarriedArrays(
     entity: Transcript | Vesicle, 
     networkState: NetworkCargo['state'], 
-    type: 'transcript' | 'vesicle'
+    type: 'transcript' | 'vesicle',
+    carrierId?: string
   ): void {
-    if (DEBUG_CARGO) {
-      console.log(`🔧 updateCarriedArrays: ${type} ${entity.id}, networkState: ${networkState}, isNetworkControlled: ${entity.isNetworkControlled}`);
+    // Only log occasionally for carried state to reduce spam
+    if (DEBUG_CARGO && networkState === 'carried' && Math.random() < 0.01) {
+      console.log(`🔧 updateCarriedArrays: ${type} ${entity.id}, networkState: ${networkState}, isNetworkControlled: ${entity.isNetworkControlled}, carrierId: ${carrierId || 'none'}`);
     }
     
     if (type === 'transcript') {
@@ -1683,7 +1736,7 @@ export class EntityReplicator implements NetworkEntityManager {
       if (networkState === 'carried' && !isInCarriedArray) {
         // Add to carried array if not already there
         this.worldRefs.carriedTranscripts.push(transcript);
-        if (DEBUG_CARGO) {
+        if (DEBUG_CARGO && Math.random() < 0.05) {
           console.log(`📦 Added transcript ${transcript.id} to carried array (network: ${networkState})`);
         }
       } else if (networkState !== 'carried' && isInCarriedArray) {
@@ -1719,16 +1772,16 @@ export class EntityReplicator implements NetworkEntityManager {
     }
     
     // For carried cargo, position it around the remote player (if it's network-controlled)
-    if (DEBUG_CARGO) {
+    if (DEBUG_CARGO && networkState === 'carried' && Math.random() < 0.02) {
       console.log(`🔧 Checking positioning conditions: networkState === 'carried': ${networkState === 'carried'}, entity.isNetworkControlled: ${entity.isNetworkControlled}`);
     }
     
     if (networkState === 'carried' && entity.isNetworkControlled) {
-      if (DEBUG_CARGO) {
-        console.log(`🔧 Calling positionRemoteCarriedCargo for ${type} ${entity.id}`);
+      if (DEBUG_CARGO && Math.random() < 0.02) {
+        console.log(`🔧 Calling positionRemoteCarriedCargo for ${type} ${entity.id} carried by ${carrierId || 'unknown'}`);
       }
-      this.positionRemoteCarriedCargo(entity, type);
-    } else if (DEBUG_CARGO) {
+      this.positionRemoteCarriedCargo(entity, type, carrierId);
+    } else if (DEBUG_CARGO && networkState === 'carried' && Math.random() < 0.01) {
       console.log(`🔧 Skipping positioning: networkState: ${networkState}, isNetworkControlled: ${entity.isNetworkControlled}`);
     }
   }
@@ -1736,13 +1789,12 @@ export class EntityReplicator implements NetworkEntityManager {
   /**
    * Position network-controlled carried cargo around remote players
    */
-  private positionRemoteCarriedCargo(entity: Transcript | Vesicle, type: 'transcript' | 'vesicle'): void {
-    if (DEBUG_CARGO) {
-      console.log(`🔍 positionRemoteCarriedCargo called for ${type} ${entity.id}`);
+  private positionRemoteCarriedCargo(entity: Transcript | Vesicle, type: 'transcript' | 'vesicle', carrierId?: string): void {
+    if (DEBUG_CARGO && Math.random() < 0.01) {
+      console.log(`🔍 positionRemoteCarriedCargo called for ${type} ${entity.id}, carrierId: ${carrierId}`);
     }
     
-    // Get remote player position (assuming host player for now - in a full multiplayer system,
-    // we'd need to track which player is carrying which cargo)
+    // Get the scene and netSyncSystem
     const scene = this.worldRefs.cellRoot?.scene;
     if (!scene) {
       if (DEBUG_CARGO) {
@@ -1759,40 +1811,50 @@ export class EntityReplicator implements NetworkEntityManager {
       return;
     }
     
-    if (!netSyncSystem.remotePlayers) {
+    // Use the specific carrier player if provided
+    if (!carrierId) {
       if (DEBUG_CARGO) {
-        console.log(`🔍 No remotePlayers found in netSyncSystem`);
+        console.log(`🔍 No carrierId provided for cargo ${entity.id}`);
       }
       return;
     }
     
-    if (DEBUG_CARGO) {
-      console.log(`🔍 Found ${netSyncSystem.remotePlayers.size} remote players:`, Array.from(netSyncSystem.remotePlayers.keys()));
+    if (DEBUG_CARGO && Math.random() < 0.01) {
+      const allRemotePlayerIds = netSyncSystem.getRemotePlayerIds();
+      console.log(`🔍 Available remote players: [${allRemotePlayerIds.join(', ')}]`);
+      console.log(`🔍 Looking for carrier player '${carrierId}'`);
     }
     
-    // For now, assume host player is carrying (in a full system, this would be tracked per cargo)
-    const remotePlayer = netSyncSystem.remotePlayers.get('host');
-    if (!remotePlayer) {
-      if (DEBUG_CARGO) {
-        console.log(`🔍 No 'host' remote player found`);
+    // Get the remote player sprite for the carrier
+    const remotePlayerSprite = netSyncSystem.getRemotePlayerSprite(carrierId);
+    if (!remotePlayerSprite) {
+      if (DEBUG_CARGO && Math.random() < 0.01) {
+        console.log(`🔍 No remote player sprite found for carrier '${carrierId}'`);
       }
       return;
     }
     
-    if (DEBUG_CARGO) {
-      console.log(`🔍 Found remote host player at (${remotePlayer.x}, ${remotePlayer.y})`);
+    if (DEBUG_CARGO && Math.random() < 0.01) {
+      console.log(`🔍 Found remote player sprite for '${carrierId}' at (${remotePlayerSprite.x}, ${remotePlayerSprite.y})`);
     }
     
-    const remotePlayerPos = new Phaser.Math.Vector2(remotePlayer.x, remotePlayer.y);
+    const remotePlayerPos = new Phaser.Math.Vector2(remotePlayerSprite.x, remotePlayerSprite.y);
     const orbitRadius = 25;
     
-    // Calculate orbital position based on cargo index
-    const carriedEntities = [...this.worldRefs.carriedTranscripts, ...this.worldRefs.carriedVesicles];
-    const networkCarriedEntities = carriedEntities.filter(e => e.isNetworkControlled);
-    const cargoIndex = networkCarriedEntities.findIndex(e => e.id === entity.id);
+    // Calculate orbital position - since we're in positionRemoteCarriedCargo, we know this entity is network-controlled
+    // Find all network-controlled carried entities for this specific carrier
+    const allCarriedEntities = [...this.worldRefs.carriedTranscripts, ...this.worldRefs.carriedVesicles];
+    const carrierEntities = allCarriedEntities.filter(e => {
+      // Filter by entities carried by the same player (matching carrierId)
+      if (!this.carrierIdResolver) return false;
+      const entityCarrierId = this.carrierIdResolver(e.id);
+      return entityCarrierId === carrierId;
+    });
     
-    if (DEBUG_CARGO) {
-      console.log(`🔍 Total carried entities: ${carriedEntities.length}, network controlled: ${networkCarriedEntities.length}, cargo index: ${cargoIndex}`);
+    const cargoIndex = carrierEntities.findIndex(e => e.id === entity.id);
+    
+    if (DEBUG_CARGO && Math.random() < 0.02) {
+      console.log(`🔍 Total carried entities: ${allCarriedEntities.length}, carried by '${carrierId}': ${carrierEntities.length}, cargo index: ${cargoIndex}`);
     }
     
     if (cargoIndex !== -1) {
@@ -1804,12 +1866,12 @@ export class EntityReplicator implements NetworkEntityManager {
       
       entity.worldPos.copy(cargoPos);
       
-      if (DEBUG_CARGO) {
-        console.log(`🌍 Positioned remote ${type} ${entity.id} around remote player at (${cargoPos.x.toFixed(1)}, ${cargoPos.y.toFixed(1)})`);
+      if (DEBUG_CARGO && Math.random() < 0.02) {
+        console.log(`🌍 Positioned remote ${type} ${entity.id} around remote player '${carrierId}' at (${cargoPos.x.toFixed(1)}, ${cargoPos.y.toFixed(1)})`);
       }
     } else {
       if (DEBUG_CARGO) {
-        console.log(`🔍 Cargo ${entity.id} not found in network carried entities list`);
+        console.log(`🔍 Cargo ${entity.id} not found in carrier '${carrierId}' entities list`);
       }
     }
   }

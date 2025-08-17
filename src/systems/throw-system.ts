@@ -46,6 +46,7 @@ export interface ThrownCargo {
   // Physics state
   position: Phaser.Math.Vector2;
   velocity: Phaser.Math.Vector2;
+  startPosition: Phaser.Math.Vector2; // Where the throw started from
   ttlMs: number; // inherited from original cargo
   
   // Original cargo data (preserved)
@@ -142,7 +143,7 @@ export class ThrowSystem extends SystemObject {
     // Default configuration
     this.config = {
       aimHoldThreshold: 200, // ms
-      maxThrowDistance: 200, // pixels
+      maxThrowDistance: 500, // pixels - increased for better multiplayer throwing
       minThrowSpeed: 100,
       maxThrowSpeed: 400,
       gravity: 300, // pixels/sec²
@@ -296,8 +297,19 @@ export class ThrowSystem extends SystemObject {
    * Story 12.2: Cancel aiming
    */
   public cancelAiming(): void {
+    console.log(`🎯 ThrowSystem: cancelAiming called, current state - isAiming: ${this.aimState.isAiming}, showPreview: ${this.aimState.showPreview}`);
     this.aimState.isAiming = false;
     this.aimState.showPreview = false;
+    
+    // Immediately clear the graphics to hide aiming indicators
+    if (this.aimPreviewGraphics) {
+      this.aimPreviewGraphics.clear();
+    }
+    if (this.cargoGraphics) {
+      this.cargoGraphics.clear();
+    }
+    
+    console.log(`🎯 ThrowSystem: Aiming state and graphics cleared`);
   }
   
   /**
@@ -335,6 +347,7 @@ export class ThrowSystem extends SystemObject {
       cargoId: carriedItem.item.id,
       position: playerPos.clone(),
       velocity: velocity,
+      startPosition: playerPos.clone(), // Store where the throw started
       ttlMs: carriedItem.type === 'transcript' 
         ? (carriedItem.item as Transcript).ttlSeconds * 1000
         : (carriedItem.item as Vesicle).ttlMs,
@@ -357,8 +370,8 @@ export class ThrowSystem extends SystemObject {
   /**
    * Check if thrown cargo has reached maximum travel distance
    */
-  private isMaxDistanceReached(cargo: ThrownCargo, startPosition: Phaser.Math.Vector2): boolean {
-    const travelDistance = Phaser.Math.Distance.BetweenPoints(startPosition, cargo.position);
+  private isMaxDistanceReached(cargo: ThrownCargo): boolean {
+    const travelDistance = Phaser.Math.Distance.BetweenPoints(cargo.startPosition, cargo.position);
     return travelDistance >= this.config.maxThrowDistance;
   }
 
@@ -387,9 +400,7 @@ export class ThrowSystem extends SystemObject {
       cargo.originalCargo.worldPos.copy(cargo.position);
 
       // Check if cargo has hit hex grid boundaries or traveled far enough
-      const startPosition = this.getPlayerPosition();
-      
-      if (this.isOutsideGrid(cargo.position) || this.isMaxDistanceReached(cargo, startPosition)) {
+      if (this.isOutsideGrid(cargo.position) || this.isMaxDistanceReached(cargo)) {
         // Land at current position
         cargo.onGround = true;
         cargo.velocity.set(0, 0);

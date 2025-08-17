@@ -12,6 +12,7 @@
 import type { WorldRefs } from "../core/world-refs";
 import type { ThrowSystem } from "./throw-system";
 import type { UnifiedCargoSystem } from "./unified-cargo-system";
+import type { NetSyncSystem } from "../network/net-sync-system";
 
 export interface ThrowInputConfig {
   // Input mappings
@@ -25,6 +26,9 @@ export interface ThrowInputConfig {
   // Sensitivity
   mouseSensitivity: number; // Mouse movement sensitivity
   gamepadDeadzone: number; // Right stick deadzone
+  
+  // Network system for multiplayer cargo checking
+  netSyncSystem?: NetSyncSystem;
 }
 
 export class ThrowInputController {
@@ -43,6 +47,7 @@ export class ThrowInputController {
     private cargoSystem: UnifiedCargoSystem,
     config: Partial<ThrowInputConfig> = {}
   ) {
+    console.log(`🎯 ThrowInputController: Constructor called with netSyncSystem: ${!!config.netSyncSystem}`);
     this.config = {
       mouseAiming: true,
       gamepadSupport: true,
@@ -53,6 +58,7 @@ export class ThrowInputController {
       ...config
     };
     
+    console.log(`🎯 ThrowInputController: Final config netSyncSystem: ${!!this.config.netSyncSystem}`);
     this.initializeInput();
   }
   
@@ -73,8 +79,9 @@ export class ThrowInputController {
       });
       
       this.scene.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
-        if (pointer.rightButtonReleased()) {
-          console.log("🎯 Right mouse up detected");
+        // Check if we were aiming (right button was down) and now releasing
+        if (this.isAiming) {
+          console.log("🎯 Right mouse up detected (while aiming)");
           pointer.event.preventDefault(); // Prevent browser context menu  
           this.executeThrow();
         }
@@ -202,13 +209,114 @@ export class ThrowInputController {
   }
   
   /**
+   * Check if player is carrying something (multiplayer-aware)
+   */
+  private isCarryingSomething(): boolean {
+    // If we have a network system and we're not the host, check network cargo state
+    if (this.config.netSyncSystem && !(this.config.netSyncSystem as any).isHost) {
+      // For clients, check if we have any carried cargo in the network state
+      const carriedTranscripts = this.worldRefs.carriedTranscripts;
+      const carriedVesicles = this.worldRefs.carriedVesicles;
+      
+      console.log(`🎯 CLIENT: Checking cargo - ${carriedTranscripts.length} transcripts, ${carriedVesicles.length} vesicles`);
+      
+      // Check if any carried cargo belongs to the local player (not network controlled)
+      const hasLocalCarriedTranscripts = carriedTranscripts.some(t => !t.isNetworkControlled);
+      const hasLocalCarriedVesicles = carriedVesicles.some(v => !v.isNetworkControlled);
+      
+      if (hasLocalCarriedTranscripts || hasLocalCarriedVesicles) {
+        console.log(`🎯 Network client carrying: ${hasLocalCarriedTranscripts ? 'transcript' : ''} ${hasLocalCarriedVesicles ? 'vesicle' : ''}`);
+        return true;
+      }
+      
+      console.log(`🎯 Network client not carrying anything (${carriedTranscripts.length} transcripts, ${carriedVesicles.length} vesicles total)`);
+      return false;
+    }
+    
+    // For host or single-player, use the local cargo system
+    return this.cargoSystem.isCarrying();
+  }
+
+  /**
+   * Execute throw with network awareness
+   */
+  private executeNetworkAwareThrow(): boolean {
+    console.log(`🎯 CLIENT: executeNetworkAwareThrow called`);
+    
+    // Dynamically get the current network system from the scene
+    const currentNetSyncSystem = (this.scene as any).netSyncSystem;
+    const isCurrentlyHost = currentNetSyncSystem?.isHost ?? true;
+    
+    console.log(`🎯 CLIENT: Current netSyncSystem exists: ${!!currentNetSyncSystem}`);
+    console.log(`🎯 CLIENT: Current isHost: ${isCurrentlyHost}`);
+    
+    // If we have a network system and we're not the host, send throw command
+    if (currentNetSyncSystem && !isCurrentlyHost) {
+      console.log(`🎯 CLIENT: Sending network throw command`);
+      // For clients, send throw command to host
+      const holdTime = this.scene.time.now - this.aimStartTime;
+      const chargeLevel = Math.min(holdTime / this.config.chargeTime, 1.0);
+      
+      // Calculate target position the same way as in updateAimingInput
+      let targetPosition: Phaser.Math.Vector2;
+      if (this.config.mouseAiming && this.scene.input.activePointer) {
+        const worldX = this.lastMousePos.x;
+        const worldY = this.lastMousePos.y;
+        const cellRoot = this.worldRefs.cellRoot;
+        const localX = worldX - cellRoot.x;
+        const localY = worldY - cellRoot.y;
+        targetPosition = new Phaser.Math.Vector2(localX, localY);
+      } else {
+        const playerPos = this.getPlayerPosition();
+        targetPosition = new Phaser.Math.Vector2(playerPos.x + 80, playerPos.y);
+      }
+      
+      // Send throw command with position and charge level using current network system
+      this.sendThrowCommand(targetPosition, chargeLevel, currentNetSyncSystem);
+      
+      // Don't clear cargo immediately - wait for host confirmation
+      // The host will handle the throw and update the world state
+      
+      return true;
+    }
+    
+    console.log(`🎯 CLIENT: Executing local throw (host or no network)`);
+    // For host or single-player, execute locally
+    return this.throwSystem.executeThrow();
+  }
+
+  /**
+   * Send throw command to host
+   */
+  private sendThrowCommand(targetPosition: Phaser.Math.Vector2, chargeLevel: number, netSyncSystem?: any): void {
+    // Use provided netSyncSystem or fall back to config
+    const activeNetSyncSystem = netSyncSystem || this.config.netSyncSystem as any;
+    if (!activeNetSyncSystem || !activeNetSyncSystem.sendClientCommand) return;
+    
+    const playerPos = this.getPlayerPosition();
+    const direction = new Phaser.Math.Vector2(
+      targetPosition.x - playerPos.x,
+      targetPosition.y - playerPos.y
+    ).normalize();
+    
+    activeNetSyncSystem.sendClientCommand('cargoThrow', {
+      playerPos: { x: playerPos.x, y: playerPos.y },
+      direction: { x: direction.x, y: direction.y },
+      chargeLevel: chargeLevel,
+      targetPos: { x: targetPosition.x, y: targetPosition.y }
+    });
+    
+    console.log(`🎯 CLIENT: Sent throw command with charge ${(chargeLevel * 100).toFixed(1)}%`);
+  }
+
+  /**
    * Start the aiming process
    */
   private startAiming(): void {
     console.log("🎯 StartAiming called");
     
-    // Check if player can throw
-    if (!this.cargoSystem.isCarrying()) {
+    // Check if player can throw (multiplayer-aware)
+    if (!this.isCarryingSomething()) {
       console.log("❌ Not carrying anything to throw");
       this.worldRefs.showToast("Not carrying anything to throw");
       return;
@@ -301,7 +409,9 @@ export class ThrowInputController {
     }
     
     // Execute throw in throw system
-    const success = this.throwSystem.executeThrow();
+    console.log(`🎯 CLIENT: Executing throw - isHost: ${!(this.config.netSyncSystem as any)?.isHost}`);
+    const success = this.executeNetworkAwareThrow();
+    console.log(`🎯 CLIENT: Throw execution result: ${success}`);
     
     // Reset state
     this.isAiming = false;
@@ -329,16 +439,26 @@ export class ThrowInputController {
   /**
    * Cancel the aiming process
    */
-  private cancelAiming(): void {
-    if (!this.isAiming) return;
+  public cancelAiming(): void {
+    console.log(`🎯 ThrowInputController: cancelAiming called, isAiming: ${this.isAiming}`);
+    
+    // Always clear the ThrowSystem state, even if our local isAiming is false
+    this.throwSystem.cancelAiming();
+    console.log(`🎯 ThrowInputController: Called throwSystem.cancelAiming()`);
+    
+    // Only proceed with other cleanup if we were actually aiming
+    if (!this.isAiming) {
+      console.log(`🎯 ThrowInputController: isAiming was false, but still cleared ThrowSystem`);
+      return;
+    }
     
     this.isAiming = false;
-    this.throwSystem.cancelAiming();
     
     // Reset cargo indicator position
     const player = this.getPlayerActor();
     if (player) {
       player.resetCargoIndicatorPosition();
+      console.log(`🎯 ThrowInputController: Reset cargo indicator position`);
     }
     
     // Reset camera zoom

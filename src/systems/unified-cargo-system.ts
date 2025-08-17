@@ -61,6 +61,13 @@ export class UnifiedCargoSystem extends SystemObject {
   public clearCarriedCargo(): void {
     this.carriedCargo = null;
   }
+
+  /**
+   * Set carried cargo (used by multiplayer system for local integration)
+   */
+  public setCarriedCargo(cargo: CarriedCargo): void {
+    this.carriedCargo = cargo;
+  }
   
   /**
    * Story 12.1: Attempt to pick up cargo at current player location

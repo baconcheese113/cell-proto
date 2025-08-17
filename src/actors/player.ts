@@ -45,6 +45,9 @@ export class Player extends Phaser.GameObjects.Container {
   
   // Current position tracking
   private currentTileRef: HexTile | null = null;
+  
+  // Network mode flag - when true, disables local physics movement
+  private networkControlled = false;
 
   constructor(config: PlayerConfig, hexGrid: HexGrid) {
     super(config.scene, config.x, config.y);
@@ -141,6 +144,13 @@ export class Player extends Phaser.GameObjects.Container {
    * Main update method called each frame (ORIGINAL MECHANICS)
    */
   override update(deltaSeconds: number, keys: Record<string, Phaser.Input.Keyboard.Key>) {
+    // Skip movement processing if under network control
+    if (this.networkControlled) {
+      // Only update camera to follow player, but don't process movement
+      this.updateCameraSmoothing();
+      return;
+    }
+    
     // Get input direction (ORIGINAL METHOD)
     const vx = (keys['D'].isDown ? 1 : 0) - (keys['A'].isDown ? 1 : 0);
     const vy = (keys['S'].isDown ? 1 : 0) - (keys['W'].isDown ? 1 : 0);
@@ -353,6 +363,17 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   /**
+   * Set network control mode - when enabled, disables local physics movement
+   */
+  setNetworkControlled(enabled: boolean): void {
+    this.networkControlled = enabled;
+    if (enabled) {
+      // Stop any current velocity when switching to network control
+      this.sprite.setVelocity(0, 0);
+    }
+  }
+
+  /**
    * Get the hex coordinate of the tile the player is currently standing on
    */
   getHexCoord(): HexCoord | null {
@@ -557,5 +578,19 @@ export class Player extends Phaser.GameObjects.Container {
     }
 
     return new Phaser.Math.Vector2(0, 0);
+  }
+
+  /**
+   * Synchronize visual components (ring and cargo indicator) with sprite position
+   * This should be called when position is updated externally (e.g., network updates)
+   */
+  syncVisualComponents(): void {
+    // Update ring position to follow sprite
+    this.ring.setPosition(this.sprite.x, this.sprite.y);
+    
+    // Update cargo indicator to follow sprite
+    if (this.cargoIndicator) {
+      this.cargoIndicator.setPosition(this.sprite.x + 20, this.sprite.y - 20);
+    }
   }
 }

@@ -424,6 +424,28 @@ export class FilamentBuilder extends SystemObject {
    * Create filament blueprints that will gradually consume resources
    */
   private createFilamentSegments(): void {
+    // Check if we're in a networked environment and not the host
+    const netSyncSystem = (this.worldRefs.scene as any)?.netSyncSystem;
+    const isHost = !netSyncSystem || (netSyncSystem as any)?.isHost;
+    
+    if (!isHost && netSyncSystem) {
+      // Client mode - send network command instead of creating blueprints directly
+      const commandId = netSyncSystem.requestAction('buildFilament', {
+        filamentType: this.placementState.filamentType,
+        segments: this.placementState.previewSegments
+      });
+      
+      if (commandId) {
+        console.log(`📤 CLIENT: Requested ${this.placementState.filamentType} filament placement with ${this.placementState.previewSegments.length} segment(s), commandId: ${commandId}`);
+        this.worldRefs.showToast(`Filament placement request sent...`);
+      } else {
+        console.warn(`❌ CLIENT: Failed to send filament placement request`);
+        this.worldRefs.showToast(`Failed to send filament request`);
+      }
+      return;
+    }
+    
+    // Host mode or single-player - create blueprints directly
     for (const segment of this.placementState.previewSegments) {
       // Create blueprint instead of instant filament
       const blueprintId = this.cytoskeletonSystem.createFilamentBlueprint(

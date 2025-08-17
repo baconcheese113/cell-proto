@@ -24,6 +24,20 @@ export interface ClientInput {
   dash: boolean; // Dash button pressed
   driveToggle: boolean; // Cell drive mode toggle
   
+  // CellMotility Actions
+  motilityActions?: {
+    blebBurst: boolean; // SPACE - bleb burst
+    proteaseToggle: boolean; // X - protease toggle
+    handbrake: boolean; // Z - handbrake
+    modeSwitch: boolean; // TAB - cycle motility mode
+    
+    // Mode-specific inputs
+    amoeboidPseudopodAim?: {
+      isAiming: boolean;
+      aimDirection?: number; // radians
+    };
+  };
+  
   // Aim/Throw
   aimDir?: { x: number; y: number }; // Normalized aim direction
   throwCharge: number; // 0-1 throw charge amount
@@ -42,12 +56,23 @@ export interface ClientInput {
 }
 
 /**
+ * Client Command Message - Sent from clients to host
+ * Requests actions that need validation and coordination
+ */
+export interface ClientCommand {
+  commandId: string; // Unique ID for tracking responses
+  action: 'buildBlueprint' | 'injectSpecies' | 'cargoPickup' | 'cargoDrop' | 'cargoThrow' | 'buildFilament' | 'finishConstruction' | 'installOrder';
+  data: any; // Action-specific data
+}
+
+/**
  * Host Command Message - Sent from host to clients
  * Confirms successful actions or notifies of rejections
  */
 export interface HostCommand {
   type: 'confirm' | 'reject';
-  action: 'build' | 'pickup' | 'drop' | 'throw' | 'install' | 'seatReserve' | 'seatRelease';
+  commandId?: string; // References the original client command
+  action: 'build' | 'pickup' | 'drop' | 'throw' | 'install' | 'seatReserve' | 'seatRelease' | 'injectSpecies' | 'buildFilament' | 'finishConstruction' | 'installOrder';
   data?: any; // Action-specific data
   reason?: string; // Rejection reason for user feedback
 }
@@ -60,8 +85,23 @@ export interface NetworkPlayer {
   pos: { x: number; y: number };
   vel: { x: number; y: number };
   dir: { x: number; y: number }; // Facing direction
-  motilityMode: string;
+  
+  // Movement mechanics state
+  isDashing: boolean;
+  dashTimer: number; // Remaining dash time
   dashCooldown: number;
+  
+  // CellMotility state
+  driveMode: boolean;
+  motilityMode: string; // current mode: 'amoeboid', 'blebbing', 'mesenchymal'
+  
+  // Action states
+  actionCooldowns: {
+    blebBurst: number;
+    proteaseToggle: number;
+    handbrake: number;
+  };
+  
   health: number;
 }
 
@@ -73,6 +113,7 @@ export interface NetworkCargo {
   type: string;
   pos: { x: number; y: number };
   state: 'free' | 'carried' | 'thrown' | 'rail' | 'seat' | 'processing' | 'blocked';
+  carrierId?: string; // ID of the player carrying this cargo (when state === 'carried')
   routeStageIndex?: number;
   destHex?: HexCoord; // Destination for route planning
   ttl?: number;
@@ -231,12 +272,29 @@ export interface HostSnapshot {
 }
 
 /**
+ * Install Order Command Data - Client request to create install order
+ */
+export interface InstallOrderCommandData {
+  proteinId: ProteinId;
+  destHex: HexCoord;
+}
+
+/**
+ * Inject Species Command Data - Client request to inject species
+ */
+export interface InjectSpeciesCommandData {
+  speciesId: string; // SpeciesId from species registry
+  amount: number;
+  hex: HexCoord; // Where to inject the species
+}
+
+/**
  * Network Message Wrapper - Top-level message container
  */
 export interface NetworkMessage {
-  type: 'input' | 'command' | 'snapshot' | 'join' | 'leave' | 'ping' | 'pong';
+  type: 'input' | 'command' | 'clientCommand' | 'snapshot' | 'join' | 'leave' | 'ping' | 'pong';
   playerId?: string;
-  data: ClientInput | HostCommand | HostSnapshot | any;
+  data: ClientInput | HostCommand | ClientCommand | HostSnapshot | any;
   timestamp: number;
 }
 

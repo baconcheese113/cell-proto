@@ -162,7 +162,7 @@ export class GameScene extends Phaser.Scene {
   private throwSystem!: ThrowSystem;
   private unifiedCargoSystem!: UnifiedCargoSystem;
   private membraneTrampoline!: MembraneTrampoline;
-  private throwInputController!: ThrowInputController;
+  public throwInputController!: ThrowInputController;
   private cargoHUD!: CargoHUD;
   
   // Milestone 13: Cytoskeleton Transport v1
@@ -343,28 +343,18 @@ export class GameScene extends Phaser.Scene {
 
     // Milestone 12: Initialize Throw System (after networking for isHost check)
     const isHost = (this.netSyncSystem as any)?.isHost ?? true; // Default to true if no network
+    console.log(`🎯 GameScene: Creating ThrowInputController - netSyncSystem exists: ${!!this.netSyncSystem}, isHost: ${isHost}`);
     this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem, isHost);
     this.throwInputController = new ThrowInputController(
       this, 
       worldRefs, 
       this.throwSystem, 
-      this.unifiedCargoSystem
+      this.unifiedCargoSystem,
+      { netSyncSystem: this.netSyncSystem }
     );
     this.cargoHUD = new CargoHUD(this, this.unifiedCargoSystem, {
       position: { x: 20, y: 130 } // Position below other HUD elements
     });
-    this.cytoskeletonSystem = new CytoskeletonSystem(this, worldRefs);
-    worldRefs.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
-    worldRefs.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
-    this.cytoskeletonRenderer = new CytoskeletonRenderer(this, worldRefs, this.cytoskeletonSystem);
-    worldRefs.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
-    this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem);
-    
-    // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
-    initializeEnhancedVesicleRouting(worldRefs);
-
-    // Milestone 14: Initialize Multiplayer Core v1
-    this.initializeNetworking();
 
     // Input keys
     this.keys = {
@@ -1988,7 +1978,14 @@ export class GameScene extends Phaser.Scene {
 
     // F key - Instantly complete construction on current tile
     if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
-      this.instantCompleteConstruction(playerCoord);
+      // Network-aware construction completion
+      if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
+        // Client: request finish construction from host
+        this.requestFinishConstruction(playerCoord.q, playerCoord.r);
+      } else {
+        // Host or single-player: instant complete directly
+        this.instantCompleteConstruction(playerCoord);
+      }
     }
 
     // Tile interactions - Tasks 2-9
@@ -2088,24 +2085,35 @@ export class GameScene extends Phaser.Scene {
           return;
         }
 
-        const result = this.blueprintSystem.placeBlueprint(
-          this.selectedRecipeId as OrganelleType,
-          this.currentTileRef.coord.q,
-          this.currentTileRef.coord.r
-        );
-
-        if (result.success) {
-          console.log(`Placed ${this.selectedRecipeId} blueprint at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
-          
-          // Exit build mode after successful placement
-          this.isInBuildMode = false;
-          this.selectedRecipeId = null;
-          this.buildPalette.hide();
-          // Reset palette to show all recipes
-          this.buildPalette.rebuildPalette('all');
+        // Check if we're in multiplayer and not the host
+        if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
+          // Send network command to host for blueprint placement
+          this.requestBlueprintPlacement(
+            this.selectedRecipeId as OrganelleType,
+            this.currentTileRef.coord.q,
+            this.currentTileRef.coord.r
+          );
         } else {
-          this.showToast(`Failed to place blueprint: ${result.error}`);
-          console.warn(`Failed to place blueprint: ${result.error}`);
+          // Direct placement for host or single-player
+          const result = this.blueprintSystem.placeBlueprint(
+            this.selectedRecipeId as OrganelleType,
+            this.currentTileRef.coord.q,
+            this.currentTileRef.coord.r
+          );
+
+          if (result.success) {
+            console.log(`Placed ${this.selectedRecipeId} blueprint at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
+            
+            // Exit build mode after successful placement
+            this.isInBuildMode = false;
+            this.selectedRecipeId = null;
+            this.buildPalette.hide();
+            // Reset palette to show all recipes
+            this.buildPalette.rebuildPalette('all');
+          } else {
+            this.showToast(`Failed to place blueprint: ${result.error}`);
+            console.warn(`Failed to place blueprint: ${result.error}`);
+          }
         }
       }
     }
@@ -2149,15 +2157,59 @@ export class GameScene extends Phaser.Scene {
       const playerHex = this.getPlayerHexCoord();
       if (!playerHex) return;
 
-      // Try to pickup cargo if nothing carried, otherwise drop current cargo
-      if (!this.unifiedCargoSystem.isCarrying()) {
-        const result = this.unifiedCargoSystem.attemptPickup(playerHex);
-        this.showToast(result.message);
+      // Check if we're in multiplayer mode and not the host
+      if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
+        // Multiplayer client: Send command to host instead of executing locally
+        const isCarrying = this.unifiedCargoSystem.isCarrying();
+        if (!isCarrying) {
+          const commandId = this.netSyncSystem.requestAction('cargoPickup', { playerHex });
+          console.log(`📤 CLIENT: Requested cargo pickup at (${playerHex.q}, ${playerHex.r}), commandId: ${commandId}`);
+          this.showToast("Pickup request sent...");
+        } else {
+          const commandId = this.netSyncSystem.requestAction('cargoDrop', { playerHex });
+          console.log(`📤 CLIENT: Requested cargo drop at (${playerHex.q}, ${playerHex.r}), commandId: ${commandId}`);
+          this.showToast("Drop request sent...");
+        }
       } else {
-        const result = this.unifiedCargoSystem.dropCargo(playerHex);
-        this.showToast(result.message);
+        // Single-player or host: Execute cargo action directly
+        if (!this.unifiedCargoSystem.isCarrying()) {
+          const result = this.unifiedCargoSystem.attemptPickup(playerHex);
+          this.showToast(result.message);
+        } else {
+          const result = this.unifiedCargoSystem.dropCargo(playerHex);
+          this.showToast(result.message);
+        }
       }
     }
+  }
+
+  /**
+   * Request blueprint placement from the host (for multiplayer clients)
+   */
+  private requestBlueprintPlacement(recipeId: OrganelleType, q: number, r: number): void {
+    if (!this.netSyncSystem) return;
+
+    const commandId = this.netSyncSystem.requestAction('buildBlueprint', {
+      recipeId,
+      hex: { q, r }
+    });
+
+    console.log(`📤 CLIENT: Requested blueprint placement for ${recipeId} at (${q}, ${r}), commandId: ${commandId}`);
+    this.showToast("Blueprint placement request sent...");
+  }
+
+  /**
+   * Request finish construction from the host (for multiplayer clients)
+   */
+  private requestFinishConstruction(q: number, r: number): void {
+    if (!this.netSyncSystem) return;
+
+    const commandId = this.netSyncSystem.requestAction('finishConstruction', {
+      hex: { q, r }
+    });
+
+    console.log(`📤 CLIENT: Requested finish construction at (${q}, ${r}), commandId: ${commandId}`);
+    this.showToast("Construction completion request sent...");
   }
 
   /**
@@ -2419,7 +2471,27 @@ export class GameScene extends Phaser.Scene {
   private injectSpecies(speciesId: SpeciesId, amount: number): void {
     const playerCoord = this.getPlayerHexCoord();
     if (!playerCoord) return;
-    
+
+    // Check if we're in a networked game and need to route through the network
+    if (this.netSyncSystem && !this.netSyncSystem.getIsHost()) {
+      // Client - send request to host
+      console.log(`📤 CLIENT: Requesting species injection: ${amount} ${speciesId} at (${playerCoord.q}, ${playerCoord.r})`);
+      
+      const commandId = this.netSyncSystem.requestAction('injectSpecies', {
+        speciesId,
+        amount,
+        hex: { q: playerCoord.q, r: playerCoord.r }
+      });
+      
+      if (commandId) {
+        this.showToast(`Requesting injection of ${amount} ${speciesId}...`);
+      } else {
+        this.showToast('Failed to send species injection request');
+      }
+      return;
+    }
+
+    // Host or single-player - inject directly
     this.hexGrid.addConcentration(playerCoord, speciesId, amount);
     console.log(`Injected ${amount} ${speciesId} into tile (${playerCoord.q}, ${playerCoord.r})`);
   }

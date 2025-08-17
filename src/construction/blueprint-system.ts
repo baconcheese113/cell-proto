@@ -392,4 +392,34 @@ export class BlueprintSystem {
       blueprint.anchorCoord.r
     );
   }
+
+  /**
+   * Instantly complete a blueprint construction (for F key functionality)
+   */
+  public instantlyComplete(blueprintId: string): { success: boolean; error?: string } {
+    const blueprint = this.blueprints.get(blueprintId);
+    if (!blueprint) {
+      return { success: false, error: 'Blueprint not found' };
+    }
+
+    if (!blueprint.isActive) {
+      return { success: false, error: 'Blueprint is not active' };
+    }
+
+    const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
+    if (!recipe) {
+      return { success: false, error: 'Recipe not found' };
+    }
+
+    // Fill all requirements instantly
+    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
+      blueprint.progress[speciesId as SpeciesId] = requiredAmount;
+      blueprint.totalProgress += requiredAmount;
+    }
+
+    // Force completion check
+    this.checkCompletion(blueprint, recipe);
+
+    return { success: true };
+  }
 }

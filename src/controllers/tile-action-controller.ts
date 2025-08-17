@@ -9,6 +9,7 @@ interface TileActionConfig {
 }
 
 export class TileActionController {
+  private scene: Phaser.Scene;
   private worldRefs: WorldRefs;
   
   // Mode tracking
@@ -19,6 +20,7 @@ export class TileActionController {
   private nextOrderId = 1;
 
   constructor(config: TileActionConfig) {
+    this.scene = config.scene;
     this.worldRefs = config.worldRefs;
   }
 
@@ -102,6 +104,26 @@ export class TileActionController {
       return;
     }
 
+    // Check if we're in a networked game and need to route through the network
+    const netSyncSystem = (this.scene as any).netSyncSystem;
+    if (netSyncSystem && !netSyncSystem.isHost) {
+      // Client - send request to host
+      console.log(`📤 CLIENT: Requesting install order for ${proteinId} at (${destHex.q}, ${destHex.r})`);
+      
+      const commandId = netSyncSystem.requestAction('installOrder', {
+        proteinId,
+        destHex: { q: destHex.q, r: destHex.r }
+      });
+      
+      if (commandId) {
+        this.worldRefs.showToast(`Requesting ${proteinId} for (${destHex.q}, ${destHex.r})...`);
+      } else {
+        this.worldRefs.showToast('Failed to send install order request');
+      }
+      return;
+    }
+
+    // Host or single-player - create order directly
     const order: InstallOrder = {
       id: `order_${this.nextOrderId++}`,
       proteinId,

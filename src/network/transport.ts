@@ -387,10 +387,8 @@ export class NetworkTransport extends EventTarget {
     channel.onmessage = (event) => {
       try {
         const message: NetworkMessage = JSON.parse(event.data);
-        // Only log non-routine messages and occasionally log routine ones to reduce spam
-        if (message.type !== 'input' && message.type !== 'snapshot') {
-          console.log(`📥 Received ${channel.label} message:`, message.type);
-        } else if (Math.random() < 0.002) { // Log ~0.2% of routine messages
+        // Completely silence routine messages to reduce console spam
+        if (message.type !== 'input' && message.type !== 'snapshot' && message.type !== 'command') {
           console.log(`📥 Received ${channel.label} message:`, message.type);
         }
         this.handleMessage(message);
