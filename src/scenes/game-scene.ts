@@ -504,16 +504,8 @@ export class GameScene extends Phaser.Scene {
       // Allow other F keys for dev tools
       if (Phaser.Input.Keyboard.JustDown(this.keys.F9)) {
         this.netHUD.toggle();
-      }
-      
-      if (Phaser.Input.Keyboard.JustDown(this.keys.F11)) {
-        // Toggle packet loss simulation
-        const currentLoss = this.networkTransport.getDevStats().packetLossRate;
-        const newLoss = currentLoss > 0 ? 0 : 0.1; // 10% packet loss
-        this.networkTransport.setPacketLossRate(newLoss);
-        this.showToast(`Packet loss: ${(newLoss * 100).toFixed(1)}%`);
-      }
-      
+      }      
+
       // Skip all other game input processing
       return;
     }
@@ -629,29 +621,6 @@ export class GameScene extends Phaser.Scene {
     
     if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
       this.roomUI.toggle();
-    }
-    
-    // Network dev tools
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F11)) {
-      // Toggle packet loss simulation
-      const currentLoss = this.networkTransport.getDevStats().packetLossRate;
-      const newLoss = currentLoss > 0 ? 0 : 0.1; // 10% packet loss
-      this.networkTransport.setPacketLossRate(newLoss);
-      this.showToast(`Packet loss: ${(newLoss * 100).toFixed(1)}%`);
-    }
-    
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F12)) {
-      // Toggle network logging
-      const loggingEnabled = this.networkTransport.toggleNetworkLogging();
-      this.showToast(`Network logging: ${loggingEnabled ? 'ON' : 'OFF'}`);
-    }
-    
-    // Shift+F10 for artificial latency
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F10) && this.input.keyboard!.checkDown(this.input.keyboard!.addKey('SHIFT'))) {
-      const currentLatency = this.networkTransport.getDevStats().artificialLatency;
-      const newLatency = currentLatency > 0 ? 0 : 150; // 150ms artificial latency
-      this.networkTransport.setArtificialLatency(newLatency);
-      this.showToast(`Artificial latency: ${newLatency}ms`);
     }
     
     // O key for creating test entities (multiplayer testing)
