@@ -1,4 +1,4 @@
-import { NetComponent } from "../network/net-entity";
+import { NetComponent, type NetComponentOptions } from "../network/net-entity";
 import { RunOnServer } from "../network/decorators";
 import type { InstallOrder, ProteinId } from "../core/world-refs";
 import type { NetBus } from "@/network/net-bus";
@@ -17,15 +17,12 @@ type InstallOrderState = {
 export class InstallOrderSystem extends NetComponent {
   private orderState = this.stateChannel<InstallOrderState>('installOrder.orders', { orders: {} });
 
-  constructor(bus: NetBus) { 
-    super(bus); 
+  constructor(bus: NetBus, opts?: NetComponentOptions) { 
+    super(bus, opts);
   }
 
   @RunOnServer()
-  createInstallOrder(proteinId: ProteinId, destHex: HexCoord, playerId?: string): InstallOrderResult {
-    const actualPlayerId = playerId || (this._isHost ? 'host' : 'client');
-    console.log(`📤 SERVER: Creating install order for ${proteinId} at (${destHex.q}, ${destHex.r}) for player ${actualPlayerId}`);
-
+  createInstallOrder(proteinId: ProteinId, destHex: HexCoord): InstallOrderResult {
     // Check for existing install orders targeting this destination
     for (const order of Object.values(this.orderState.orders)) {
       if (order.destHex && order.destHex.q === destHex.q && order.destHex.r === destHex.r) {
@@ -48,7 +45,7 @@ export class InstallOrderSystem extends NetComponent {
       createdAt: Date.now()
     };
 
-    // Add to replicated state
+    // Add to replicated state (only HOST can modify)
     this.orderState.orders[orderId] = installOrder;
 
     console.log(`✅ Install order ${orderId} created successfully`);
@@ -57,6 +54,10 @@ export class InstallOrderSystem extends NetComponent {
       message: `Install order created for ${proteinId}`,
       orderId
     };
+  }
+
+  protected override onStatePatched(_chan: string): void {
+    // State replication working correctly - orders are syncing between host and client
   }
 
   @RunOnServer()

@@ -52,6 +52,19 @@ export class CargoSystem extends NetComponent {
       };
     }
 
+    console.log('🔍 Attempting transcript pickup at:', playerHex);
+    console.log('🔍 World state:', { 
+      hasWorld: !!this.world,
+      hasTranscripts: !!this.world?.transcripts, 
+      transcriptCount: this.world?.transcripts?.size || 0 
+    });
+    
+    // Safety check: ensure world and transcripts exist
+    if (!this.world || !this.world.transcripts) {
+      console.warn('⚠️ World or transcripts not yet initialized');
+      return { success: false, message: 'World not ready for cargo operations' };
+    }
+    
     // Try to pick up transcript first
     const transcript = this.findTranscriptAt(playerHex);
     if (transcript) {
@@ -172,6 +185,12 @@ export class CargoSystem extends NetComponent {
   }
 
   private findTranscriptAt(hex: { q: number; r: number }): Transcript | null {
+    // Safety check: ensure transcripts map exists
+    if (!this.world.transcripts) {
+      console.warn('⚠️ Transcripts map not yet initialized in world');
+      return null;
+    }
+    
     for (const transcript of this.world.transcripts.values()) {
       if (transcript.atHex && transcript.atHex.q === hex.q && transcript.atHex.r === hex.r && !transcript.isCarried) {
         return transcript;

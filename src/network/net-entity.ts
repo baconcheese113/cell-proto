@@ -23,6 +23,24 @@ export interface StatePatch {
   data: JSONObject; // partial object merge
 }
 
+// Add global counter for debugging state channel updates
+const STATE_SYNC_COUNTERS = new Map<string, number>();
+const LOG_INTERVAL = 1000;
+
+// Add global function to check state sync stats
+(globalThis as any).getStateSyncStats = () => {
+  const stats = Array.from(STATE_SYNC_COUNTERS.entries())
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 10);
+  
+  console.log('📊 Top state sync channels:');
+  stats.forEach(([channel, count]) => {
+    console.log(`  ${channel}: ${count} syncs`);
+  });
+  
+  return stats;
+};
+
 /**
  * Base class for all networked components.
  * - Provides: isHost, netAddress, stateChannel<T>(), batch(fn), flushState()
@@ -98,8 +116,12 @@ export abstract class NetComponent {
       get: (obj, prop) => {
         const value = Reflect.get(obj, prop);
         
-        // If the value is an object (but not null or array), make it reactive too
-        if (value && typeof value === 'object' && !Array.isArray(value) && value.constructor === Object) {
+        // If the value is an object (but not null, array, Map, or Set), make it reactive too
+        if (value && typeof value === 'object' && 
+            !Array.isArray(value) && 
+            !(value instanceof Map) && 
+            !(value instanceof Set) && 
+            value.constructor === Object) {
           return this.createReactiveProxy(value as JSONObject, channel);
         }
         
@@ -155,6 +177,15 @@ export abstract class NetComponent {
     if (currentState === lastSynced) {
       // No changes detected, skip sync
       return;
+    }
+    
+    // Track sync frequency for debugging
+    const channelKey = `${this.netAddress}.${channel}`;
+    const currentCount = STATE_SYNC_COUNTERS.get(channelKey) || 0;
+    STATE_SYNC_COUNTERS.set(channelKey, currentCount + 1);
+    
+    if (currentCount % LOG_INTERVAL === 0) {
+      console.log(`📊 State sync #${currentCount + 1} for ${channelKey}`);
     }
     
     // State has changed, proceed with sync

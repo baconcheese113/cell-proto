@@ -96,12 +96,9 @@ export class CytoskeletonGraph {
     this.nodeByHex.clear();
 
     console.log(`🚧 Starting graph rebuild...`);
-        // if(shouldLog) console.log(`🔍 Found 8 segments to process`);
-        // if(shouldLog) console.log(`🔍 Found 0 upgrades to process`);
 
     // Create nodes and edges from filament segments
     for (const segment of this.worldRefs.cytoskeletonSystem.allSegments.values()) {
-      console.log(`📍 Processing segment:`, segment);
       this.addSegmentToGraph(segment);
     }
 
@@ -119,9 +116,8 @@ export class CytoskeletonGraph {
     this.isDirty = false;
     console.log(`🕸️ Rebuilt cytoskeleton graph: ${this.nodes.size} nodes, ${this.edges.size} edges`);
 
-    // Debug graph connectivity
+    // Debug graph connectivity (reduced logging)
     if (this.nodes.size > 0) {
-      console.log(`🔗 Graph connectivity analysis:`);
       let connectedNodes = 0;
       let isolatedNodes = 0;
       for (const [nodeId, node] of this.nodes) {
@@ -130,20 +126,24 @@ export class CytoskeletonGraph {
         } else {
           isolatedNodes++;
         }
-        console.log(`   Node ${nodeId}: ${node.edges.length} edges`);
+        // Only log node details occasionally for performance
+        if (Math.random() < 0.3) {
+          console.log(`   Node ${nodeId}: ${node.edges.length} edges`);
+        }
       }
       console.log(`   Connected nodes: ${connectedNodes}, Isolated nodes: ${isolatedNodes}`);
     }
   }
 
   private addSegmentToGraph(segment: FilamentSegment): void {
-    console.log(`🧵 Adding segment ${segment.id}: (${segment.fromHex.q},${segment.fromHex.r}) → (${segment.toHex.q},${segment.toHex.r}) [${segment.type}]`);
+    // Reduced logging for performance
+    // console.log(`🧵 Adding segment ${segment.id}: (${segment.fromHex.q},${segment.fromHex.r}) → (${segment.toHex.q},${segment.toHex.r}) [${segment.type}]`);
 
     // Create nodes for segment endpoints
     const fromNodeId = this.getOrCreateSegmentNode(segment.fromHex);
     const toNodeId = this.getOrCreateSegmentNode(segment.toHex);
 
-    console.log(`📍 Created/found nodes: ${fromNodeId} and ${toNodeId}`);
+    // console.log(`📍 Created/found nodes: ${fromNodeId} and ${toNodeId}`);
 
     // Create edge for the segment
     const edge: GraphEdge = {
@@ -172,7 +172,7 @@ export class CytoskeletonGraph {
       toNode.edges.push(edge.id);
     }
 
-    console.log(`🔗 Added edge ${edge.id}: FromNode ${fromNodeId} now has ${fromNode.edges.length} edges, ToNode ${toNodeId} now has ${toNode.edges.length} edges`);
+    // console.log(`🔗 Added edge ${edge.id}: FromNode ${fromNodeId} now has ${fromNode.edges.length} edges, ToNode ${toNodeId} now has ${toNode.edges.length} edges`);
   }
 
   private addJunctionToGraph(upgrade: OrganelleUpgrade): void {
@@ -209,14 +209,17 @@ export class CytoskeletonGraph {
   }
 
   private addOrganelleAccessPoints(): void {
-    console.log(`🏢 Adding organelle access points...`);
+    // console.log(`🏢 Adding organelle access points...`);
 
     // Get all organelles and create access nodes for them
     const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
     console.log(`🔍 Found ${organelles.length} organelles to process`);
 
     for (const organelle of organelles) {
-      console.log(`🏢 Processing ${organelle.type} at (${organelle.coord.q},${organelle.coord.r})`);
+      // Only log occasionally for performance
+      if (Math.random() < 0.3) {
+        console.log(`🏢 Processing ${organelle.type} at (${organelle.coord.q},${organelle.coord.r})`);
+      }
 
       // Create an organelle access node at the organelle's location
       const organelleNodeId = `organelle_${organelle.id}`;
@@ -396,19 +399,31 @@ export class CytoskeletonGraph {
     let bestCost = Infinity;
     let bestResult: PathResult | null = null;
 
-    console.log(`🗺️ Pathfinding: trying ${startNodes.length} start nodes to ${endNodes.length} end nodes`);
-    console.log(`🏁 Start nodes: ${startNodes.join(', ')}`);
-    console.log(`🎯 End nodes: ${endNodes.join(', ')}`);
+    // Reduced logging for performance
+    if (Math.random() < 0.1) {
+      console.log(`🗺️ Pathfinding: trying ${startNodes.length} start nodes to ${endNodes.length} end nodes`);
+      console.log(`🏁 Start nodes: ${startNodes.join(', ')}`);
+      console.log(`🎯 End nodes: ${endNodes.join(', ')}`);
+    }
 
     for (const startNodeId of startNodes) {
       for (const endNodeId of endNodes) {
-        console.log(`🔍 Trying path: ${startNodeId} → ${endNodeId}`);
+        // Reduced logging for performance
+        if (Math.random() < 0.1) {
+          console.log(`🔍 Trying path: ${startNodeId} → ${endNodeId}`);
+        }
         const result = this.aStarSinglePath(startNodeId, endNodeId, cargoType);
-        console.log(`📊 Path result: success=${result.success}, cost=${result.totalCost}, reason=${result.reason || 'N/A'}`);
+        // Reduced logging for performance
+        if (Math.random() < 0.1) {
+          console.log(`📊 Path result: success=${result.success}, cost=${result.totalCost}, reason=${result.reason || 'N/A'}`);
+        }
         if (result.success && result.totalCost < bestCost) {
           bestCost = result.totalCost;
           bestResult = result;
-          console.log(`✅ New best path found with cost ${bestCost}`);
+          // Reduced logging for performance
+          if (Math.random() < 0.1) {
+            console.log(`✅ New best path found with cost ${bestCost}`);
+          }
         }
       }
     }
@@ -440,7 +455,10 @@ export class CytoskeletonGraph {
 
         if (nodeId) {
           accessibleNodes.push(nodeId);
-          console.log(`🔗 Found accessible node ${nodeId} at (${checkHex.q},${checkHex.r}), distance ${distance} from organelle at (${hex.q},${hex.r})`);
+          // Reduced logging for performance
+          if (Math.random() < 0.2) {
+            console.log(`🔗 Found accessible node ${nodeId} at (${checkHex.q},${checkHex.r}), distance ${distance} from organelle at (${hex.q},${hex.r})`);
+          }
         }
       }
     }
@@ -450,7 +468,10 @@ export class CytoskeletonGraph {
 
   // A* pathfinding between two specific nodes
   private aStarSinglePath(startNodeId: string, endNodeId: string, cargoType: 'transcript' | 'vesicle'): PathResult {
-    console.log(`🔎 A* pathfinding: ${startNodeId} → ${endNodeId}`);
+    // Reduced logging for performance
+    if (Math.random() < 0.1) {
+      console.log(`🔎 A* pathfinding: ${startNodeId} → ${endNodeId}`);
+    }
     
     // A* pathfinding
     const openSet = new Set([startNodeId]);
@@ -472,7 +493,8 @@ export class CytoskeletonGraph {
         (fScore.get(a) ?? Infinity) < (fScore.get(b) ?? Infinity) ? a : b
       );
 
-      if (iterations <= 3) { // Only log first few iterations to avoid spam
+      // Reduced logging for performance
+      if (iterations <= 3 && Math.random() < 0.3) { // Only log first few iterations occasionally
         console.log(`🔎 A* iteration ${iterations}: exploring ${current}, openSet size: ${openSet.size}`);
       }
 
@@ -537,11 +559,16 @@ export class CytoskeletonGraph {
     }
 
     if (iterations >= maxIterations) {
-      console.log(`⚠️ A* pathfinding hit max iterations (${maxIterations}) for ${startNodeId} → ${endNodeId}`);
+      if (Math.random() < 0.1) {
+        console.log(`⚠️ A* pathfinding hit max iterations (${maxIterations}) for ${startNodeId} → ${endNodeId}`);
+      }
       return { success: false, path: [], totalCost: 0, reason: "Max iterations exceeded" };
     }
 
-    console.log(`❌ A* pathfinding failed: no path found from ${startNodeId} to ${endNodeId} after ${iterations} iterations`);
+    // Reduced logging for performance - only log pathfinding failures occasionally
+    if (Math.random() < 0.1) {
+      console.log(`❌ A* pathfinding failed: no path found from ${startNodeId} to ${endNodeId} after ${iterations} iterations`);
+    }
     return { success: false, path: [], totalCost: 0, reason: "No path found" };
   }
 

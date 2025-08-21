@@ -7,7 +7,7 @@
 
 import type { HexCoord } from "../hex/hex-grid";
 import { HexGrid } from "../hex/hex-grid";
-import { ORGANELLE_FOOTPRINTS, getFootprintTiles, type OrganelleFootprint } from "./organelle-footprints";
+import { ORGANELLE_FOOTPRINTS, getFootprintTiles, type FootprintName, type OrganelleFootprint } from "./organelle-footprints";
 import { getOrganelleIOProfile, type OrganelleIOProfile } from "./organelle-io-profiles";
 import { getStarterOrganelleDefinitions, definitionToConfig, type OrganelleType } from "./organelle-registry";
 import type { SpeciesId } from "../species/species-registry";
@@ -82,14 +82,30 @@ export class OrganelleSystem extends NetComponent {
     this.organelleState.organelles[id] = organelle;
   }
 
-  private deleteOrganelleFromState(id: string): void {
-    delete this.organelleState.organelles[id];
-  }
 
   constructor(netBus: NetBus, hexGrid: HexGrid) {
     super(netBus, { address: 'OrganelleSystem' });
     this.hexGrid = hexGrid;
+    
+    // Rebuild organellesByTile map from replicated state (important for clients)
+    this.rebuildOrganellesByTileMap();
+    
     this.initializeStarterOrganelles();
+  }
+
+  /**
+   * Rebuild the organellesByTile map from the replicated organelle state
+   * This ensures clients have the correct tile->organelle mapping
+   */
+  private rebuildOrganellesByTileMap(): void {
+    this.organellesByTile.clear();
+    
+    for (const organelle of Object.values(this.organelles)) {
+      const footprintTiles = getFootprintTiles(organelle.config.footprint, organelle.coord.q, organelle.coord.r);
+      for (const tileCoord of footprintTiles) {
+        this.organellesByTile.set(this.coordToKey(tileCoord), organelle);
+      }
+    }
   }
 
   /**
@@ -144,6 +160,23 @@ export class OrganelleSystem extends NetComponent {
     this.hexGrid.addConcentration({ q: 3, r: -1 }, 'AA', 25);
     this.hexGrid.addConcentration({ q: 2, r: 0 }, 'AA', 25);
     
+    // Add resources near ER for protein processing
+    const erCoord = { q: -1, r: 3 };
+    this.hexGrid.addConcentration(erCoord, 'AA', 50); // Increase AA significantly for protein synthesis
+    this.hexGrid.addConcentration(erCoord, 'ATP', 30); // Increase ATP for processing
+    this.hexGrid.addConcentration({ q: -2, r: 3 }, 'AA', 30);
+    this.hexGrid.addConcentration({ q: -1, r: 4 }, 'ATP', 25);
+    this.hexGrid.addConcentration({ q: 0, r: 3 }, 'AA', 25);
+    this.hexGrid.addConcentration({ q: -1, r: 2 }, 'AA', 20);
+    this.hexGrid.addConcentration({ q: -1, r: 2 }, 'ATP', 15);
+    
+    // Add resources near Golgi for vesicle processing
+    const golgiCoord = { q: 5, r: -1 };
+    this.hexGrid.addConcentration(golgiCoord, 'ATP', 40); // Increase energy for glycosylation
+    this.hexGrid.addConcentration({ q: 4, r: -1 }, 'ATP', 25);
+    this.hexGrid.addConcentration({ q: 5, r: 0 }, 'ATP', 25);
+    this.hexGrid.addConcentration({ q: 6, r: -1 }, 'ATP', 20);
+    
     console.log('Test species added successfully');
   }
 
@@ -195,7 +228,23 @@ export class OrganelleSystem extends NetComponent {
    * Get organelle at specific tile coordinate
    */
   public getOrganelleAtTile(coord: HexCoord): Organelle | undefined {
+    // Ensure organellesByTile is synced with replicated state (important for clients)
+    if (Object.keys(this.organelles).length !== this.organellesByTileCount()) {
+      this.rebuildOrganellesByTileMap();
+    }
+    
     return this.organellesByTile.get(this.coordToKey(coord));
+  }
+
+  /**
+   * Count organelles in the organellesByTile map (for sync checking)
+   */
+  private organellesByTileCount(): number {
+    const uniqueOrganelles = new Set<string>();
+    for (const organelle of this.organellesByTile.values()) {
+      uniqueOrganelles.add(organelle.id);
+    }
+    return uniqueOrganelles.size;
   }
 
   /**
@@ -227,7 +276,7 @@ export class OrganelleSystem extends NetComponent {
     console.log(`🏭 OrganelleSystem.createOrganelle called: type="${config.type}", coord=(${coord.q}, ${coord.r}), footprint="${config.footprint}"`);
     
     // Convert footprint string to actual footprint object
-    const footprint = (ORGANELLE_FOOTPRINTS as any)[config.footprint];
+    const footprint = ORGANELLE_FOOTPRINTS[config.footprint as FootprintName];
     if (!footprint) {
       console.warn(`Unknown footprint type: ${config.footprint}`);
       return false;
@@ -329,8 +378,10 @@ export class OrganelleSystem extends NetComponent {
       this.processingThisTick.set(organelle.id, processedSoFar);
     }
 
-    // Update organelle throughput for display
-    organelle.currentThroughput = processedSoFar;
+    // Update organelle throughput for display only if changed
+    if (organelle.currentThroughput !== processedSoFar) {
+      organelle.currentThroughput = processedSoFar;
+    }
   }
 
   /**

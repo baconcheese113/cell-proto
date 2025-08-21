@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture } from "../gfx/textures";
 import { HexGrid, type HexCoord, type HexTile } from "../hex/hex-grid";
-import { getAllSpecies, type SpeciesId } from "../species/species-registry";
+import { type SpeciesId } from "../species/species-registry";
 import { DiffusionSystem } from "../species/diffusion-system";
 import { HeatmapSystem } from "../species/heatmap-system";
 import { PassiveEffectsSystem } from "../species/passive-effects-system";
@@ -185,6 +185,12 @@ export class GameScene extends Phaser.Scene {
   // New network approach
   public net!: NetBundle;
   
+  // Deferred ProductionSystem creation (after WorldRefs is ready)
+  private deferredProductionSystemCreation?: {
+    bus: NetBus;
+    installOrders: InstallOrderSystem;
+  };
+  
   // Remote player rendering
   private remoteSprites = new Map<string, Phaser.GameObjects.Graphics>();
   private selfId!: string; // from transport
@@ -209,18 +215,12 @@ export class GameScene extends Phaser.Scene {
   constructor() { super("game"); }
 
   create(data?: { useMultiplayer?: boolean; transport?: NetworkTransport; isHost?: boolean; roomId?: string }) {
-    // NETWORKING FIRST: Initialize with provided multiplayer settings or default to local
-    if (data?.useMultiplayer && data?.transport) {
-      console.log(`🎮 Creating multiplayer session: ${data.isHost ? 'HOST' : 'CLIENT'} in ${data.roomId}`);
-      this.initNetwork({ 
-        transport: data.transport, 
-        isHost: data.isHost!, 
-        roomId: data.roomId! 
-      });
-    } else {
-      // Default: local play with loopback transport
-      this.initializeNetworking();
-    }
+    // Store multiplayer settings for later initialization after worldRefs is ready
+    const networkConfig = data?.useMultiplayer && data?.transport ? {
+      transport: data.transport, 
+      isHost: data.isHost!, 
+      roomId: data.roomId!
+    } : null;
 
     // Background grid - cap size to prevent memory issues
     const view = this.scale.gameSize;
@@ -241,8 +241,6 @@ export class GameScene extends Phaser.Scene {
     
     // HOTFIX H2: Re-parent cell sprite to cellRoot
     this.cellRoot.add(this.cellSprite);
-    
-    console.log('CellRoot container created at:', this.cellCenter.x, this.cellCenter.y);
 
     // Initialize hex grid FIRST (required by Player)
     this.initializeHexGrid();
@@ -267,110 +265,132 @@ export class GameScene extends Phaser.Scene {
     
     // HOTFIX H2: Re-parent player to cellRoot
     this.cellRoot.add(this.playerActor);
-    console.log('Player actor created and added to CellRoot at (0,0)');
 
-    // Initialize all other systems...
-    this.initializeOrganelleSystem();
+    // Initialize non-network dependent systems first...
     this.initializePlayerInventory();
     this.initializeDebugInfo();
     this.initializeHeatmapSystem();
     this.initializePassiveEffectsSystem();
     this.initializeDiffusionSystem();
     this.initializeMembraneExchangeSystem();
-    this.initializeBlueprintSystem(); // Initialize before WorldRefs creation
     this.initializeConservationTracker();
     
     // Milestone 9: Initialize cell locomotion systems
     this.initializeCellLocomotionSystems();
 
-    // NEW: After all systems initialized, create transcript systems and WorldRefs 
-    
-    // Create a temporary WorldRefs for system initialization (without cellMotility)
-    const baseWorldRefs = {
+    // Create MINIMAL WorldRefs first (just what networking needs)
+    const minimalWorldRefs = {
       hexGrid: this.hexGrid,
       cellRoot: this.cellRoot,
       playerInventory: this.playerInventory,
       player: this.playerActor,
-      organelleSystem: this.organelleSystem,
-      organelleRenderer: this.organelleRenderer,
-      blueprintSystem: this.blueprintSystem,
+      scene: this,
+      
+      // Systems that exist at this point
       membraneExchangeSystem: this.membraneExchangeSystem,
-      membranePortSystem: this.membranePortSystem, // Story 8.11: External interface
+      membranePortSystem: this.membranePortSystem,
       diffusionSystem: this.diffusionSystem,
       passiveEffectsSystem: this.passiveEffectsSystem,
       heatmapSystem: this.heatmapSystem,
       conservationTracker: this.conservationTracker,
-      // Milestone 9: Cell locomotion systems
       cellSpaceSystem: this.cellSpaceSystem,
       substrateSystem: this.substrateSystem,
-      cellMotility: undefined as any, // Will be set after creation
+      
+      // Placeholders for systems that will be created after networking
+      organelleSystem: null as any,
+      organelleRenderer: null as any,
+      blueprintSystem: null as any,
+      cellOverlays: null as any,
+      cytoskeletonRenderer: null as any,
+      cellMotility: null as any,
+      cytoskeletonSystem: null as any,
+      cytoskeletonGraph: null as any,
+      
+      // Data collections
       installOrders: this.installOrders,
       transcripts: this.transcripts,
       carriedTranscripts: this.carriedTranscripts,
       nextOrderId: this.nextOrderId,
       nextTranscriptId: this.nextTranscriptId,
-      // Milestone 8: Vesicle system
       vesicles: this.vesicles,
       carriedVesicles: this.carriedVesicles,
       nextVesicleId: this.nextVesicleId,
+      
+      // UI methods
       showToast: (message: string) => this.showToast(message),
-      refreshTileInfo: () => this.updateTileInfoPanel()
-    };
-
-    // Now create complete WorldRefs with all systems (old individual systems removed)
-    const worldRefs: WorldRefs = {
-      ...baseWorldRefs,
-      scene: this, // Add scene reference for membrane visual refreshes
-      cellMotility: null as any, // Placeholder, will be set after creation
-      cytoskeletonSystem: null as any, // Placeholder, will be set after creation
-      cytoskeletonGraph: null as any, // Placeholder, will be set after cytoskeleton system creation
-      cytoskeletonRenderer: null as any, // Placeholder, will be set after creation
-      cellOverlays: null as any // Placeholder, will be set after creation
+      refreshTileInfo: () => {} // Placeholder
     };
     
-    // Store worldRefs instance for consistent reference across systems
-    this.worldRefsInstance = worldRefs;
-    
-    console.log(`🧪 [SCENE] WorldRefs created with scene reference:`, !!worldRefs.scene);
+    // Store minimal worldRefs instance for networking initialization
+    this.worldRefsInstance = minimalWorldRefs;
 
+    // NETWORKING: Initialize networking now that minimal worldRefs is ready
+    if (networkConfig) {
+      this.initNetwork(networkConfig);
+    } else {
+      // Default: local play with loopback transport
+      this.initializeNetworking();
+    }
+
+    // Initialize network-dependent systems after networking is ready
+    this.initializeBlueprintSystem(); // Now that networking is ready
+    this.initializeOrganelleSystem();
+
+    // UPDATE WorldRefs with newly created network-dependent systems
+    this.worldRefsInstance.organelleSystem = this.organelleSystem;
+    this.worldRefsInstance.organelleRenderer = this.organelleRenderer;
+    this.worldRefsInstance.blueprintSystem = this.blueprintSystem;
+    
     // Create CellMotility now that we have worldRefs structure
-    this.cellMotility = new CellMotility(this, worldRefs, this.cellSpaceSystem);
-    worldRefs.cellMotility = this.cellMotility;
+    this.cellMotility = new CellMotility(this, this.worldRefsInstance, this.cellSpaceSystem);
+    this.worldRefsInstance.cellMotility = this.cellMotility;
 
     // Create modular controllers and systems
     this.tileActionController = new TileActionController({
       scene: this,
-      worldRefs,
+      worldRefs: this.worldRefsInstance,
       net: this.net
     });
 
     // Initialize consolidated systems - NEW ARCHITECTURE
-    // ProductionSystem will be initialized after networking setup
-    this.cellTransport = new CellTransport(this, worldRefs);
-    this.cellOverlays = new CellOverlays(this, worldRefs, this.cellRoot); // Now cellMotility is defined
-    worldRefs.cellOverlays = this.cellOverlays;
+    
+    // Initialize ProductionSystem now that WorldRefs is ready
+    if (this.deferredProductionSystemCreation) {
+      this.productionSystem = new ProductionSystem(
+        this.deferredProductionSystemCreation.bus, 
+        this.deferredProductionSystemCreation.installOrders, 
+        this, 
+        this.worldRefsInstance, 
+        this.cellRoot,
+        { address: 'ProductionSystem' }
+      );
+      this.deferredProductionSystemCreation = undefined; // Clean up
+    }
+    
+    this.cellTransport = new CellTransport(this, this.worldRefsInstance);
+    this.cellOverlays = new CellOverlays(this, this.worldRefsInstance, this.cellRoot); // Now cellMotility is defined
+    this.worldRefsInstance.cellOverlays = this.cellOverlays;
 
     // Milestone 12: Initialize Unified Cargo System (throw system after networking)
-    this.unifiedCargoSystem = new UnifiedCargoSystem(this, worldRefs);
-    this.membraneTrampoline = new MembraneTrampoline(this, worldRefs);
+    this.unifiedCargoSystem = new UnifiedCargoSystem(this, this.worldRefsInstance);
+    this.membraneTrampoline = new MembraneTrampoline(this, this.worldRefsInstance);
     
     // Milestone 13: Initialize Cytoskeleton Transport v1
-    this.cytoskeletonSystem = new CytoskeletonSystem(this.net.bus, worldRefs);
-    worldRefs.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
-    worldRefs.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
-    this.cytoskeletonRenderer = new CytoskeletonRenderer(this, worldRefs, this.cytoskeletonSystem);
-    worldRefs.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
-    this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem, this.net);
+    this.cytoskeletonSystem = new CytoskeletonSystem(this.net.bus, this.worldRefsInstance);
+    this.worldRefsInstance.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
+    this.worldRefsInstance.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
+    this.cytoskeletonRenderer = new CytoskeletonRenderer(this, this.worldRefsInstance, this.cytoskeletonSystem);
+    this.worldRefsInstance.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
+    this.filamentBuilder = new FilamentBuilder(this, this.worldRefsInstance, this.cytoskeletonSystem, this.net);
     
     // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
-    initializeEnhancedVesicleRouting(worldRefs);
+    initializeEnhancedVesicleRouting(this.worldRefsInstance);
 
     // Milestone 12: Initialize Throw System (networking already initialized, this.net is always available)
-    console.log(`🎯 GameScene: Creating ThrowInputController - net exists: ${!!this.net}, isHost: ${this.net.isHost}`);
-    this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem, this.net.isHost);
+    this.throwSystem = new ThrowSystem(this, this.worldRefsInstance, this.unifiedCargoSystem, this.net.isHost);
     this.throwInputController = new ThrowInputController(
       this, 
-      worldRefs, 
+      this.worldRefsInstance, 
       this.throwSystem, 
       this.unifiedCargoSystem,
       this.net,
@@ -447,15 +467,15 @@ export class GameScene extends Phaser.Scene {
     
     // HOTFIX H4: Initialize camera to center on cell
     this.cameras.main.centerOn(this.cellCenter.x, this.cellCenter.y);
-    console.log('Camera centered on cell at:', this.cellCenter.x, this.cellCenter.y);
 
     // Window resize handling
     this.scale.on("resize", (sz: Phaser.Structs.Size) => {
       const newWidth = Math.ceil(sz.width);
       const newHeight = Math.ceil(sz.height);
       
-      // Regenerate background grid
-      const gridSize = Math.max(newWidth, newHeight) * 2;
+      // Regenerate background grid with same memory cap as initial creation
+      const maxGridSize = 2048; // Reasonable maximum for browser memory  
+      const gridSize = Math.min(Math.max(newWidth, newHeight) * 2, maxGridSize);
       const key = makeGridTexture(this, gridSize, gridSize, this.col.bg, this.col.gridMinor, this.col.gridMajor);
       this.grid.setTexture(key).setOrigin(0.5, 0.5);
       this.grid.setPosition(newWidth * 0.5, newHeight * 0.5);
@@ -558,8 +578,6 @@ export class GameScene extends Phaser.Scene {
       if (this.cellDriveMode) {
         this.cellSpaceSystem.setPosition(this.cellCenter.x, this.cellCenter.y);
       }
-      
-      console.log(`Cell drive mode: ${this.cellDriveMode ? 'ON' : 'OFF'}`);
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.Y)) {
       // System status debug - show consolidated system info
@@ -591,21 +609,12 @@ export class GameScene extends Phaser.Scene {
     // MILESTONE 13 TESTING: Cytoskeleton integration debugging
     if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
       // Debug key: Log cytoskeleton and vesicle stats
-      console.log("=== CYTOSKELETON INTEGRATION DEBUG ===");
-      
-      // Log cytoskeleton graph stats
-      console.log("🚂 Cytoskeleton System Stats:");
-      console.log(`📊 Cytoskeleton Graph: nodes and edges available`);
-      
-      // Log vesicle stats
-      console.log(`📦 Vesicle Stats: ${this.vesicles.size} active vesicles`);
       let railVesicles = 0;
       for (const vesicle of this.vesicles.values()) {
         if (vesicle.railState) railVesicles++;
       }
-      console.log(`🚂 Rail Transport: ${railVesicles} vesicles on rails`);
       
-      this.showToast("Cytoskeleton stats logged to console");
+      this.showToast(`Vesicles: ${this.vesicles.size} total, ${railVesicles} on rails`);
     }
 
     // MILESTONE 13: Filament building
@@ -687,7 +696,6 @@ export class GameScene extends Phaser.Scene {
           SPACE: this.keys.SPACE // Allow dash input
         } as any;
         this.playerActor.update(deltaSeconds, reducedKeys);
-        console.log(`🏀 Control locked out (${(controlReduction * 100).toFixed(0)}% control)`);
       } else {
         // Normal mode: player actor handles WASD, cellMotility ignores input
         this.playerActor.update(deltaSeconds, this.keys);
@@ -923,16 +931,6 @@ export class GameScene extends Phaser.Scene {
 
   // Hex Grid System
   private initializeHexGrid(): void {
-    console.log('Initializing hex grid...');
-    
-    // Task 1: Log species registry
-    console.log('Species Registry:');
-    const allSpecies = getAllSpecies();
-    allSpecies.forEach(species => {
-      console.log(`  ${species.id}: ${species.label} (diffusion: ${species.diffusionCoefficient})`);
-    });
-    console.log(`Total species: ${allSpecies.length}`);
-    
     // HOTFIX H5: Initialize hex grid with local coordinates (0,0) since it's now in cellRoot
     this.hexGrid = new HexGrid(this.hexSize, 0, 0);
     this.hexGrid.generateTiles(this.gridRadius);
@@ -942,30 +940,6 @@ export class GameScene extends Phaser.Scene {
     
     // Milestone 6 Task 1: Compute membrane tiles using local coordinates
     this.hexGrid.recomputeMembranes(0, 0, this.cellRadius);
-    
-    console.log(`Hex Grid initialized:
-      - Tiles: ${this.hexGrid.getTileCount()}
-      - Hex size: ${this.hexSize}
-      - Grid radius: ${this.gridRadius}
-      - Cell radius: ${this.cellRadius}
-      - Max distance: ${maxDistance}
-      - Cell center: (0, 0) [local coordinates in cellRoot]`);
-    
-    // Test coordinate conversion and neighbors
-    const testTiles = this.hexGrid.getAllTiles().slice(0, 3);
-    testTiles.forEach((tile, i) => {
-      const neighbors = this.hexGrid.getNeighbors(tile.coord);
-      console.log(`Tile ${i}: coord(${tile.coord.q},${tile.coord.r}) local(${Math.round(tile.worldPos.x)},${Math.round(tile.worldPos.y)}) neighbors: ${neighbors.length}`);
-    });
-    
-    // Test center tile conversion
-    const centerTile = this.hexGrid.getTile({ q: 0, r: 0 });
-    if (centerTile) {
-      const backToHex = this.hexGrid.worldToHex(centerTile.worldPos.x, centerTile.worldPos.y);
-      console.log(`Center tile test: original(0,0) -> local(${Math.round(centerTile.worldPos.x)}, ${Math.round(centerTile.worldPos.y)}) -> back to hex(${backToHex.q}, ${backToHex.r})`);
-    }
-    
-    console.log('Hex grid initialization complete!');
   }
 
   private initializeHexGraphics(): void {
@@ -1967,7 +1941,7 @@ export class GameScene extends Phaser.Scene {
     const players        = new PlayerSystem(bus);
     const cargo          = new CargoSystem(bus, world);
     const species        = new SpeciesSystem(bus, world);
-    const installOrders  = new InstallOrderSystem(bus);
+    const installOrders  = new InstallOrderSystem(bus, { address: 'InstallOrderSystem' });
     const cytoskeleton   = this.cytoskeletonSystem; // Use existing system
     const emotes         = new EmoteSystem(bus, this, players, this.cellRoot);
 
@@ -1992,8 +1966,11 @@ export class GameScene extends Phaser.Scene {
       emotes 
     };
 
-    // Initialize ProductionSystem now that InstallOrderSystem is available
-    this.productionSystem = new ProductionSystem(bus, installOrders, this, this.getWorldRefs(), this.cellRoot);
+    // Store network components for later ProductionSystem creation
+    this.deferredProductionSystemCreation = {
+      bus,
+      installOrders
+    };
 
     // Optional per-frame host flush (microtask batching also works):
     const flush = () => {
@@ -2153,7 +2130,14 @@ export class GameScene extends Phaser.Scene {
     // Toggle build palette with B key for non-membrane tiles
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
       // Check if standing on membrane tile for protein installation
-      if (this.currentTileRef && this.hexGrid.isMembraneCoord(this.currentTileRef.coord)) {
+      const isMembraneCoord = this.currentTileRef && this.hexGrid.isMembraneCoord(this.currentTileRef.coord);
+      
+      // Also check if there's a transporter/receptor organelle at current location
+      const organelle = this.currentTileRef ? this.organelleSystem.getOrganelleAtTile(this.currentTileRef.coord) : null;
+      const hasTransporterOrReceptor = organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
+      
+      console.log(`Build key pressed. Membrane tile: ${isMembraneCoord}, Has transporter/receptor: ${hasTransporterOrReceptor}`);
+      if (isMembraneCoord || hasTransporterOrReceptor) {
         this.handleMembraneProteinRequest();
         return;
       }
@@ -2259,28 +2243,41 @@ export class GameScene extends Phaser.Scene {
    * Handle membrane protein request using the proper transcript workflow
    */
   private handleMembraneProteinRequest(): void {
-    if (!this.currentTileRef) return;
+    console.log(`🔬 handleMembraneProteinRequest() called`);
+    if (!this.currentTileRef) {
+      console.log(`🔬 No currentTileRef, returning`);
+      return;
+    }
     
     const coord = this.currentTileRef.coord;
+    console.log(`🔬 Current tile: (${coord.q}, ${coord.r})`);
     
-    // Check if this membrane tile has a built transporter or receptor
+    // Check if this tile has a built transporter or receptor
     const organelle = this.organelleSystem.getOrganelleAtTile(coord);
-    const hasBuiltStructure = organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
+    const hasBuiltStructure = organelle?.type === 'transporter' || organelle?.type === 'receptor';
+    console.log(`Membrane protein request at (${coord.q}, ${coord.r}). Has transporter/receptor: ${hasBuiltStructure}`);
+    console.log(`🔬 Organelle found:`, organelle ? `${organelle.type} (${organelle.id})` : 'none');
     
     if (!hasBuiltStructure) {
+      console.log(`🔬 No built structure, showing error toast`);
       this.showToast("No built transporter/receptor here. Build one first with ENTER key.");
       return;
     }
     
-    // Check if protein already installed
-    if (this.membraneExchangeSystem.hasInstalledProtein(coord)) {
+    // Check if protein already installed (for membrane tiles only)
+    const isMembraneCoord = this.hexGrid.isMembraneCoord(coord);
+    console.log(`🔬 Is membrane coord: ${isMembraneCoord}`);
+    if (isMembraneCoord && this.membraneExchangeSystem.hasInstalledProtein(coord)) {
       const installedProtein = this.membraneExchangeSystem.getInstalledProtein(coord);
+      console.log(`🔬 Protein already installed, showing toast`);
       this.showToast(`${installedProtein?.label || 'Unknown protein'} already installed`);
       return;
     }
     
     // Activate protein request mode directly
+    console.log(`🔬 About to activate protein request mode...`);
     this.tileActionController.activateProteinRequestMode();
+    console.log(`🔬 Protein request mode activation complete`);
   }
   
   /**
@@ -2582,19 +2579,14 @@ export class GameScene extends Phaser.Scene {
    * Debug command: Print status of consolidated systems
    */
   private printSystemStatus(): void {
-    console.log("=== CONSOLIDATED SYSTEMS STATUS ===");
-    
     // MILESTONE 9: Drive mode and motility status
-    console.log(`🚗 Cell Drive Mode: ${this.cellDriveMode ? 'ON' : 'OFF'}`);
+    const driveStatus = this.cellDriveMode ? 'ON' : 'OFF';
     if (this.cellMotility) {
       const state = this.cellMotility.getState();
-      console.log(`🏃 Motility: ${state.mode}, Speed: ${state.speed.toFixed(2)}, Polarity: ${state.polarity.magnitude.toFixed(2)}`);
-      console.log(`📍 Cell Center: (${this.cellCenter.x.toFixed(1)}, ${this.cellCenter.y.toFixed(1)})`);
+      this.showToast(`Drive: ${driveStatus}, Speed: ${state.speed.toFixed(1)}, Polarity: ${state.polarity.magnitude.toFixed(1)}`);
+    } else {
+      this.showToast(`Drive Mode: ${driveStatus}`);
     }
-    
-    // MILESTONE 12: Throw & Membrane systems
-    console.log(`📦 Unified Cargo: ${this.unifiedCargoSystem.isCarrying() ? 'Carrying cargo' : 'Empty'}`);
-    console.log(`🏀 Membrane Trampoline: ${this.membraneTrampoline.isOnCooldown() ? 'On cooldown' : 'Ready'}`);
     
     // ProductionSystem metrics
     const transcriptCount = this.transcripts.size;

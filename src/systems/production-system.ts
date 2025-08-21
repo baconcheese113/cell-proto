@@ -1,9 +1,9 @@
 import Phaser from "phaser";
 import type { WorldRefs, Transcript, InstallOrder, CargoItinerary, CargoStage, Vesicle, ProteinId, VesicleState } from "../core/world-refs";
 import type { HexCoord } from "../hex/hex-grid";
-import { NetComponent } from "../network/net-entity";
-import { RunOnServer } from "../network/decorators";
+import { NetComponent, type NetComponentOptions } from "../network/net-entity";
 import type { NetBus } from "../network/net-bus";
+import { RunOnServer } from "../network/decorators";
 import type { InstallOrderSystem } from "./install-order-system";
 import { updateVesicles } from "./vesicle-system";
 
@@ -37,10 +37,6 @@ export class ProductionSystem extends NetComponent {
   private transcriptGraphics: Phaser.GameObjects.Graphics;
   private scene: Phaser.Scene;
   
-  // Performance tracking
-  private updateCount = 0;
-  private lastPerformanceLog = 0;
-  
   // Server-only spawn queue (not replicated)
   private pendingSpawnQueue: InstallOrder[] = [];
   
@@ -52,9 +48,10 @@ export class ProductionSystem extends NetComponent {
     private installOrderSystem: InstallOrderSystem,
     scene: Phaser.Scene,
     worldRefs: WorldRefs,
-    cellRoot?: Phaser.GameObjects.Container
+    cellRoot?: Phaser.GameObjects.Container,
+    opts?: NetComponentOptions
   ) {
-    super(bus);
+    super(bus, opts);
     this.scene = scene;
     this.worldRefs = worldRefs;
     
@@ -75,24 +72,21 @@ export class ProductionSystem extends NetComponent {
   }
 
   /**
-   * Main update cycle - runs all production phases in order
+   * Main update cycle - runs rendering and server logic
    */
   private update(deltaSeconds: number) {
-    this.updateCount++;
+    // Render transcripts and vesicles for both host and clients
+    this.renderTranscripts();
     
-    // Log performance metrics every 5 seconds
-    const now = Date.now();
-    if (now - this.lastPerformanceLog > 5000) {
-      const transcriptCount = Object.keys(this.transcriptState.transcripts).length;
-      const vesicleCount = Object.keys(this.vesicleState.vesicles).length;
-      console.log(`🔬 Production: ${transcriptCount} transcripts, ${vesicleCount} vesicles, ${Math.round(this.updateCount / 5)} updates/sec`);
-      this.updateCount = 0;
-      this.lastPerformanceLog = now;
-    }
-    
-    // Only host runs the actual production logic
-    if (!this._isHost) return;
-    
+    // Run server-side production logic
+    this.updateServerLogic(deltaSeconds);
+  }
+
+  /**
+   * Server-only production logic
+   */
+  @RunOnServer()
+  private updateServerLogic(deltaSeconds: number) {
     // Phase 1: Spawn new transcripts and handle TTL
     this.updateTranscriptSpawning(deltaSeconds);
     
@@ -107,9 +101,6 @@ export class ProductionSystem extends NetComponent {
     
     // Phase 5: Route vesicles to membrane and install proteins (legacy - now handled by vesicles)
     this.updateVesicleRouting(deltaSeconds);
-    
-    // Phase 6: Render all transcripts/vesicles (both host and clients)
-    this.renderTranscripts();
   }
 
   /**
@@ -131,12 +122,49 @@ export class ProductionSystem extends NetComponent {
     
     updateVesicles(tempWorldRefs, deltaSeconds, this.scene);
     
-    // Sync changes back to state channel
-    this.vesicleState.vesicles = {};
-    for (const [id, vesicle] of vesicleMap.entries()) {
-      this.vesicleState.vesicles[id] = vesicle;
+    // Performance optimization: Only sync vesicle state to network when meaningful changes occur
+    // This prevents excessive network traffic from blocked vesicles updating TTL every frame
+    let hasChanges = false;
+    const currentVesicleIds = new Set(Object.keys(this.vesicleState.vesicles));
+    const newVesicleIds = new Set(Array.from(vesicleMap.keys()));
+    
+    // Check if vesicle count changed
+    if (currentVesicleIds.size !== newVesicleIds.size) {
+      hasChanges = true;
+    } else {
+      // Check if any vesicle IDs changed
+      for (const id of newVesicleIds) {
+        if (!currentVesicleIds.has(id)) {
+          hasChanges = true;
+          break;
+        }
+      }
+      
+      // Check if any vesicle states changed (ignore TTL for blocked vesicles to reduce network traffic)
+      if (!hasChanges) {
+        for (const [id, vesicle] of vesicleMap.entries()) {
+          const currentVesicle = this.vesicleState.vesicles[id];
+          if (!currentVesicle || 
+              currentVesicle.state !== vesicle.state ||
+              currentVesicle.atHex.q !== vesicle.atHex.q ||
+              currentVesicle.atHex.r !== vesicle.atHex.r ||
+              currentVesicle.glyco !== vesicle.glyco ||
+              (vesicle.state !== 'BLOCKED' && Math.abs(currentVesicle.ttlMs - vesicle.ttlMs) > 1000)) { // Only sync TTL changes for non-blocked vesicles, and only if >1s difference
+            hasChanges = true;
+            break;
+          }
+        }
+      }
     }
-    this.vesicleState.nextVesicleId = tempWorldRefs.nextVesicleId;
+    
+    // Only update state channel if there are meaningful changes
+    if (hasChanges || this.vesicleState.nextVesicleId !== tempWorldRefs.nextVesicleId) {
+      this.vesicleState.vesicles = {};
+      for (const [id, vesicle] of vesicleMap.entries()) {
+        this.vesicleState.vesicles[id] = vesicle;
+      }
+      this.vesicleState.nextVesicleId = tempWorldRefs.nextVesicleId;
+    }
   }
 
   /**
@@ -256,9 +284,12 @@ export class ProductionSystem extends NetComponent {
 
   // === TRANSCRIPT SPAWNING HELPERS ===
 
+  @RunOnServer()
   private processInstallOrders() {
+    const orders = this.installOrderSystem.getAllOrders();
+    
     // Move new install orders to pending queue from the InstallOrderSystem
-    for (const order of this.installOrderSystem.getAllOrders()) {
+    for (const order of orders) {
       this.pendingSpawnQueue.push(order);
       // Remove the processed order from the system
       this.installOrderSystem.removeProcessedOrder(order.id);
@@ -269,9 +300,11 @@ export class ProductionSystem extends NetComponent {
   }
 
   // Milestone 13: Retry spawning pending transcripts when seats become available
+  @RunOnServer()
   private retryPendingSpawns() {
+    // Only log when there are items to process
     if (this.pendingSpawnQueue.length === 0) return;
-
+    
     const nucleusCoord = this.findNucleus();
     if (!nucleusCoord) return;
 
@@ -575,7 +608,9 @@ export class ProductionSystem extends NetComponent {
     } else {
       // Insufficient resources - wait and try again next frame
       transcript.processingTimer = 0.1; // Short retry delay
-      // console.log(`⚠️ ER lacks resources for ${transcript.proteinId}: AA=${aaAvailable.toFixed(1)}/${aaRequired}, ATP=${atpAvailable.toFixed(1)}/${atpRequired}`);
+      if(Math.random() < 0.01) {
+        console.log(`⚠️ ER lacks resources for ${transcript.proteinId}: AA=${aaAvailable.toFixed(1)}/${aaRequired}, ATP=${atpAvailable.toFixed(1)}/${atpRequired}`);
+      }
     }
   }
 
@@ -689,8 +724,15 @@ export class ProductionSystem extends NetComponent {
   private renderTranscripts() {
     this.transcriptGraphics.clear();
     
-    // Render transcripts
+    // Debug: Log rendering info occasionally
     const transcripts = this.transcriptState.transcripts;
+    const transcriptCount = Object.keys(transcripts).length;
+    
+    if (transcriptCount > 0 && Math.random() < 0.001) { // 1% chance to log
+      console.log(`🎨 Rendering ${transcriptCount} transcripts`);
+    }
+    
+    // Render transcripts
     for (const transcript of Object.values(transcripts)) {
       // Skip rendering locally carried transcripts (handled by local player)
       // But DO render network-controlled carried transcripts (from remote players)

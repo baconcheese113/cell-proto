@@ -20,6 +20,9 @@ import type { CellSpaceSystem } from "./cell-space-system";
 import type { SubstrateSystem } from "./substrate-system";
 import type { CellMotility } from "../systems/cell-motility";
 import type { CytoskeletonSystem } from "../systems/cytoskeleton-system";
+import type { OrganelleRenderer } from "../organelles/organelle-renderer";
+import type { CellOverlays } from "../systems/cell-overlays";
+import type { Player } from "@/actors/player";
 
 // Milestone 7: Orders & Transcripts data types
 export type ProteinId = 'GLUT' | 'AA_TRANSPORTER' | 'NT_TRANSPORTER' | 'ROS_EXPORTER' | 'SECRETION_PUMP' | 'GROWTH_FACTOR_RECEPTOR';
@@ -150,17 +153,17 @@ export interface WorldRefs {
   
   // Player and inventory
   playerInventory: PlayerInventorySystem;
-  player?: any; // Player actor for position tracking
+  player?: Player; // Player actor for position tracking
   
   // Organelle systems
   organelleSystem: OrganelleSystem;
-  organelleRenderer: any; // Add organelle renderer reference
+  organelleRenderer: OrganelleRenderer; // Add organelle renderer reference
   
   // Construction systems
   blueprintSystem: BlueprintSystem;
   
   // Overlay systems
-  cellOverlays: any; // Add cell overlays for queue badges
+  cellOverlays: CellOverlays; // Add cell overlays for queue badges
   
   // Cytoskeleton rendering
   cytoskeletonRenderer: any; // Add cytoskeleton renderer reference

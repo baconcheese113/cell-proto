@@ -64,14 +64,17 @@ function moveVesicleViaRails(
 ): void {
   const graph = worldRefs.cytoskeletonSystem.graph;
   
-  // If vesicle has no rail state, try to start a rail journey
+  // If vesicle has no rail state, this indicates a logic error since routeVesicleToGolgi should have set it
   if (!vesicle.railState) {
+    console.error(`⚠️ Vesicle ${vesicle.id} in EN_ROUTE state but missing railState - this shouldn't happen`);
+    
     const targetHex = targetType === 'golgi' 
       ? findNearestGolgiHex(worldRefs) 
       : vesicle.destHex;
       
     if (!targetHex) {
       console.warn(`⚠️ No target found for ${targetType}`);
+      vesicle.state = 'BLOCKED';
       return;
     }
     
@@ -87,10 +90,10 @@ function moveVesicleViaRails(
         plannedPath: pathResult.path,
         pathIndex: 0
       };
-      console.log(`🚂 Vesicle ${vesicle.id} started rail journey (${pathResult.path.length} nodes)`);
+      console.log(`🚂 Vesicle ${vesicle.id} emergency rail setup (${pathResult.path.length} nodes)`);
       console.log(`🗺️ Path: ${pathResult.path.join(' → ')}`);
     } else {
-      console.warn(`🚫 Vesicle ${vesicle.id} blocked: ${pathResult.reason}`);
+      console.warn(`🚫 Vesicle ${vesicle.id} emergency pathfinding failed: ${pathResult.reason}`);
       vesicle.state = 'BLOCKED';
       return;
     }
@@ -335,8 +338,11 @@ export function updateVesicles(worldRefs: WorldRefs, deltaSeconds: number, scene
     // Process vesicle based on current state
     switch (vesicle.state) {
       case 'QUEUED_ER':
-        // Ready to route to Golgi
-        routeVesicleToGolgi(worldRefs, vesicle);
+        // Ready to route to Golgi - only try once per vesicle
+        if (!vesicleRoutingAttempted.get(vesicle.id)) {
+          vesicleRoutingAttempted.set(vesicle.id, true);
+          routeVesicleToGolgi(worldRefs, vesicle);
+        }
         break;
         
       case 'EN_ROUTE_GOLGI':
@@ -365,14 +371,22 @@ export function updateVesicles(worldRefs: WorldRefs, deltaSeconds: number, scene
         // Clean up any stranded vesicle tracking before removal
         worldRefs.cytoskeletonGraph.cleanupStrandedVesicle(vesicle.id);
         
+        // Clean up tracking maps
+        vesicleRetryTimes.delete(vesicle.id);
+        vesicleBlockedFrames.delete(vesicle.id);
+        vesicleRoutingAttempted.delete(vesicle.id);
+        
         // Remove completed/expired vesicles
         worldRefs.vesicles.delete(vesicle.id);
         break;
         
       case 'BLOCKED':
-        // Retry pathfinding
-        vesicle.retryCounter++;
-        if (vesicle.retryCounter % 30 === 0) { // Retry every 30 ticks (~0.25 seconds)
+        // Retry pathfinding with less frequency - the actual backoff is handled in retryVesicleMovement
+        // Only increment a separate frame counter, not the actual retry counter
+        const currentFrames = vesicleBlockedFrames.get(vesicle.id) || 0;
+        vesicleBlockedFrames.set(vesicle.id, currentFrames + 1);
+        
+        if ((currentFrames + 1) % 120 === 0) { // Retry every 120 ticks (~1 second) - backoff logic will handle the actual timing
           retryVesicleMovement(worldRefs, vesicle);
         }
         break;
@@ -456,18 +470,39 @@ function notifyVesicleStateChange(
  * Route vesicle from ER to Golgi
  */
 function routeVesicleToGolgi(worldRefs: WorldRefs, vesicle: Vesicle): void {
+  // Add debug logging to detect infinite loops
+  if (!vesicle.retryCounter) vesicle.retryCounter = 0;
+  
+  console.log(`� PATHFINDING CALL: routeVesicleToGolgi for vesicle ${vesicle.id} (attempt #${vesicle.retryCounter + 1})`);
+  
   const golgiHex = findNearestGolgi(worldRefs, vesicle.atHex);
   if (!golgiHex) {
-    console.warn(`⚠️ No Golgi found for vesicle ${vesicle.id}, routing directly to membrane`);
-    const oldState = vesicle.state;
-    vesicle.state = 'EN_ROUTE_MEMBRANE';
-    vesicle.routeCache = calculateRailRoute(worldRefs, vesicle.atHex, vesicle.destHex);
-    notifyVesicleStateChange(worldRefs, vesicle, oldState, vesicle.state);
+    vesicle.state = 'BLOCKED';
+    return;
+  }
+  
+  // Check if path is possible before setting EN_ROUTE state
+  const graph = worldRefs.cytoskeletonSystem.graph;
+  const pathResult = graph.findPath(vesicle.atHex, golgiHex, 'vesicle', false);
+  
+  if (!pathResult.success) {
+    vesicle.state = 'BLOCKED';
     return;
   }
   
   const oldState = vesicle.state;
   vesicle.state = 'EN_ROUTE_GOLGI';
+  
+  // Set up the rail state with the found path to avoid duplicate pathfinding
+  vesicle.railState = {
+    nodeId: pathResult.path[0],
+    status: 'queued',
+    plannedPath: pathResult.path,
+    pathIndex: 0
+  };
+  
+  // Reset retry counter on successful routing
+  vesicle.retryCounter = 0;
   vesicle.routeCache = calculateRailRoute(worldRefs, vesicle.atHex, golgiHex);
   notifyVesicleStateChange(worldRefs, vesicle, oldState, vesicle.state);
 }
@@ -572,8 +607,37 @@ function findNearestGolgi(worldRefs: WorldRefs, fromHex: HexCoord): HexCoord | n
 /**
  * Retry movement for blocked vesicle
  */
+// Global map to track retry times to avoid modifying core Vesicle type
+const vesicleRetryTimes = new Map<string, number>();
+// Global map to track blocked frame counters
+const vesicleBlockedFrames = new Map<string, number>();
+// Global map to track if initial routing was attempted for QUEUED_ER vesicles
+const vesicleRoutingAttempted = new Map<string, boolean>();
+
 function retryVesicleMovement(worldRefs: WorldRefs, vesicle: Vesicle): void {
   if (vesicle.state !== 'BLOCKED') return;
+  
+  // Add exponential backoff to prevent spam retries
+  if (!vesicle.retryCounter) vesicle.retryCounter = 0;
+  
+  const now = Date.now();
+  const lastRetryTime = vesicleRetryTimes.get(vesicle.id) || 0;
+  const timeSinceLastRetry = now - lastRetryTime;
+  const backoffTime = Math.min(1000 * Math.pow(2, vesicle.retryCounter), 10000); // Max 10 seconds
+  
+  if (timeSinceLastRetry < backoffTime) {
+    return; // Still in backoff period
+  }
+  
+  vesicleRetryTimes.set(vesicle.id, now);
+  vesicle.retryCounter++;
+  
+  // After 5 retries, give up to prevent infinite attempts
+  if (vesicle.retryCounter > 5) {
+    vesicle.state = 'EXPIRED';
+    vesicleRetryTimes.delete(vesicle.id); // Clean up
+    return;
+  }
   
   // Clear any old rail state that might be invalid
   vesicle.railState = undefined;
@@ -591,14 +655,13 @@ function retryVesicleMovement(worldRefs: WorldRefs, vesicle: Vesicle): void {
       
       vesicle.state = 'QUEUED_GOLGI';
       vesicle.processingTimer = Math.random() * 1.5 + 2.0; // Golgi processing: 2-3.5 seconds
+      vesicle.retryCounter = 0; // Reset on success
+      vesicleRetryTimes.delete(vesicle.id); // Clean up
       return;
     } else {
-      // Try to route to Golgi with fresh pathfinding
-      const golgiHex = findNearestGolgi(worldRefs, vesicle.atHex);
-      if (golgiHex) {
-        vesicle.state = 'EN_ROUTE_GOLGI'; // Let normal movement logic handle it
-        return;
-      }
+      // Try to route to Golgi with proper pathfinding validation
+      routeVesicleToGolgi(worldRefs, vesicle);
+      return;
     }
   } else {
     // Vesicle has complete glycosylation, needs to go to membrane
@@ -606,15 +669,45 @@ function retryVesicleMovement(worldRefs: WorldRefs, vesicle: Vesicle): void {
       // Close enough to membrane for installation
       vesicle.state = 'INSTALLING';
       vesicle.processingTimer = Math.random() * 1.0 + 2.0; // Membrane installation: 2-3 seconds
+      vesicle.retryCounter = 0; // Reset on success
+      vesicleRetryTimes.delete(vesicle.id); // Clean up
       return;
     } else {
-      // Try to route to membrane with fresh pathfinding
-      vesicle.state = 'EN_ROUTE_MEMBRANE'; // Let normal movement logic handle it
+      // For membrane routing, we need similar pathfinding logic
+      const targetHex = vesicle.destHex;
+      if (!targetHex) {
+        console.warn(`⚠️ Vesicle ${vesicle.id} has no destination membrane hex`);
+        vesicle.state = 'EXPIRED';
+        vesicleRetryTimes.delete(vesicle.id); // Clean up
+        return;
+      }
+      
+      // Check if path is possible before setting EN_ROUTE state
+      const graph = worldRefs.cytoskeletonSystem.graph;
+      const pathResult = graph.findPath(vesicle.atHex, targetHex, 'vesicle', true);
+      
+      if (!pathResult.success) {
+        console.warn(`🚫 No cytoskeleton path to membrane for vesicle ${vesicle.id} - staying blocked`);
+        // Stay BLOCKED, will retry later with backoff
+        return;
+      }
+      
+      vesicle.state = 'EN_ROUTE_MEMBRANE';
+      vesicle.railState = {
+        nodeId: pathResult.path[0],
+        status: 'queued',
+        plannedPath: pathResult.path,
+        pathIndex: 0
+      };
+      vesicle.retryCounter = 0; // Reset on success
+      vesicleRetryTimes.delete(vesicle.id); // Clean up
+      console.log(`🚂 Vesicle ${vesicle.id} retry succeeded - routed to membrane (${pathResult.path.length} nodes)`);
       return;
     }
   }
   
-  // If we get here, vesicle is still blocked - keep retrying
+  // If we reach here, vesicle is still blocked
+  console.warn(`⚠️ Vesicle ${vesicle.id} retry attempt failed - will try again later`);
 }
 
 /**
