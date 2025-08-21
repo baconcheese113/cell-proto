@@ -12,7 +12,8 @@
 import type { WorldRefs } from "../core/world-refs";
 import type { ThrowSystem } from "./throw-system";
 import type { UnifiedCargoSystem } from "./unified-cargo-system";
-import type { NetSyncSystem } from "../network/net-sync-system";
+import type { NetBundle } from "../app/net-bundle";
+import type { Player } from "../actors/player";
 
 export interface ThrowInputConfig {
   // Input mappings
@@ -26,9 +27,6 @@ export interface ThrowInputConfig {
   // Sensitivity
   mouseSensitivity: number; // Mouse movement sensitivity
   gamepadDeadzone: number; // Right stick deadzone
-  
-  // Network system for multiplayer cargo checking
-  netSyncSystem?: NetSyncSystem;
 }
 
 export class ThrowInputController {
@@ -45,9 +43,11 @@ export class ThrowInputController {
     private worldRefs: WorldRefs,
     private throwSystem: ThrowSystem,
     private cargoSystem: UnifiedCargoSystem,
+    private net: NetBundle,
+    private playerActor: Player,
     config: Partial<ThrowInputConfig> = {}
   ) {
-    console.log(`🎯 ThrowInputController: Constructor called with netSyncSystem: ${!!config.netSyncSystem}`);
+    console.log(`🎯 ThrowInputController: Constructor called with net: ${!!this.net}`);
     this.config = {
       mouseAiming: true,
       gamepadSupport: true,
@@ -58,7 +58,7 @@ export class ThrowInputController {
       ...config
     };
     
-    console.log(`🎯 ThrowInputController: Final config netSyncSystem: ${!!this.config.netSyncSystem}`);
+    console.log(`🎯 ThrowInputController: NetBundle injected successfully: ${!!this.net}`);
     this.initializeInput();
   }
   
@@ -148,7 +148,7 @@ export class ThrowInputController {
    * Update the cargo indicator position to show throw direction
    */
   private updateCargoIndicatorPosition(targetPosition: Phaser.Math.Vector2, chargeLevel: number): void {
-    const player = this.getPlayerActor();
+    const player = this.playerActor;
     if (!player) return;
     
     const playerPos = this.getPlayerPosition();
@@ -209,104 +209,50 @@ export class ThrowInputController {
   }
   
   /**
-   * Check if player is carrying something (multiplayer-aware)
+   * Check if player is carrying something
    */
   private isCarryingSomething(): boolean {
-    // If we have a network system and we're not the host, check network cargo state
-    if (this.config.netSyncSystem && !(this.config.netSyncSystem as any).isHost) {
-      // For clients, check if we have any carried cargo in the network state
-      const carriedTranscripts = this.worldRefs.carriedTranscripts;
-      const carriedVesicles = this.worldRefs.carriedVesicles;
-      
-      console.log(`🎯 CLIENT: Checking cargo - ${carriedTranscripts.length} transcripts, ${carriedVesicles.length} vesicles`);
-      
-      // Check if any carried cargo belongs to the local player (not network controlled)
-      const hasLocalCarriedTranscripts = carriedTranscripts.some(t => !t.isNetworkControlled);
-      const hasLocalCarriedVesicles = carriedVesicles.some(v => !v.isNetworkControlled);
-      
-      if (hasLocalCarriedTranscripts || hasLocalCarriedVesicles) {
-        console.log(`🎯 Network client carrying: ${hasLocalCarriedTranscripts ? 'transcript' : ''} ${hasLocalCarriedVesicles ? 'vesicle' : ''}`);
-        return true;
-      }
-      
-      console.log(`🎯 Network client not carrying anything (${carriedTranscripts.length} transcripts, ${carriedVesicles.length} vesicles total)`);
-      return false;
-    }
-    
-    // For host or single-player, use the local cargo system
     return this.cargoSystem.isCarrying();
   }
 
   /**
-   * Execute throw with network awareness
+   * Execute throw using cargo system
    */
   private executeNetworkAwareThrow(): boolean {
-    console.log(`🎯 CLIENT: executeNetworkAwareThrow called`);
+    console.log(`🎯 Executing throw via cargo system`);
     
-    // Dynamically get the current network system from the scene
-    const currentNetSyncSystem = (this.scene as any).netSyncSystem;
-    const isCurrentlyHost = currentNetSyncSystem?.isHost ?? true;
+    // Use cargo system to execute throw - it handles networking automatically
+    const holdTime = this.scene.time.now - this.aimStartTime;
+    const chargeLevel = Math.min(holdTime / this.config.chargeTime, 1.0);
     
-    console.log(`🎯 CLIENT: Current netSyncSystem exists: ${!!currentNetSyncSystem}`);
-    console.log(`🎯 CLIENT: Current isHost: ${isCurrentlyHost}`);
-    
-    // If we have a network system and we're not the host, send throw command
-    if (currentNetSyncSystem && !isCurrentlyHost) {
-      console.log(`🎯 CLIENT: Sending network throw command`);
-      // For clients, send throw command to host
-      const holdTime = this.scene.time.now - this.aimStartTime;
-      const chargeLevel = Math.min(holdTime / this.config.chargeTime, 1.0);
-      
-      // Calculate target position the same way as in updateAimingInput
-      let targetPosition: Phaser.Math.Vector2;
-      if (this.config.mouseAiming && this.scene.input.activePointer) {
-        const worldX = this.lastMousePos.x;
-        const worldY = this.lastMousePos.y;
-        const cellRoot = this.worldRefs.cellRoot;
-        const localX = worldX - cellRoot.x;
-        const localY = worldY - cellRoot.y;
-        targetPosition = new Phaser.Math.Vector2(localX, localY);
-      } else {
-        const playerPos = this.getPlayerPosition();
-        targetPosition = new Phaser.Math.Vector2(playerPos.x + 80, playerPos.y);
-      }
-      
-      // Send throw command with position and charge level using current network system
-      this.sendThrowCommand(targetPosition, chargeLevel, currentNetSyncSystem);
-      
-      // Don't clear cargo immediately - wait for host confirmation
-      // The host will handle the throw and update the world state
-      
-      return true;
+    // Calculate target position the same way as in updateAimingInput
+    let targetPosition: Phaser.Math.Vector2;
+    if (this.config.mouseAiming && this.scene.input.activePointer) {
+      const worldX = this.lastMousePos.x;
+      const worldY = this.lastMousePos.y;
+      const cellRoot = this.worldRefs.cellRoot;
+      const localX = worldX - cellRoot.x;
+      const localY = worldY - cellRoot.y;
+      targetPosition = new Phaser.Math.Vector2(localX, localY);
+    } else {
+      const playerPos = this.getPlayerPosition();
+      targetPosition = new Phaser.Math.Vector2(playerPos.x + 80, playerPos.y);
     }
     
-    console.log(`🎯 CLIENT: Executing local throw (host or no network)`);
-    // For host or single-player, execute locally
-    return this.throwSystem.executeThrow();
-  }
-
-  /**
-   * Send throw command to host
-   */
-  private sendThrowCommand(targetPosition: Phaser.Math.Vector2, chargeLevel: number, netSyncSystem?: any): void {
-    // Use provided netSyncSystem or fall back to config
-    const activeNetSyncSystem = netSyncSystem || this.config.netSyncSystem as any;
-    if (!activeNetSyncSystem || !activeNetSyncSystem.sendClientCommand) return;
-    
+    // Always use network call for cargo throwing
     const playerPos = this.getPlayerPosition();
     const direction = new Phaser.Math.Vector2(
       targetPosition.x - playerPos.x,
       targetPosition.y - playerPos.y
     ).normalize();
     
-    activeNetSyncSystem.sendClientCommand('cargoThrow', {
-      playerPos: { x: playerPos.x, y: playerPos.y },
-      direction: { x: direction.x, y: direction.y },
-      chargeLevel: chargeLevel,
-      targetPos: { x: targetPosition.x, y: targetPosition.y }
-    });
-    
-    console.log(`🎯 CLIENT: Sent throw command with charge ${(chargeLevel * 100).toFixed(1)}%`);
+    this.net.cargo.throwCargo(
+      { x: playerPos.x, y: playerPos.y },
+      { x: direction.x, y: direction.y },
+      chargeLevel
+    );
+      
+    return true;
   }
 
   /**
@@ -323,7 +269,7 @@ export class ThrowInputController {
     }
     
     // Check player speed (safety gate)
-    const player = this.getPlayerActor();
+    const player = this.playerActor;
     if (player) {
       const body = player.getPhysicsBody();
       if (body && body.velocity.length() > 150) { // Speed threshold from config
@@ -356,7 +302,7 @@ export class ThrowInputController {
     } else {
       // Use position in front of player
       const playerPos = this.getPlayerPosition();
-      const player = this.getPlayerActor();
+      const player = this.playerActor;
       const playerBody = player ? player.getPhysicsBody() : null;
       
       if (playerBody && playerBody.velocity.length() > 10) {
@@ -409,15 +355,15 @@ export class ThrowInputController {
     }
     
     // Execute throw in throw system
-    console.log(`🎯 CLIENT: Executing throw - isHost: ${!(this.config.netSyncSystem as any)?.isHost}`);
+    console.log(`🎯 Executing throw`);
     const success = this.executeNetworkAwareThrow();
-    console.log(`🎯 CLIENT: Throw execution result: ${success}`);
+    console.log(`🎯 Throw execution result: ${success}`);
     
     // Reset state
     this.isAiming = false;
     
     // Reset cargo indicator position
-    const player = this.getPlayerActor();
+    const player = this.playerActor;
     if (player) {
       player.resetCargoIndicatorPosition();
     }
@@ -455,7 +401,7 @@ export class ThrowInputController {
     this.isAiming = false;
     
     // Reset cargo indicator position
-    const player = this.getPlayerActor();
+    const player = this.playerActor;
     if (player) {
       player.resetCargoIndicatorPosition();
       console.log(`🎯 ThrowInputController: Reset cargo indicator position`);
@@ -489,12 +435,8 @@ export class ThrowInputController {
     return Math.min(1, holdTime / 1000); // Normalize to 1 second max
   }
   
-  private getPlayerActor(): any {
-    return (this.scene as any).playerActor;
-  }
-  
   private getPlayerPosition(): Phaser.Math.Vector2 {
-    const player = this.getPlayerActor();
+    const player = this.playerActor;
     return player ? player.getWorldPosition() : new Phaser.Math.Vector2(0, 0);
   }
   

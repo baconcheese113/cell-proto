@@ -12,11 +12,11 @@ import { OrganelleRenderer } from "../organelles/organelle-renderer";
 import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 import { PlayerInventorySystem } from "../player/player-inventory";
 import { BlueprintSystem } from "../construction/blueprint-system";
+import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { BuildPaletteUI, type BuildContext } from "../construction/build-palette-ui";
 import type { OrganelleType } from "../organelles/organelle-registry";
-import { BlueprintRenderer } from "../construction/blueprint-renderer";
-import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
+import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getFootprintTiles } from "../organelles/organelle-footprints";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
 import { MembranePortSystem } from "../membrane/membrane-port-system";
@@ -25,7 +25,7 @@ import { MembranePortSystem } from "../membrane/membrane-port-system";
 import { Player } from "../actors/player";
 import { TileActionController } from "../controllers/tile-action-controller";
 // Consolidated system architecture
-import { CellProduction } from "../systems/cell-production";
+import { ProductionSystem } from "../systems/production-system";
 import { CellTransport } from "../systems/cell-transport";
 import { CellOverlays } from "../systems/cell-overlays";
 // Milestone 9: Cell locomotion systems
@@ -44,13 +44,19 @@ import { CytoskeletonRenderer } from "../systems/cytoskeleton-renderer";
 import { FilamentBuilder } from "../systems/filament-builder";
 import { initializeEnhancedVesicleRouting, updateEnhancedVesicleRouting } from "../systems/cytoskeleton-vesicle-integration";
 import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
-// Milestone 14: Multiplayer Core v1
-import { NetworkTransport } from "../network/transport";
+import { LoopbackTransport } from "../network/transport";
+import type { NetBundle } from "../app/net-bundle";
 import { RoomUI } from "../network/room-ui";
-import { NetHUD } from "../network/net-hud";
-import { NetSyncSystem } from "../network/net-sync-system";
+import type { NetworkTransport } from "../network/transport";
+// New network approach
+import { NetBus } from "../network/net-bus";
+import { CargoSystem } from "../systems/cargo-system";
+import { SpeciesSystem } from "../systems/species-system";
+import { PlayerSystem } from "../systems/player-system";
+import { EmoteSystem } from "../systems/emote-system";
+import { InstallOrderSystem } from "../systems/install-order-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F9" | "F10" | "F11" | "F12" | "ESC", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -73,13 +79,16 @@ export class GameScene extends Phaser.Scene {
   private gridRadius = 12; // Tunable number of hex rings
   private hexGraphics!: Phaser.GameObjects.Graphics;
   private showHexGrid = true;
-  private hoveredTile: any = null; // HexTile | null
-  private selectedTile: any = null; // HexTile | null
+  private hoveredTile: HexTile | null = null;
+  private selectedTile: HexTile | null = null;
   private hexInteractionGraphics!: Phaser.GameObjects.Graphics;
   private tileInfoPanel!: Phaser.GameObjects.Text;
   private debugInfoPanel!: Phaser.GameObjects.Text;
   private buildDateText!: Phaser.GameObjects.Text;
-  private lastInfoUpdateTile: any = null; // Track last tile that was used for info update
+  private lastInfoUpdateTile: HexTile | null = null;
+  
+  // Client-side position tracking for change detection
+  private _lastClientPos: { x: number; y: number; vx: number; vy: number } | null = null;
   private lastInfoUpdateTime = 0; // Track when info was last updated
 
   // Milestone 6: Membrane debug visualization
@@ -117,8 +126,8 @@ export class GameScene extends Phaser.Scene {
 
   // Blueprint system - Milestone 5
   private blueprintSystem!: BlueprintSystem;
-  private buildPalette!: BuildPaletteUI;
   private blueprintRenderer!: BlueprintRenderer;
+  private buildPalette!: BuildPaletteUI;
   private selectedRecipeId: string | null = null; // Milestone 13: Support all recipe types (organelles, filaments, upgrades)
   private isInBuildMode: boolean = false;
 
@@ -146,7 +155,7 @@ export class GameScene extends Phaser.Scene {
   // NOTE: Membrane physics now handled by Player actor
 
   // Consolidated system architecture - NEW
-  private cellProduction!: CellProduction;
+  private productionSystem!: ProductionSystem;
   private cellTransport!: CellTransport;
   
   // Store WorldRefs instance to ensure consistent reference
@@ -171,10 +180,14 @@ export class GameScene extends Phaser.Scene {
   private filamentBuilder!: FilamentBuilder;
   
   // Milestone 14: Multiplayer Core v1
-  private networkTransport!: NetworkTransport;
   private roomUI!: RoomUI;
-  private netHUD!: NetHUD;
-  private netSyncSystem!: NetSyncSystem;
+  
+  // New network approach
+  public net!: NetBundle;
+  
+  // Remote player rendering
+  private remoteSprites = new Map<string, Phaser.GameObjects.Graphics>();
+  private selfId!: string; // from transport
   
   // Milestone 9: Cell motility mode
   private cellDriveMode = false;
@@ -195,7 +208,20 @@ export class GameScene extends Phaser.Scene {
 
   constructor() { super("game"); }
 
-  create() {
+  create(data?: { useMultiplayer?: boolean; transport?: NetworkTransport; isHost?: boolean; roomId?: string }) {
+    // NETWORKING FIRST: Initialize with provided multiplayer settings or default to local
+    if (data?.useMultiplayer && data?.transport) {
+      console.log(`🎮 Creating multiplayer session: ${data.isHost ? 'HOST' : 'CLIENT'} in ${data.roomId}`);
+      this.initNetwork({ 
+        transport: data.transport, 
+        isHost: data.isHost!, 
+        roomId: data.roomId! 
+      });
+    } else {
+      // Default: local play with loopback transport
+      this.initializeNetworking();
+    }
+
     // Background grid - cap size to prevent memory issues
     const view = this.scale.gameSize;
     const maxGridSize = 2048; // Reasonable maximum for browser memory
@@ -241,6 +267,7 @@ export class GameScene extends Phaser.Scene {
     
     // HOTFIX H2: Re-parent player to cellRoot
     this.cellRoot.add(this.playerActor);
+    console.log('Player actor created and added to CellRoot at (0,0)');
 
     // Initialize all other systems...
     this.initializeOrganelleSystem();
@@ -267,7 +294,6 @@ export class GameScene extends Phaser.Scene {
       organelleSystem: this.organelleSystem,
       organelleRenderer: this.organelleRenderer,
       blueprintSystem: this.blueprintSystem,
-      blueprintRenderer: this.blueprintRenderer,
       membraneExchangeSystem: this.membraneExchangeSystem,
       membranePortSystem: this.membranePortSystem, // Story 8.11: External interface
       diffusionSystem: this.diffusionSystem,
@@ -314,11 +340,12 @@ export class GameScene extends Phaser.Scene {
     // Create modular controllers and systems
     this.tileActionController = new TileActionController({
       scene: this,
-      worldRefs
+      worldRefs,
+      net: this.net
     });
 
     // Initialize consolidated systems - NEW ARCHITECTURE
-    this.cellProduction = new CellProduction(this, worldRefs, this.cellRoot);
+    // ProductionSystem will be initialized after networking setup
     this.cellTransport = new CellTransport(this, worldRefs);
     this.cellOverlays = new CellOverlays(this, worldRefs, this.cellRoot); // Now cellMotility is defined
     worldRefs.cellOverlays = this.cellOverlays;
@@ -328,29 +355,26 @@ export class GameScene extends Phaser.Scene {
     this.membraneTrampoline = new MembraneTrampoline(this, worldRefs);
     
     // Milestone 13: Initialize Cytoskeleton Transport v1
-    this.cytoskeletonSystem = new CytoskeletonSystem(this, worldRefs);
+    this.cytoskeletonSystem = new CytoskeletonSystem(this.net.bus, worldRefs);
     worldRefs.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
     worldRefs.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
     this.cytoskeletonRenderer = new CytoskeletonRenderer(this, worldRefs, this.cytoskeletonSystem);
     worldRefs.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
-    this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem);
+    this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem, this.net);
     
     // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
     initializeEnhancedVesicleRouting(worldRefs);
 
-    // Milestone 14: Initialize Multiplayer Core v1
-    this.initializeNetworking();
-
-    // Milestone 12: Initialize Throw System (after networking for isHost check)
-    const isHost = (this.netSyncSystem as any)?.isHost ?? true; // Default to true if no network
-    console.log(`🎯 GameScene: Creating ThrowInputController - netSyncSystem exists: ${!!this.netSyncSystem}, isHost: ${isHost}`);
-    this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem, isHost);
+    // Milestone 12: Initialize Throw System (networking already initialized, this.net is always available)
+    console.log(`🎯 GameScene: Creating ThrowInputController - net exists: ${!!this.net}, isHost: ${this.net.isHost}`);
+    this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem, this.net.isHost);
     this.throwInputController = new ThrowInputController(
       this, 
       worldRefs, 
       this.throwSystem, 
       this.unifiedCargoSystem,
-      { netSyncSystem: this.netSyncSystem }
+      this.net,
+      this.playerActor
     );
     this.cargoHUD = new CargoHUD(this, this.unifiedCargoSystem, {
       position: { x: 20, y: 130 } // Position below other HUD elements
@@ -400,6 +424,7 @@ export class GameScene extends Phaser.Scene {
       F11: this.input.keyboard!.addKey("F11"), // Simulate packet loss
       F12: this.input.keyboard!.addKey("F12"), // Toggle network logging
       ESC: this.input.keyboard!.addKey("ESC"), // Exit build mode
+      ZERO: this.input.keyboard!.addKey("ZERO"), // Emote trigger
     };
 
     // Initialize remaining UI systems
@@ -455,6 +480,9 @@ export class GameScene extends Phaser.Scene {
         if (this.organelleRenderer) {
           this.organelleRenderer.onResize();
         }
+        if (this.blueprintRenderer) {
+          this.blueprintRenderer.onResize();
+        }
         
         // Update selection system
         if (this.organelleSelection) {
@@ -468,9 +496,10 @@ export class GameScene extends Phaser.Scene {
 
     // Setup shutdown handler for consolidated systems
     this.events.once('shutdown', () => {
-      this.cellProduction?.destroy();
+      this.productionSystem?.destroy();
       this.cellTransport?.destroy();
       this.cellOverlays?.destroy();
+      this.net.emotes?.destroy();
     });
   }
 
@@ -492,22 +521,6 @@ export class GameScene extends Phaser.Scene {
       const playerWorldX = this.cellRoot.x + this.playerActor.x;
       const playerWorldY = this.cellRoot.y + this.playerActor.y;
       this.cameras.main.centerOn(playerWorldX, playerWorldY);
-    }
-
-    // MILESTONE 14: Block game input when room UI input field has focus
-    if (this.roomUI.hasInputFocus()) {
-      // Only allow F10 to close room UI and other F keys for dev tools
-      if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
-        this.roomUI.toggle();
-      }
-      
-      // Allow other F keys for dev tools
-      if (Phaser.Input.Keyboard.JustDown(this.keys.F9)) {
-        this.netHUD.toggle();
-      }      
-
-      // Skip all other game input processing
-      return;
     }
 
     // Handle hex grid toggle
@@ -615,10 +628,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     // MILESTONE 14: Network controls
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F9)) {
-      this.netHUD.toggle();
-    }
-    
     if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
       this.roomUI.toggle();
     }
@@ -626,6 +635,11 @@ export class GameScene extends Phaser.Scene {
     // O key for creating test entities (multiplayer testing)
     if (Phaser.Input.Keyboard.JustDown(this.keys.O)) {
       this.createTestEntities();
+    }
+
+    // ZERO key for emotes
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ZERO)) {
+      this.net.emotes.send();
     }
 
     // Debug species controls - Task 4
@@ -677,6 +691,9 @@ export class GameScene extends Phaser.Scene {
       } else {
         // Normal mode: player actor handles WASD, cellMotility ignores input
         this.playerActor.update(deltaSeconds, this.keys);
+        
+        // Send player input to network for replication
+        this.synchronizePlayerState();
       }
     }
     
@@ -686,7 +703,7 @@ export class GameScene extends Phaser.Scene {
     // Use modular tile action controller for input handling
     this.tileActionController.handleInput(this.keys, this.currentTileRef);
     
-    // NOTE: Consolidated systems (CellProduction, CellTransport, CellOverlays) 
+    // NOTE: Consolidated systems (ProductionSystem, CellTransport, CellOverlays) 
     // are now automatically updated by Phaser's lifecycle via SystemObject
     
     // Manual updates for systems not yet consolidated:
@@ -698,10 +715,13 @@ export class GameScene extends Phaser.Scene {
     // Update heatmap - Task 5
     this.heatmapSystem.update();
     
+    // Render organelles - Milestone 3 Task 1
+    this.organelleRenderer.render();
+    
     // Update blueprint rendering - Milestone 5 Task 5
     this.blueprintRenderer.render();
     
-    // NOTE: Transcript rendering now handled by CellProduction system
+    // NOTE: Transcript rendering now handled by ProductionSystem
     
     // Update build palette position to maintain fixed screen location
     this.buildPalette.updatePosition();
@@ -717,15 +737,22 @@ export class GameScene extends Phaser.Scene {
     // Update HUD with current information
     this.updateHUD();
     
-    // Milestone 14: Update network HUD
-    this.netHUD.update();
-    
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
     this.updateConservationPanel();
     
     // Milestone 13 Part D: Update enhanced vesicle routing
     updateEnhancedVesicleRouting();
+    
+    // Update EmoteSystem for visual effects
+    // this.net.emotes.update();
+    
+    // Update player input and physics
+    this.synchronizePlayerState();
+    this.net.players.tick(this.game.loop.delta / 1000); // Convert ms to seconds
+    
+    // Render remote players from network state
+    this.updateRemotePlayers();
   }
 
   /**
@@ -783,6 +810,115 @@ export class GameScene extends Phaser.Scene {
       this.toastText.setVisible(false);
     });
     this.toastText.setData('timer', timer);
+  }
+
+  /**
+   * Update remote player avatars from network state
+   */
+  private updateRemotePlayers(): void {
+    const mirror = this.net.players.players; // PlayersState
+    
+    // Update or create sprites for remote players only (exclude self)
+    for (const [id, p] of Object.entries(mirror.byId)) {
+      // Skip creating a remote sprite for self - we already have a local player
+      if (id === this.selfId) continue;
+      
+      let g = this.remoteSprites.get(id);
+      if (!g) {
+        g = this.add.graphics();
+        g.fillStyle(0xff4d4d, 1); // Red color for remote players
+        g.fillCircle(0, 0, 6);
+        this.cellRoot.add(g); // ensure same coordinate space as worldRefs
+        this.remoteSprites.set(id, g);
+      }
+      g.setPosition(p.x, p.y);
+      g.setVisible(true);
+    }
+    
+    // Optionally hide sprites for ids no longer present
+    for (const [id, g] of this.remoteSprites) {
+      if (!mirror.byId[id] || id === this.selfId) { // Also clean up any self sprites that shouldn't exist
+        g.destroy(); 
+        this.remoteSprites.delete(id); 
+      }
+    }
+  }
+
+  /**
+   * Check if position or velocity changed meaningfully (>0.01 threshold)
+   */
+  private hasPlayerStateChanged(
+    oldState: { x: number; y: number; vx: number; vy: number },
+    newState: { x: number; y: number; vx: number; vy: number }
+  ): boolean {
+    const posChanged = Math.abs(oldState.x - newState.x) > 0.01 || 
+                      Math.abs(oldState.y - newState.y) > 0.01;
+    const velChanged = Math.abs(oldState.vx - newState.vx) > 0.01 || 
+                      Math.abs(oldState.vy - newState.vy) > 0.01;
+    return posChanged || velChanged;
+  }
+
+  /**
+   * Extract input acceleration from keyboard keys
+   */
+  private getInputAcceleration(): { ax: number; ay: number; drive: boolean } {
+    let ax = 0, ay = 0;
+    if (this.keys.A.isDown) ax -= 1;
+    if (this.keys.D.isDown) ax += 1;
+    if (this.keys.W.isDown) ay -= 1;
+    if (this.keys.S.isDown) ay += 1;
+    
+    const drive = this.keys.SPACE.isDown; // Dash/drive mode
+    return { ax, ay, drive };
+  }
+
+  /**
+   * Send local player state to network for replication
+   */
+  private synchronizePlayerState(): void {    
+    if (!this.selfId || !this.playerActor) return;
+    
+    // Get input from keyboard
+    const input = this.getInputAcceleration();
+    
+    // Send input to PlayerSystem for server processing
+    this.net.players.setInput(this.selfId, input);
+    
+    // Get current player position and velocity for comparison
+    const worldPos = this.playerActor.getWorldPosition();
+    const velocity = this.playerActor.getVelocity();
+    
+    if (this.net.isHost) {
+      // Host: Update state directly - only sync if there are meaningful changes
+      const playerData = this.net.players.get(this.selfId);
+      if (playerData) {
+        const newState = { x: worldPos.x, y: worldPos.y, vx: velocity.x, vy: velocity.y };
+        
+        if (this.hasPlayerStateChanged(playerData, newState)) {
+          playerData.x = newState.x;
+          playerData.y = newState.y;
+          playerData.vx = newState.vx;
+          playerData.vy = newState.vy;
+          playerData.ts = Date.now();
+        }
+      }
+    } else {
+      // Client: Only send position to host if it changed meaningfully
+      const lastPos = this._lastClientPos || { x: 0, y: 0, vx: 0, vy: 0 };
+      const newState = { x: worldPos.x, y: worldPos.y, vx: velocity.x, vy: velocity.y };
+      
+      if (this.hasPlayerStateChanged(lastPos, newState)) {
+        this.net.players.updatePosition(
+          this.selfId,
+          newState.x,
+          newState.y,
+          newState.vx,
+          newState.vy
+        );
+        
+        this._lastClientPos = newState;
+      }
+    }
   }
 
   // Hex Grid System
@@ -1307,10 +1443,13 @@ export class GameScene extends Phaser.Scene {
         `World: (${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`
       ];
       
-      // Check for organelle on this tile
+      // Check for organelle on this tile (use original organelle system)
       const organelle = this.organelleSystem.getOrganelleAtTile(tile.coord);
       if (organelle) {
-        info.push(...this.organelleSystem.getOrganelleInfo(tile.coord));
+        info.push(`🏭 Organelle: ${organelle.config.label}`);
+        info.push(`  Type: ${organelle.type}`);
+        info.push(`  Status: ${organelle.isActive ? 'Active' : 'Inactive'}`);
+        info.push(`  Throughput: ${organelle.currentThroughput || 0}`);
         info.push(''); // Add spacing
       }
       
@@ -1339,14 +1478,21 @@ export class GameScene extends Phaser.Scene {
       }
       
       // Check for blueprint on this tile
+      // Use original blueprint system
       const blueprint = this.blueprintSystem.getBlueprintAtTile(tile.coord.q, tile.coord.r);
+      
       if (blueprint) {
         const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
         info.push(`🔨 Blueprint: ${recipe?.label}`);
         
-        // Show progress for each species requirement
+        // Show progress using original blueprint format
+        const totalPercent = Math.round((blueprint.totalProgress || 0) * 100);
+        const status = (blueprint.totalProgress || 0) >= 1 ? '✅' : '⏳';
+        info.push(`  ${status} Progress: ${totalPercent}%`);
+        
+        // Show detailed progress per species
         for (const [speciesId, requiredAmount] of Object.entries(recipe?.buildCost || {})) {
-          const currentProgress = blueprint.progress[speciesId as SpeciesId] || 0;
+          const currentProgress = blueprint.progress?.[speciesId as SpeciesId] || 0;
           const percent = Math.round((currentProgress / requiredAmount) * 100);
           const status = currentProgress >= requiredAmount ? '✅' : '⏳';
           info.push(`  ${status} ${speciesId}: ${currentProgress.toFixed(1)}/${requiredAmount} (${percent}%)`);
@@ -1423,7 +1569,7 @@ export class GameScene extends Phaser.Scene {
       
       // Show all species concentrations with reduced precision to minimize flicker
       for (const speciesId in concentrations) {
-        const concentration = concentrations[speciesId];
+        const concentration = concentrations[speciesId as SpeciesId];
         if (concentration > 0.01) { // Only show meaningful amounts
           info.push(`  ${speciesId}: ${concentration.toFixed(1)}`); // Reduced to 1 decimal place
         }
@@ -1434,14 +1580,6 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.tileInfoPanel.setVisible(false);
     }
-  }
-
-  /**
-   * Force an immediate tile info panel update (call when something significant changes)
-   */
-  private forceUpdateTileInfoPanel(): void {
-    this.lastInfoUpdateTime = 0; // Reset timer to force update
-    this.updateTileInfoPanel();
   }
 
   /**
@@ -1584,8 +1722,9 @@ export class GameScene extends Phaser.Scene {
   // Organelle System - Milestone 3 Task 1
   
   private initializeOrganelleSystem(): void {
-    this.organelleSystem = new OrganelleSystem(this.hexGrid);
+    this.organelleSystem = new OrganelleSystem(this.net.bus, this.hexGrid);
     this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize, this.cellRoot);
+    console.log('Organelle renderer initialized');
     this.organelleSelection = new OrganelleSelectionSystem(this, this.organelleSystem, this.hexSize);
     
     // Set up selection callback
@@ -1615,11 +1754,15 @@ export class GameScene extends Phaser.Scene {
   private initializeBlueprintSystem(): void {
     // Initialize blueprint system with reference to organelle occupied tiles and membrane exchange system
     this.blueprintSystem = new BlueprintSystem(
+      this.net.bus,
       this.hexGrid, 
       () => this.organelleSystem.getOccupiedTiles(),
       (organelleType: OrganelleType, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord),
       this.membraneExchangeSystem
     );
+    
+    // Initialize blueprint renderer (now that blueprintSystem exists)
+    this.blueprintRenderer = new BlueprintRenderer(this, this.blueprintSystem, this.hexGrid, this.hexSize, this.cellRoot);
     
     // Initialize build palette UI
     this.buildPalette = new BuildPaletteUI(this, 350, 50);
@@ -1629,37 +1772,28 @@ export class GameScene extends Phaser.Scene {
       console.log(`Entered build mode with recipe: ${recipeId}`);
     };
     
-    // Initialize blueprint renderer
-    this.blueprintRenderer = new BlueprintRenderer(this, this.blueprintSystem, this.hexSize, this.cellRoot);
-    
     console.log('Blueprint system initialized');
   }
 
   private spawnOrganelleFromBlueprint(organelleType: OrganelleType, coord: HexCoord): void {
-    console.log(`🔧 spawnOrganelleFromBlueprint called: type="${organelleType}", coord=(${coord.q}, ${coord.r})`);
+    console.log(`🏭 Spawning organelle ${organelleType} at (${coord.q}, ${coord.r})`);
     
-    // Use centralized organelle registry instead of hardcoded mapping
+    // Get the organelle definition from registry
     const definition = getOrganelleDefinition(organelleType);
-    if (definition) {
-      const config = definitionToConfig(definition);
-      console.log(`📍 Creating organelle with config:`, config);
-      const success = this.organelleSystem.createOrganelle(config, coord);
-      console.log(`🏗️ Organelle creation result: ${success}`);
-      console.log(`✅ Spawned ${config.label} at (${coord.q}, ${coord.r})`);
-      
-      // Force visual update to show the new organelle immediately
-      if (success && this.organelleRenderer) {
-        this.organelleRenderer.update();
-        console.log(`🎨 Organelle renderer updated after spawning ${config.label}`);
-      }
-      
-      // Force an update of the tile info panel if this tile is selected
-      if (this.selectedTile && this.selectedTile.coord.q === coord.q && this.selectedTile.coord.r === coord.r) {
-        console.log(`🔄 Selected tile matches spawned organelle, updating info panel`);
-        this.forceUpdateTileInfoPanel();
-      }
+    if (!definition) {
+      console.error(`Cannot spawn organelle: unknown type "${organelleType}"`);
+      return;
+    }
+    
+    // Convert definition to config format and generate unique instance ID
+    const config = definitionToConfig(definition, `${organelleType}-${Date.now()}`);
+    
+    // Create the organelle through the organelle system
+    const success = this.organelleSystem.createOrganelle(config, coord);
+    if (success) {
+      console.log(`✅ Successfully spawned ${organelleType} at (${coord.q}, ${coord.r})`);
     } else {
-      console.warn(`Unknown organelle type for blueprint completion: ${organelleType}`);
+      console.error(`❌ Failed to spawn ${organelleType} at (${coord.q}, ${coord.r})`);
     }
   }
 
@@ -1684,7 +1818,7 @@ export class GameScene extends Phaser.Scene {
     const carriedCount = carriedCargo ? 1 : 0;
     const carriedType = carriedCargo ? carriedCargo.type : 'none';
     const totalTranscripts = this.transcripts.size;
-    const pendingOrders = this.installOrders.size;
+    const pendingOrders = this.net.installOrders.getOrderCount();
     const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalTranscripts} transcripts total | Orders: ${pendingOrders} pending`;
     
     // Milestone 10: Updated control hints for motility modes
@@ -1797,53 +1931,83 @@ export class GameScene extends Phaser.Scene {
   private initializeNetworking(): void {
     console.log('Initializing networking systems...');
     
-    // Create network transport
-    this.networkTransport = new NetworkTransport();
-    
-    // Create room management UI
-    const view = this.scale.gameSize;
+    // Always-networked approach: Start with local loopback (no transport switching!)
+    const offline = new LoopbackTransport({ roomId: "offline", isHost: true });
+    this.initNetwork({ transport: offline, isHost: true, roomId: "offline" });
+
+    // F10 toggles Quick Join panel - simple scene restart approach
     this.roomUI = new RoomUI({
       scene: this,
-      x: view.width * 0.5,
-      y: view.height * 0.5
-    }, this.networkTransport);
-    
-    // Create network HUD (top-right corner)
-    this.netHUD = new NetHUD({
-      scene: this,
-      x: view.width - 120,
-      y: 80
-    }, this.networkTransport);
-    
-    // Set up event handlers for when networking is established
-    this.networkTransport.addEventListener('connection', (event: any) => {
-      const connectionEvent = event.detail;
-      if (connectionEvent.type === 'connected') {
-        this.initializeNetSyncSystem();
-      }
+      connectQuick: async () => {
+        const transport = await makeQuickJoinTransport();
+        return { transport, isHost: transport.isHost, roomId: "CELL01" };
+      },
+      onConnected: ({ transport, roomId }) => {
+        // Clean approach: Restart scene with multiplayer (no complex switching!)
+        console.log(`🎮 Starting multiplayer session: ${transport.isHost ? 'HOST' : 'CLIENT'} in ${roomId}`);
+        this.scene.restart({ 
+          useMultiplayer: true, 
+          transport, 
+          isHost: transport.isHost, 
+          roomId 
+        });
+      },
     });
     
     console.log('Networking systems initialized');
   }
   
-  // Initialize NetSyncSystem after connection is established
-  private initializeNetSyncSystem(): void {
-    if (this.netSyncSystem) return; // Already initialized
+  // Always-networked initialization - create systems once, never switch transports
+  private initNetwork({ transport, isHost, roomId }: 
+    { transport: NetworkTransport; isHost: boolean; roomId: string }) {
+    const world = this.getWorldRefs();
+
+    const bus = new NetBus(transport);
     
-    const isHost = this.roomUI.isHostPlayer();
+    const players        = new PlayerSystem(bus);
+    const cargo          = new CargoSystem(bus, world);
+    const species        = new SpeciesSystem(bus, world);
+    const installOrders  = new InstallOrderSystem(bus);
+    const cytoskeleton   = this.cytoskeletonSystem; // Use existing system
+    const emotes         = new EmoteSystem(bus, this, players, this.cellRoot);
+
+    for (const c of [players, cargo, species, installOrders, emotes].filter(c => c)) bus.registerInstance(c);
+
+    // Host initializes self in player roster
+    if (bus.isHost) {
+      players.join(bus.localId, 0, 0);
+    }
+
+    // Store self ID for rendering logic
+    this.selfId = bus.localId;
+
+    this.net = { 
+      bus, 
+      isHost: bus.isHost, 
+      players,            // Direct PlayerSystem access
+      cargo, 
+      species,
+      installOrders,
+      cytoskeleton, 
+      emotes 
+    };
+
+    // Initialize ProductionSystem now that InstallOrderSystem is available
+    this.productionSystem = new ProductionSystem(bus, installOrders, this, this.getWorldRefs(), this.cellRoot);
+
+    // Optional per-frame host flush (microtask batching also works):
+    const flush = () => {
+      if (bus.isHost) {
+        (players as any).flushState?.();
+        (cargo as any).flushState?.();
+        (species as any).flushState?.();
+        (emotes as any).flushState?.();
+      }
+      requestAnimationFrame(flush);
+    };
+    requestAnimationFrame(flush);
     
-    console.log(`Initializing NetSyncSystem as ${isHost ? 'HOST' : 'CLIENT'}`);
-    
-    this.netSyncSystem = new NetSyncSystem({
-      scene: this,
-      transport: this.networkTransport,
-      worldRefs: this.getWorldRefs(),
-      player: this.playerActor,
-      isHost: isHost
-    });
-    
-    // Connect NetHUD to NetSyncSystem for prediction stats
-    this.netHUD.setNetSyncSystem(this.netSyncSystem);
+    console.log(`Network initialized: ${isHost ? 'HOST' : 'CLIENT'} in room ${roomId}`);
   }
   
   /**
@@ -1947,13 +2111,29 @@ export class GameScene extends Phaser.Scene {
 
     // F key - Instantly complete construction on current tile
     if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
-      // Network-aware construction completion
-      if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
-        // Client: request finish construction from host
-        this.requestFinishConstruction(playerCoord.q, playerCoord.r);
+      // Check for blueprint at current location
+      const blueprint = this.blueprintSystem.getBlueprintAtTile(playerCoord.q, playerCoord.r);
+      if (blueprint) {
+        // Instantly complete the blueprint
+        const result = this.blueprintSystem.instantlyComplete(blueprint.id);
+        
+        // Only check result if we're the host (clients get undefined from @RunOnServer methods)
+        if (this.net.bus.isHost) {
+          if (result && result.success) {
+            console.log(`🏁 Instantly completed construction: ${blueprint.recipeId}`);
+            this.showToast(`Completed ${blueprint.recipeId}!`);
+          } else {
+            console.warn(`❌ Failed to complete construction: ${result?.error}`);
+            this.showToast(result?.error || 'Failed to complete construction');
+          }
+        } else {
+          // Client: show optimistic feedback
+          console.log(`🏁 Requested instant completion: ${blueprint.recipeId}`);
+          this.showToast(`Completing ${blueprint.recipeId}...`);
+        }
       } else {
-        // Host or single-player: instant complete directly
-        this.instantCompleteConstruction(playerCoord);
+        console.log('No blueprint found at current location');
+        this.showToast('No blueprint found here');
       }
     }
 
@@ -1964,28 +2144,6 @@ export class GameScene extends Phaser.Scene {
   /**
    * Debug function to instantly complete any blueprint construction on the given tile
    */
-  private instantCompleteConstruction(coord: HexCoord): void {
-    const blueprint = this.blueprintSystem.getBlueprintAtTile(coord.q, coord.r);
-    if (!blueprint) {
-      console.log(`No blueprint found at (${coord.q}, ${coord.r})`);
-      return;
-    }
-
-    const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
-    if (!recipe) {
-      console.warn(`Recipe not found for blueprint ${blueprint.id}`);
-      return;
-    }
-
-    // Fill all requirements instantly
-    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
-      blueprint.progress[speciesId as SpeciesId] = requiredAmount;
-      blueprint.totalProgress += requiredAmount;
-    }
-
-    console.log(`🚀 Instantly completed ${recipe.label} construction at (${coord.q}, ${coord.r})`);
-  }
-
   // Blueprint System Input Handling - Milestone 5
   
   /**
@@ -2032,8 +2190,19 @@ export class GameScene extends Phaser.Scene {
 
       if (blueprint) {
         const success = this.blueprintSystem.cancelBlueprint(blueprint.id, 0.5);
-        if (success) {
-          console.log(`🗑️ Cancelled blueprint with 50% refund`);
+        
+        // Only check result if we're the host (clients get undefined from @RunOnServer methods)
+        if (this.net.bus.isHost) {
+          if (success) {
+            console.log(`🗑️ Cancelled blueprint with 50% refund`);
+            this.showToast('Blueprint cancelled with 50% refund');
+          } else {
+            this.showToast('Failed to cancel blueprint');
+          }
+        } else {
+          // Client: show optimistic feedback
+          console.log(`🗑️ Requested blueprint cancellation`);
+          this.showToast('Cancelling blueprint...');
         }
       }
     }
@@ -2055,35 +2224,33 @@ export class GameScene extends Phaser.Scene {
         }
 
         // Check if we're in multiplayer and not the host
-        if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
-          // Send network command to host for blueprint placement
-          this.requestBlueprintPlacement(
-            this.selectedRecipeId as OrganelleType,
-            this.currentTileRef.coord.q,
-            this.currentTileRef.coord.r
-          );
-        } else {
-          // Direct placement for host or single-player
-          const result = this.blueprintSystem.placeBlueprint(
-            this.selectedRecipeId as OrganelleType,
-            this.currentTileRef.coord.q,
-            this.currentTileRef.coord.r
-          );
-
-          if (result.success) {
+        // Always use network call - it will route properly whether we're host or client
+        const result = this.blueprintSystem.placeBlueprint(
+          this.selectedRecipeId as OrganelleType,
+          this.currentTileRef.coord.q,
+          this.currentTileRef.coord.r
+        );
+        
+        // Only check result if we're the host (clients get undefined from @RunOnServer methods)
+        if (this.net.bus.isHost) {
+          if (result && result.success) {
             console.log(`Placed ${this.selectedRecipeId} blueprint at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
-            
-            // Exit build mode after successful placement
-            this.isInBuildMode = false;
-            this.selectedRecipeId = null;
-            this.buildPalette.hide();
-            // Reset palette to show all recipes
-            this.buildPalette.rebuildPalette('all');
+            this.showToast(`Placed ${this.selectedRecipeId} blueprint`);
           } else {
-            this.showToast(`Failed to place blueprint: ${result.error}`);
-            console.warn(`Failed to place blueprint: ${result.error}`);
+            this.showToast(result?.error || 'Failed to place blueprint');
           }
+        } else {
+          // Client: just show optimistic feedback since we can't get immediate result
+          console.log(`Requested ${this.selectedRecipeId} blueprint placement at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
+          this.showToast(`Requesting ${this.selectedRecipeId} blueprint...`);
         }
+        
+        // Exit build mode after placement request
+        this.isInBuildMode = false;
+        this.selectedRecipeId = null;
+        this.buildPalette.hide();
+        // Reset palette to show all recipes
+        this.buildPalette.rebuildPalette('all');
       }
     }
   }
@@ -2126,59 +2293,18 @@ export class GameScene extends Phaser.Scene {
       const playerHex = this.getPlayerHexCoord();
       if (!playerHex) return;
 
-      // Check if we're in multiplayer mode and not the host
-      if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
-        // Multiplayer client: Send command to host instead of executing locally
-        const isCarrying = this.unifiedCargoSystem.isCarrying();
-        if (!isCarrying) {
-          const commandId = this.netSyncSystem.requestAction('cargoPickup', { playerHex });
-          console.log(`📤 CLIENT: Requested cargo pickup at (${playerHex.q}, ${playerHex.r}), commandId: ${commandId}`);
-          this.showToast("Pickup request sent...");
-        } else {
-          const commandId = this.netSyncSystem.requestAction('cargoDrop', { playerHex });
-          console.log(`📤 CLIENT: Requested cargo drop at (${playerHex.q}, ${playerHex.r}), commandId: ${commandId}`);
-          this.showToast("Drop request sent...");
-        }
+      // Always use network calls - they route properly whether we're host or client
+      const isCarrying = this.unifiedCargoSystem.isCarrying();
+      if (!isCarrying) {
+        this.net.cargo.pickup(playerHex);
+        console.log(`📤 Requested cargo pickup at (${playerHex.q}, ${playerHex.r})`);
+        this.showToast("Pickup request sent...");
       } else {
-        // Single-player or host: Execute cargo action directly
-        if (!this.unifiedCargoSystem.isCarrying()) {
-          const result = this.unifiedCargoSystem.attemptPickup(playerHex);
-          this.showToast(result.message);
-        } else {
-          const result = this.unifiedCargoSystem.dropCargo(playerHex);
-          this.showToast(result.message);
-        }
+        this.net.cargo.drop(playerHex);
+        console.log(`📤 Requested cargo drop at (${playerHex.q}, ${playerHex.r})`);
+        this.showToast("Drop request sent...");
       }
     }
-  }
-
-  /**
-   * Request blueprint placement from the host (for multiplayer clients)
-   */
-  private requestBlueprintPlacement(recipeId: OrganelleType, q: number, r: number): void {
-    if (!this.netSyncSystem) return;
-
-    const commandId = this.netSyncSystem.requestAction('buildBlueprint', {
-      recipeId,
-      hex: { q, r }
-    });
-
-    console.log(`📤 CLIENT: Requested blueprint placement for ${recipeId} at (${q}, ${r}), commandId: ${commandId}`);
-    this.showToast("Blueprint placement request sent...");
-  }
-
-  /**
-   * Request finish construction from the host (for multiplayer clients)
-   */
-  private requestFinishConstruction(q: number, r: number): void {
-    if (!this.netSyncSystem) return;
-
-    const commandId = this.netSyncSystem.requestAction('finishConstruction', {
-      hex: { q, r }
-    });
-
-    console.log(`📤 CLIENT: Requested finish construction at (${q}, ${r}), commandId: ${commandId}`);
-    this.showToast("Construction completion request sent...");
   }
 
   /**
@@ -2441,28 +2567,12 @@ export class GameScene extends Phaser.Scene {
     const playerCoord = this.getPlayerHexCoord();
     if (!playerCoord) return;
 
-    // Check if we're in a networked game and need to route through the network
-    if (this.netSyncSystem && !this.netSyncSystem.getIsHost()) {
-      // Client - send request to host
-      console.log(`📤 CLIENT: Requesting species injection: ${amount} ${speciesId} at (${playerCoord.q}, ${playerCoord.r})`);
-      
-      const commandId = this.netSyncSystem.requestAction('injectSpecies', {
-        speciesId,
-        amount,
-        hex: { q: playerCoord.q, r: playerCoord.r }
-      });
-      
-      if (commandId) {
-        this.showToast(`Requesting injection of ${amount} ${speciesId}...`);
-      } else {
-        this.showToast('Failed to send species injection request');
-      }
-      return;
-    }
-
-    // Host or single-player - inject directly
-    this.hexGrid.addConcentration(playerCoord, speciesId, amount);
-    console.log(`Injected ${amount} ${speciesId} into tile (${playerCoord.q}, ${playerCoord.r})`);
+    // Always use network call - it will route properly whether we're host or client
+    console.log(`📤 Requesting species injection: ${amount} ${speciesId} at (${playerCoord.q}, ${playerCoord.r})`);
+    
+    this.net.species.injectSpecies(speciesId, amount, { q: playerCoord.q, r: playerCoord.r });
+    
+    this.showToast(`Requesting injection of ${amount} ${speciesId}...`);
   }
 
 
@@ -2486,10 +2596,10 @@ export class GameScene extends Phaser.Scene {
     console.log(`📦 Unified Cargo: ${this.unifiedCargoSystem.isCarrying() ? 'Carrying cargo' : 'Empty'}`);
     console.log(`🏀 Membrane Trampoline: ${this.membraneTrampoline.isOnCooldown() ? 'On cooldown' : 'Ready'}`);
     
-    // CellProduction metrics
+    // ProductionSystem metrics
     const transcriptCount = this.transcripts.size;
-    const orderCount = this.installOrders.size;
-    console.log(`🔬 CellProduction: ${transcriptCount} transcripts, ${orderCount} pending orders`);
+    const orderCount = this.net.installOrders.getOrderCount();
+    console.log(`🔬 ProductionSystem: ${transcriptCount} transcripts, ${orderCount} pending orders`);
     
     // CellTransport metrics  
     const organelleCount = this.organelleSystem.getAllOrganelles().length;
@@ -2512,5 +2622,13 @@ export class GameScene extends Phaser.Scene {
     this.showToast("System status logged to console (F12)");
   }
 
+}
+
+// Implement using WebRTC transport with signaling server
+// It should perform discover/join or host, resolve when data channels are open,
+// and return an object that matches NetworkTransport.
+async function makeQuickJoinTransport(): Promise<import("../network/transport").NetworkTransport> {
+  const { createQuickJoinWebRTC } = await import("../network/transport");
+  return createQuickJoinWebRTC("CELL01");
 }
 

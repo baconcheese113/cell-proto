@@ -3,20 +3,6 @@
 import type { NetworkTransport, PeerId } from './transport';
 import { collectMethodMeta } from './decorators';
 
-type EnvelopeKind = 'rpc' | 'cast';
-
-interface Envelope {
-  kind: EnvelopeKind;
-  /** Addressed instance + method, e.g. "EmoteSystem#3._applyStatePatch" */
-  target: string;
-  /** For RPC, the destination peer id (host). For cast, unused. */
-  to?: PeerId;
-  /** Sender id (for debugging or filtering) */
-  from: PeerId;
-  /** Method arguments (positional) */
-  args: unknown[];
-}
-
 /** (address + method) -> bound original function */
 type Handler = (args: unknown[]) => void;
 
@@ -38,14 +24,52 @@ export class NetBus {
   }
 
   /** Register all decorated methods on the instance: both RPC and multicast receivers. */
-  registerInstance(instance: any): void {
+  registerInstance(instance: any, key?: string): void {
+    // Assign deterministic __netKey
+    instance.__netKey = key || instance.constructor.name;
+    
     const metas = collectMethodMeta(instance);
     for (const m of metas) {
-      const key = this.makeTargetKey(instance.netAddress, m.name);
+      const targetKey = this.makeTargetKey(instance.__netKey, m.name);
       // Bind the *original* (undecorated) function so we don't resend on inbound.
       const bound: Handler = (args: unknown[]) => (m.original as Function).apply(instance, args);
-      this.handlers.set(key, bound);
+      this.handlers.set(targetKey, bound);
     }
+  }
+
+  /** Register a handler manually (for non-decorated methods like _applyStatePatch) */
+  registerHandler(targetKey: string, handler: Handler): void {
+    this.handlers.set(targetKey, handler);
+  }
+
+  /** Send an RPC to the host to invoke the target method on its instance. */
+  sendRpc(key: string, method: string, args: unknown[]): void {
+    this.transport.send(this.transport.hostId, { t: 'rpc', key, method, args }, true);
+  }
+
+  /** Send state patch to all peers */
+  sendPatch(key: string, chan: string, rev: number, data: unknown): void {
+    const patchMsg = { t: 'patch', key, chan, rev, data };
+    for (const pid of this.transport.peers()) {
+      if (pid === this.transport.localId) continue;
+      this.transport.send(pid, patchMsg, true);
+    }
+  }
+
+  /** Multicast a method invocation to all peers (for @Multicast decorator) */
+  sendMulticast(address: string, method: string, args: unknown[]): void {
+    const msg = { t: 'multicast', key: address, method, args };
+    
+    // Send to all other peers
+    for (const pid of this.transport.peers()) {
+      if (pid === this.transport.localId) continue;
+      this.transport.send(pid, msg, true);
+    }
+    
+    // Apply locally (self-loopback)
+    const targetKey = this.makeTargetKey(address, method);
+    const handler = this.handlers.get(targetKey);
+    if (handler) handler(args);
   }
 
   /** Send an RPC to the host to invoke the target method on its instance. */
@@ -54,31 +78,8 @@ export class NetBus {
       this.invokeLocal(address, method, args);
       return;
     }
-    const env: Envelope = {
-      kind: 'rpc',
-      target: this.makeTargetKey(address, method),
-      to: this.transport.hostId,
-      from: this.transport.localId,
-      args,
-    };
-    this.transport.send(this.transport.hostId, env, true);
-  }
-
-  /** Multicast a method invocation to all peers (loopback included). */
-  sendCast(address: string, method: string, args: unknown[]): void {
-    const env: Envelope = {
-      kind: 'cast',
-      target: this.makeTargetKey(address, method),
-      from: this.transport.localId,
-      args,
-    };
-    // Loopback: deliver to self immediately (mirrors native transports that echo).
-    this.handleEnvelope(this.transport.localId, env);
-    // Broadcast to others
-    for (const pid of this.transport.peers()) {
-      if (pid === this.transport.localId) continue;
-      this.transport.send(pid, env, true);
-    }
+    const rpcMsg = { t: 'rpc', key: address, method, args };
+    this.transport.send(this.transport.hostId, rpcMsg, true);
   }
 
   // ----------------
@@ -86,17 +87,41 @@ export class NetBus {
   // ----------------
 
   private handleEnvelope(_from: PeerId, data: unknown): void {
-    const env = data as Envelope;
-    if (!env || typeof env !== 'object') return;
-
-    if (env.kind === 'rpc') {
-      // Only host should execute RPC envelopes
-      if (!this.isHost) return;
-      if (env.to && env.to !== this.transport.localId) return;
-      this.invokeLocalByTarget(env.target, env.args);
-    } else if (env.kind === 'cast') {
-      // All peers invoke
-      this.invokeLocalByTarget(env.target, env.args);
+    // Handle RPC and patch message format
+    if (typeof data === 'object' && data && 't' in data) {
+      const msg = data as any;
+      
+      if (msg.t === 'rpc') {
+        // Only host should execute RPC
+        if (!this.isHost) return;
+        
+        const targetKey = this.makeTargetKey(msg.key, msg.method);
+        const handler = this.handlers.get(targetKey);
+        if (handler) handler(msg.args);
+        return;
+      }
+      
+      if (msg.t === 'patch') {
+        // Apply state patch to the matching component
+        const targetKey = this.makeTargetKey(msg.key, '_applyStatePatch');
+        const handler = this.handlers.get(targetKey);
+        if (handler) {
+          const patch = {
+            __chan: msg.chan,
+            __rev: msg.rev,
+            data: msg.data
+          };
+          handler([patch]);
+        }
+        return;
+      }
+      
+      if (msg.t === 'multicast') {
+        const targetKey = this.makeTargetKey(msg.key, msg.method);
+        const handler = this.handlers.get(targetKey);
+        if (handler) handler(msg.args);
+        return;
+      }
     }
   }
 

@@ -13,6 +13,9 @@ import type { MembraneExchangeSystem } from "../membrane/membrane-exchange-syste
 import type { SpeciesId } from "../species/species-registry";
 import type { OrganelleType } from "../organelles/organelle-registry";
 import { getAllSpeciesIds } from "../species/species-registry";
+import { NetComponent } from "../network/net-entity";
+import { RunOnServer } from "../network/decorators";
+import type { NetBus } from "../network/net-bus";
 
 export interface Blueprint {
   id: string;
@@ -35,9 +38,9 @@ export interface PlacementValidation {
   footprintTiles: HexCoord[];
 }
 
-export class BlueprintSystem {
+export class BlueprintSystem extends NetComponent {
   private hexGrid: HexGrid;
-  private blueprints: Map<string, Blueprint> = new Map();
+  private blueprintState = this.stateChannel<{ blueprints: Record<string, Blueprint> }>('blueprints', { blueprints: {} });
   private blueprintsByTile: Map<string, Blueprint> = new Map(); // tile key -> blueprint
   private nextBlueprintId: number = 1;
 
@@ -48,11 +51,43 @@ export class BlueprintSystem {
   // Milestone 6: Membrane system integration
   private membraneExchangeSystem?: MembraneExchangeSystem;
 
-  constructor(hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void, membraneExchangeSystem?: MembraneExchangeSystem) {
+  constructor(netBus: NetBus, hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void, membraneExchangeSystem?: MembraneExchangeSystem) {
+    super(netBus, { address: 'BlueprintSystem' });
     this.hexGrid = hexGrid;
     this.getOccupiedTiles = getOccupiedTiles;
     this.spawnOrganelle = spawnOrganelle;
     this.membraneExchangeSystem = membraneExchangeSystem;
+  }
+
+  // Helper methods for state channel access
+  private get blueprints(): Record<string, Blueprint> {
+    return this.blueprintState.blueprints;
+  }
+
+  private setBlueprintInState(id: string, blueprint: Blueprint): void {
+    this.blueprintState.blueprints[id] = blueprint;
+  }
+
+  private deleteBlueprintFromState(id: string): void {
+    delete this.blueprintState.blueprints[id];
+  }
+
+  // Helper method to check if a tile is occupied by any blueprint (uses replicated state)
+  private isTileOccupiedByBlueprint(q: number, r: number): boolean {
+    for (const blueprint of Object.values(this.blueprints)) {
+      const footprintTiles = CONSTRUCTION_RECIPES.getFootprintAt(
+        blueprint.recipeId,
+        blueprint.anchorCoord.q,
+        blueprint.anchorCoord.r
+      );
+      
+      for (const tile of footprintTiles) {
+        if (tile.q === q && tile.r === r) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**
@@ -82,7 +117,7 @@ export class BlueprintSystem {
 
       // Check if tile is already occupied by organelle or blueprint
       const tileKey = `${tile.q},${tile.r}`;
-      if (occupiedTiles.has(tileKey) || this.blueprintsByTile.has(tileKey)) {
+      if (occupiedTiles.has(tileKey) || this.isTileOccupiedByBlueprint(tile.q, tile.r)) {
         errors.push(`Tile (${tile.q}, ${tile.r}) is already occupied`);
       }
 
@@ -129,6 +164,7 @@ export class BlueprintSystem {
   /**
    * Task 2: Place a blueprint
    */
+  @RunOnServer()
   public placeBlueprint(recipeId: OrganelleType, anchorQ: number, anchorR: number): { success: boolean; blueprintId?: string; error?: string } {
     const validation = this.validatePlacement(recipeId, anchorQ, anchorR);
     
@@ -159,9 +195,10 @@ export class BlueprintSystem {
       lastTickTime: Date.now()
     };
 
-    this.blueprints.set(blueprintId, blueprint);
+    this.setBlueprintInState(blueprintId, blueprint);
 
     // Mark footprint tiles as occupied by this blueprint
+    // NOTE: blueprintsByTile Map is now redundant since we use replicated state for queries
     for (const tile of validation.footprintTiles) {
       const tileKey = `${tile.q},${tile.r}`;
       this.blueprintsByTile.set(tileKey, blueprint);
@@ -181,7 +218,7 @@ export class BlueprintSystem {
    */
   public processConstruction(deltaTime: number): void {
     // Process blueprints in creation order (FIFO - first placed gets priority)
-    const sortedBlueprints = Array.from(this.blueprints.values())
+    const sortedBlueprints = Object.values(this.blueprints)
       .filter(bp => bp.isActive)
       .sort((a, b) => a.createdAt - b.createdAt);
 
@@ -255,7 +292,7 @@ export class BlueprintSystem {
    * Task 4: Player contribution - add dropped species directly to progress
    */
   public addPlayerContribution(blueprintId: string, speciesId: SpeciesId, amount: number): boolean {
-    const blueprint = this.blueprints.get(blueprintId);
+    const blueprint = this.blueprints[blueprintId];
     if (!blueprint || !blueprint.isActive) return false;
 
     const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
@@ -311,8 +348,9 @@ export class BlueprintSystem {
   /**
    * Task 7: Cancel/demolish blueprint
    */
+  @RunOnServer()
   public cancelBlueprint(blueprintId: string, refundFraction: number = 0.5): boolean {
-    const blueprint = this.blueprints.get(blueprintId);
+    const blueprint = this.blueprints[blueprintId];
     if (!blueprint) return false;
 
     // Calculate refund
@@ -350,7 +388,7 @@ export class BlueprintSystem {
   }
 
   private removeBlueprint(blueprintId: string): void {
-    const blueprint = this.blueprints.get(blueprintId);
+    const blueprint = this.blueprints[blueprintId];
     if (!blueprint) return;
 
     // Remove from tile occupation map
@@ -360,30 +398,48 @@ export class BlueprintSystem {
       blueprint.anchorCoord.r
     );
 
+    // NOTE: blueprintsByTile Map is now redundant since we use replicated state for queries
     for (const tile of footprintTiles) {
       const tileKey = `${tile.q},${tile.r}`;
       this.blueprintsByTile.delete(tileKey);
     }
 
-    this.blueprints.delete(blueprintId);
+    this.deleteBlueprintFromState(blueprintId);
   }
 
   // Accessors for UI and integration
   public getAllBlueprints(): Blueprint[] {
-    return Array.from(this.blueprints.values());
+    return Object.values(this.blueprints);
   }
 
   public getBlueprint(id: string): Blueprint | undefined {
-    return this.blueprints.get(id);
+    return this.blueprints[id];
   }
 
   public getBlueprintAtTile(q: number, r: number): Blueprint | undefined {
-    const tileKey = `${q},${r}`;
-    return this.blueprintsByTile.get(tileKey);
+    // Search through replicated blueprint state instead of local tile map
+    // This ensures clients can find blueprints placed by host
+    for (const blueprint of Object.values(this.blueprints)) {
+      // Get the blueprint's footprint tiles
+      const footprintTiles = CONSTRUCTION_RECIPES.getFootprintAt(
+        blueprint.recipeId,
+        blueprint.anchorCoord.q,
+        blueprint.anchorCoord.r
+      );
+      
+      // Check if the requested tile is within this blueprint's footprint
+      for (const tile of footprintTiles) {
+        if (tile.q === q && tile.r === r) {
+          return blueprint;
+        }
+      }
+    }
+    
+    return undefined;
   }
 
   public getFootprintTiles(blueprintId: string): HexCoord[] {
-    const blueprint = this.blueprints.get(blueprintId);
+    const blueprint = this.blueprints[blueprintId];
     if (!blueprint) return [];
 
     return CONSTRUCTION_RECIPES.getFootprintAt(
@@ -396,8 +452,9 @@ export class BlueprintSystem {
   /**
    * Instantly complete a blueprint construction (for F key functionality)
    */
+  @RunOnServer()
   public instantlyComplete(blueprintId: string): { success: boolean; error?: string } {
-    const blueprint = this.blueprints.get(blueprintId);
+    const blueprint = this.blueprints[blueprintId];
     if (!blueprint) {
       return { success: false, error: 'Blueprint not found' };
     }

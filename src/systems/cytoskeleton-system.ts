@@ -11,8 +11,10 @@
 
 import type { HexCoord } from "../hex/hex-grid";
 import type { WorldRefs } from "../core/world-refs";
-import { SystemObject } from "./system-object";
 import { CytoskeletonGraph } from "./cytoskeleton-graph";
+import { NetComponent } from '../network/net-entity';
+import { RunOnServer } from '../network/decorators';
+import type { NetBus } from '../network/net-bus';
 
 // Story 13.2: Filament types with distinct properties
 export type FilamentType = 'actin' | 'microtubule';
@@ -128,11 +130,26 @@ interface FilamentConfig {
   canStartFromExisting: boolean;
 }
 
-export class CytoskeletonSystem extends SystemObject {
+// Story 13.2: Segment state for network replication
+type SegmentDTO = { 
+  id: string; 
+  type: 'microtubule' | 'actin'; 
+  a: { q: number; r: number }; 
+  b: { q: number; r: number } 
+};
+
+type RailState = { 
+  segments: Record<string, SegmentDTO> 
+};
+
+export class CytoskeletonSystem extends NetComponent {
   private worldRefs: WorldRefs;
   
+  // Network state mirror
+  private rails = this.stateChannel<RailState>('cytoskeleton', { segments: {} });
+  
   // Core data structures
-  private segments: Map<string, FilamentSegment> = new Map();
+  private domainSegments: Map<string, FilamentSegment> = new Map();
   private networks: Map<string, FilamentNetwork> = new Map();
   private upgrades: Map<string, OrganelleUpgrade> = new Map();
   private junctions: Map<string, FilamentJunction> = new Map();
@@ -203,8 +220,8 @@ export class CytoskeletonSystem extends SystemObject {
     }
   };
 
-  constructor(scene: Phaser.Scene, worldRefs: WorldRefs) {
-    super(scene, "CytoskeletonSystem", (deltaSeconds: number) => this.update(deltaSeconds));
+  constructor(netBus: NetBus, worldRefs: WorldRefs) {
+    super(netBus, { address: 'CytoskeletonSystem' });
     this.worldRefs = worldRefs;
     
     // Initialize graph for real rail transport
@@ -224,14 +241,14 @@ export class CytoskeletonSystem extends SystemObject {
 
   // Public getters for graph system
   get allSegments(): Map<string, FilamentSegment> {
-    return this.segments;
+    return this.domainSegments;
   }
 
   get allUpgrades(): Map<string, OrganelleUpgrade> {
     return this.upgrades;
   }
 
-  override update(deltaSeconds: number): void {
+  update(deltaSeconds: number): void {
     this.updateNetworkUtilization();
     this.processUpgradeQueues(deltaSeconds);
     this.updateJunctionActivity();
@@ -353,7 +370,7 @@ export class CytoskeletonSystem extends SystemObject {
     if (this.worldRefs.organelleSystem.hasTileOrganelle(hex)) return false;
     
     // Check if there's already a filament segment at this location
-    for (const segment of this.segments.values()) {
+    for (const segment of this.domainSegments.values()) {
       if ((segment.fromHex.q === hex.q && segment.fromHex.r === hex.r) ||
           (segment.toHex.q === hex.q && segment.toHex.r === hex.r)) {
         return false; // Overlapping segments not allowed
@@ -507,7 +524,7 @@ export class CytoskeletonSystem extends SystemObject {
       upkeepCost: config.upkeepCost
     };
     
-    this.segments.set(segmentId, segment);
+    this.domainSegments.set(segmentId, segment);
     this.rebuildNetworks(); // Rebuild network topology
     this.graph.markDirty(); // Mark graph for rebuild
     
@@ -524,7 +541,7 @@ export class CytoskeletonSystem extends SystemObject {
     // Group connected segments into networks
     const visited = new Set<string>();
     
-    for (const segment of this.segments.values()) {
+    for (const segment of this.domainSegments.values()) {
       if (visited.has(segment.id)) continue;
       
       const networkId = `network_${this.nextNetworkId++}`;
@@ -542,7 +559,7 @@ export class CytoskeletonSystem extends SystemObject {
       
       // Set network ID for all segments in this network
       for (const segmentId of network.segments) {
-        const seg = this.segments.get(segmentId);
+        const seg = this.domainSegments.get(segmentId);
         if (seg) {
           seg.networkId = networkId;
           network.totalCapacity += seg.capacity;
@@ -556,7 +573,7 @@ export class CytoskeletonSystem extends SystemObject {
       this.networks.set(networkId, network);
     }
     
-    console.log(`Networks rebuilt: ${this.networks.size} networks, ${this.segments.size} segments`);
+    console.log(`Networks rebuilt: ${this.networks.size} networks, ${this.domainSegments.size} segments`);
   }
   
   /**
@@ -569,7 +586,7 @@ export class CytoskeletonSystem extends SystemObject {
     network.segments.add(segment.id);
     
     // Find connected segments of the same type
-    for (const otherSegment of this.segments.values()) {
+    for (const otherSegment of this.domainSegments.values()) {
       if (otherSegment.id === segment.id || otherSegment.type !== segment.type) continue;
       if (visited.has(otherSegment.id)) continue;
       
@@ -601,7 +618,7 @@ export class CytoskeletonSystem extends SystemObject {
       let totalLoad = 0;
       
       for (const segmentId of network.segments) {
-        const segment = this.segments.get(segmentId);
+        const segment = this.domainSegments.get(segmentId);
         if (segment) {
           totalCapacity += segment.capacity;
           totalLoad += segment.currentLoad;
@@ -689,7 +706,7 @@ export class CytoskeletonSystem extends SystemObject {
     this.junctions.clear();
     
     // Check each segment against each upgrade for proximity
-    for (const segment of this.segments.values()) {
+    for (const segment of this.domainSegments.values()) {
       for (const upgrade of this.upgrades.values()) {
         if (this.segmentAdjacentToUpgrade(segment, upgrade)) {
           const junctionId = `junction_${this.nextJunctionId++}`;
@@ -759,11 +776,11 @@ export class CytoskeletonSystem extends SystemObject {
   // Public accessors for rendering system
   
   public getAllSegments(): FilamentSegment[] {
-    return Array.from(this.segments.values());
+    return Array.from(this.domainSegments.values());
   }
   
   public getSegment(segmentId: string): FilamentSegment | undefined {
-    return this.segments.get(segmentId);
+    return this.domainSegments.get(segmentId);
   }
   
   public getAllNetworks(): FilamentNetwork[] {
@@ -786,7 +803,7 @@ export class CytoskeletonSystem extends SystemObject {
    * Get segments by type for targeted rendering
    */
   public getSegmentsByType(type: FilamentType): FilamentSegment[] {
-    return Array.from(this.segments.values()).filter(seg => seg.type === type);
+    return Array.from(this.domainSegments.values()).filter(seg => seg.type === type);
   }
   
   /**
@@ -800,10 +817,65 @@ export class CytoskeletonSystem extends SystemObject {
    * Get all segments that pass through a specific tile
    */
   public getSegmentsAtTile(coord: HexCoord): FilamentSegment[] {
-    return Array.from(this.segments.values()).filter(segment => {
+    return Array.from(this.domainSegments.values()).filter(segment => {
       // Check if segment passes through this coordinate
       return (segment.fromHex.q === coord.q && segment.fromHex.r === coord.r) ||
              (segment.toHex.q === coord.q && segment.toHex.r === coord.r);
     });
+  }
+
+  // =====================
+  // NETWORKING METHODS
+  // =====================
+
+  /**
+   * @RunOnServer: Build filament segments from network requests
+   */
+  @RunOnServer()
+  buildFilament(filamentType: 'actin' | 'microtubule', segments: Array<{ id: string; from: {q: number; r: number}; to: {q: number; r: number} }>): void {
+    console.log(`🧬 SERVER: Building ${filamentType} filament with ${segments.length} segments`);
+    
+    for (const segment of segments) {
+      // Create local filament segment in domain
+      const segmentId = this.createSegment(filamentType, segment.from, segment.to);
+      
+      if (segmentId) {
+        // Update network state mirror for replication
+        const dto: SegmentDTO = {
+          id: segmentId,
+          type: filamentType,
+          a: { q: segment.from.q, r: segment.from.r },
+          b: { q: segment.to.q, r: segment.to.r }
+        };
+        this.rails.segments[segmentId] = dto;
+        
+        console.log(`🧬 SERVER: Created segment ${segmentId} and replicated state`);
+      }
+    }
+  }
+
+  /**
+   * @RunOnServer: Remove a segment from network requests
+   */
+  @RunOnServer()
+  removeSegment(id: string): void {
+    console.log(`🧬 SERVER: Removing segment ${id}`);
+    
+    // Remove from domain
+    if (this.domainSegments.has(id)) {
+      this.domainSegments.delete(id);
+      
+      // Remove from network state mirror
+      delete this.rails.segments[id];
+      
+      console.log(`🧬 SERVER: Removed segment ${id} and updated replicated state`);
+    }
+  }
+
+  /**
+   * Public getter for read-only access to replicated segments
+   */
+  get replicatedSegments(): Readonly<Record<string, SegmentDTO>> {
+    return this.rails.segments;
   }
 }

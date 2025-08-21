@@ -58,8 +58,16 @@ export function RunOnServer() {
     desc.value = function (this: any, ...args: unknown[]) {
       const bus: NetBus | undefined = this._netBus;
       if (!bus) return original.apply(this, args);
-      if (bus.isHost) return original.apply(this, args);
-      bus.sendRpcToHost(this.netAddress, key, args);
+      
+    //   const methodName = `${this.__netKey}.${key}`;
+      
+      if (bus.isHost) {
+        // console.log(`[RPC_IN host] ${methodName}(${JSON.stringify(args)})`);
+        return original.apply(this, args);
+      } else {
+        // console.log(`[RPC_OUT -> host] ${methodName}(${JSON.stringify(args)})`);
+        bus.sendRpcToHost(this.__netKey, key, args);
+      }
     };
 
     return desc;
@@ -78,11 +86,11 @@ export function Multicast() {
     const metaArr = getMetaArray(_target.constructor);
     metaArr.push({ kind: 'Multicast', name: key, original });
 
-    // Replace method: send cast; inbound path calls original via NetBus.
+    // Replace method: send multicast; inbound path calls original via NetBus.
     desc.value = function (this: any, ...args: unknown[]) {
       const bus: NetBus | undefined = this._netBus;
       if (!bus) return original.apply(this, args); // offline/SP
-      bus.sendCast(this.netAddress, key, args);
+      bus.sendMulticast(this.netAddress, key, args);
       // Do NOT call original here; local loopback will invoke it once.
     };
 

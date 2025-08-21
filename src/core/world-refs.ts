@@ -158,7 +158,6 @@ export interface WorldRefs {
   
   // Construction systems
   blueprintSystem: BlueprintSystem;
-  blueprintRenderer: any; // Add blueprint renderer reference
   
   // Overlay systems
   cellOverlays: any; // Add cell overlays for queue badges

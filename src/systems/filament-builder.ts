@@ -14,6 +14,7 @@ import type { HexCoord } from "../hex/hex-grid";
 import type { WorldRefs } from "../core/world-refs";
 import type { CytoskeletonSystem, FilamentType } from "./cytoskeleton-system";
 import { SystemObject } from "./system-object";
+import type { NetBundle } from "../app/net-bundle";
 
 interface PlacementState {
   isPlacing: boolean;
@@ -54,6 +55,7 @@ interface FilamentBuildConfig {
 export class FilamentBuilder extends SystemObject {
   private worldRefs: WorldRefs;
   private cytoskeletonSystem: CytoskeletonSystem;
+  private net: NetBundle;
   
   // Placement state
   private placementState: PlacementState = {
@@ -91,12 +93,14 @@ export class FilamentBuilder extends SystemObject {
   constructor(
     scene: Phaser.Scene,
     worldRefs: WorldRefs,
-    cytoskeletonSystem: CytoskeletonSystem
+    cytoskeletonSystem: CytoskeletonSystem,
+    net: NetBundle
   ) {
     super(scene, "FilamentBuilder", (_deltaSeconds: number) => this.update());
     
     this.worldRefs = worldRefs;
     this.cytoskeletonSystem = cytoskeletonSystem;
+    this.net = net;
     
     this.createPreviewGraphics();
     this.setupInputHandlers();
@@ -424,40 +428,17 @@ export class FilamentBuilder extends SystemObject {
    * Create filament blueprints that will gradually consume resources
    */
   private createFilamentSegments(): void {
-    // Check if we're in a networked environment and not the host
-    const netSyncSystem = (this.worldRefs.scene as any)?.netSyncSystem;
-    const isHost = !netSyncSystem || (netSyncSystem as any)?.isHost;
+    // Transform preview segments to include IDs for network call
+    const segmentsWithIds = this.placementState.previewSegments.map((segment, index) => ({
+      id: `${this.placementState.filamentType}_preview_${Date.now()}_${index}`,
+      from: { q: segment.from.q, r: segment.from.r },
+      to: { q: segment.to.q, r: segment.to.r }
+    }));
     
-    if (!isHost && netSyncSystem) {
-      // Client mode - send network command instead of creating blueprints directly
-      const commandId = netSyncSystem.requestAction('buildFilament', {
-        filamentType: this.placementState.filamentType,
-        segments: this.placementState.previewSegments
-      });
-      
-      if (commandId) {
-        console.log(`📤 CLIENT: Requested ${this.placementState.filamentType} filament placement with ${this.placementState.previewSegments.length} segment(s), commandId: ${commandId}`);
-        this.worldRefs.showToast(`Filament placement request sent...`);
-      } else {
-        console.warn(`❌ CLIENT: Failed to send filament placement request`);
-        this.worldRefs.showToast(`Failed to send filament request`);
-      }
-      return;
-    }
-    
-    // Host mode or single-player - create blueprints directly
-    for (const segment of this.placementState.previewSegments) {
-      // Create blueprint instead of instant filament
-      const blueprintId = this.cytoskeletonSystem.createFilamentBlueprint(
-        this.placementState.filamentType,
-        segment.from,
-        segment.to
-      );
-      
-      if (blueprintId) {
-        console.log(`Created ${this.placementState.filamentType} blueprint: ${blueprintId}`);
-      }
-    }
+    // Always use network call - it routes properly whether we're host or client
+    this.net.cytoskeleton.buildFilament(this.placementState.filamentType, segmentsWithIds);
+    console.log(`📤 Requesting ${this.placementState.filamentType} filament placement with ${this.placementState.previewSegments.length} segment(s)`);
+    this.worldRefs.showToast(`Filament placement requested...`);
     
     this.worldRefs.showToast(
       `Started building ${this.placementState.previewSegments.length} ${this.placementState.filamentType} segment(s)`

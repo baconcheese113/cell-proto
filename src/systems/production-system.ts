@@ -1,60 +1,97 @@
 import Phaser from "phaser";
-import type { WorldRefs, Transcript, InstallOrder, CargoItinerary, CargoStage } from "../core/world-refs";
+import type { WorldRefs, Transcript, InstallOrder, CargoItinerary, CargoStage, Vesicle, ProteinId, VesicleState } from "../core/world-refs";
 import type { HexCoord } from "../hex/hex-grid";
-import { SystemObject } from "./system-object";
-import { updateVesicles, createVesicleAtER } from "./vesicle-system";
+import { NetComponent } from "../network/net-entity";
+import { RunOnServer } from "../network/decorators";
+import type { NetBus } from "../network/net-bus";
+import type { InstallOrderSystem } from "./install-order-system";
+import { updateVesicles } from "./vesicle-system";
+
+// State types for replication
+type TranscriptState = {
+  transcripts: Record<string, Transcript>;
+  nextTranscriptId: number;
+};
+
+type VesicleStateChannel = {
+  vesicles: Record<string, Vesicle>;
+  nextVesicleId: number;
+};
 
 /**
- * Consolidated Cell Production System
+ * Modern Production System - Manages entire secretory pathway
  * Handles: transcript creation, routing, ER processing, vesicle transport, and installation
+ * 
+ * Architecture:
+ * - NetComponent for automatic state replication
+ * - @RunOnServer for authoritative operations  
+ * - Functional helpers for pure logic
+ * - State channels for transcript/vesicle data
  */
-export class CellProduction extends SystemObject {
-  private worldRefs: WorldRefs;
+export class ProductionSystem extends NetComponent {
+  // Replicated state channels
+  private transcriptState = this.stateChannel<TranscriptState>('production.transcripts', { transcripts: {}, nextTranscriptId: 1 });
+  private vesicleState = this.stateChannel<VesicleStateChannel>('production.vesicles', { vesicles: {}, nextVesicleId: 1 });
+  
+  // Rendering and scene references
   private transcriptGraphics: Phaser.GameObjects.Graphics;
+  private scene: Phaser.Scene;
   
   // Performance tracking
   private updateCount = 0;
   private lastPerformanceLog = 0;
   
-  // Milestone 13: Spawn gate FIFO queue
+  // Server-only spawn queue (not replicated)
   private pendingSpawnQueue: InstallOrder[] = [];
+  
+  // World systems access (injected via constructor)
+  private worldRefs: WorldRefs;
 
-  constructor(scene: Phaser.Scene, worldRefs: WorldRefs, cellRoot?: Phaser.GameObjects.Container) {
-    super(scene, 'CellProduction', (deltaSeconds: number) => this.update(deltaSeconds));
+  constructor(
+    bus: NetBus, 
+    private installOrderSystem: InstallOrderSystem,
+    scene: Phaser.Scene,
+    worldRefs: WorldRefs,
+    cellRoot?: Phaser.GameObjects.Container
+  ) {
+    super(bus);
+    this.scene = scene;
     this.worldRefs = worldRefs;
     
-    // Create graphics object for rendering transcript dots
+    // Create graphics object for rendering
     this.transcriptGraphics = scene.add.graphics();
     this.transcriptGraphics.setDepth(5);
     
-    // HOTFIX H5: Re-parent to cellRoot if provided
     if (cellRoot) {
       cellRoot.add(this.transcriptGraphics);
     }
     
-    // Milestone 13: Listen for seat events to retry pending spawns
-    this.worldRefs.organelleSystem.addSeatEventListener((event, _organelleId, _seatId) => {
-      if (event === 'seatReleased') {
-        this.retryPendingSpawns();
-      }
+    // Start update loop (similar to SystemObject pattern)
+    scene.time.addEvent({
+      delay: 16, // ~60fps
+      callback: () => this.update(0.016),
+      loop: true
     });
   }
 
   /**
    * Main update cycle - runs all production phases in order
    */
-  override update(deltaSeconds: number) {
+  private update(deltaSeconds: number) {
     this.updateCount++;
     
     // Log performance metrics every 5 seconds
     const now = Date.now();
     if (now - this.lastPerformanceLog > 5000) {
-      const transcriptCount = this.worldRefs.transcripts.size;
-      const vesicleCount = this.worldRefs.vesicles.size;
-      console.log(`🔬 Cell-Production: ${transcriptCount} transcripts, ${vesicleCount} vesicles, ${Math.round(this.updateCount / 5)} updates/sec`);
+      const transcriptCount = Object.keys(this.transcriptState.transcripts).length;
+      const vesicleCount = Object.keys(this.vesicleState.vesicles).length;
+      console.log(`🔬 Production: ${transcriptCount} transcripts, ${vesicleCount} vesicles, ${Math.round(this.updateCount / 5)} updates/sec`);
       this.updateCount = 0;
       this.lastPerformanceLog = now;
     }
+    
+    // Only host runs the actual production logic
+    if (!this._isHost) return;
     
     // Phase 1: Spawn new transcripts and handle TTL
     this.updateTranscriptSpawning(deltaSeconds);
@@ -66,13 +103,40 @@ export class CellProduction extends SystemObject {
     this.updateErProcessing(deltaSeconds);
     
     // Phase 4: Update vesicles through secretory pipeline (Milestone 8)
-    updateVesicles(this.worldRefs, deltaSeconds, this.scene);
+    this.updateVesicleLogic(deltaSeconds);
     
     // Phase 5: Route vesicles to membrane and install proteins (legacy - now handled by vesicles)
     this.updateVesicleRouting(deltaSeconds);
     
-    // Phase 6: Render all transcripts/vesicles
+    // Phase 6: Render all transcripts/vesicles (both host and clients)
     this.renderTranscripts();
+  }
+
+  /**
+   * Update vesicle logic using the existing functional approach
+   */
+  private updateVesicleLogic(deltaSeconds: number) {
+    // Convert state channel to Map-like interface for updateVesicles
+    const vesicleMap = new Map();
+    for (const [id, vesicle] of Object.entries(this.vesicleState.vesicles)) {
+      vesicleMap.set(id, vesicle);
+    }
+    
+    // Create temporary worldRefs with our vesicle state
+    const tempWorldRefs = {
+      ...this.worldRefs,
+      vesicles: vesicleMap,
+      nextVesicleId: this.vesicleState.nextVesicleId
+    };
+    
+    updateVesicles(tempWorldRefs, deltaSeconds, this.scene);
+    
+    // Sync changes back to state channel
+    this.vesicleState.vesicles = {};
+    for (const [id, vesicle] of vesicleMap.entries()) {
+      this.vesicleState.vesicles[id] = vesicle;
+    }
+    this.vesicleState.nextVesicleId = tempWorldRefs.nextVesicleId;
   }
 
   /**
@@ -83,13 +147,14 @@ export class CellProduction extends SystemObject {
     this.processInstallOrders();
     
     // Update TTL for all transcripts
-    for (const transcript of this.worldRefs.transcripts.values()) {
+    const transcripts = this.transcriptState.transcripts;
+    for (const [id, transcript] of Object.entries(transcripts)) {
       if (transcript.isCarried) continue;
       
       transcript.ttlSeconds -= deltaSeconds;
       if (transcript.ttlSeconds <= 0) {
-        this.worldRefs.transcripts.delete(transcript.id);
-        console.log(`⏰ Transcript ${transcript.id} expired`);
+        delete this.transcriptState.transcripts[id];
+        console.log(`⏰ Transcript ${id} expired`);
       }
     }
   }
@@ -98,7 +163,8 @@ export class CellProduction extends SystemObject {
    * Phase 2: Route transcripts toward ER
    */
   private updateTranscriptRouting(_deltaSeconds: number) {
-    for (const transcript of this.worldRefs.transcripts.values()) {
+    const transcripts = this.transcriptState.transcripts;
+    for (const transcript of Object.values(transcripts)) {
       if (transcript.state !== 'traveling' || transcript.isCarried) continue;
 
       // Find nearest ER organelle
@@ -157,7 +223,8 @@ export class CellProduction extends SystemObject {
    * Phase 3: Process transcripts at ER
    */
   private updateErProcessing(deltaSeconds: number) {
-    for (const transcript of this.worldRefs.transcripts.values()) {
+    const transcripts = this.transcriptState.transcripts;
+    for (const transcript of Object.values(transcripts)) {
       if (transcript.state !== 'processing_at_er' || transcript.isCarried) continue;
 
       transcript.processingTimer -= deltaSeconds;
@@ -172,7 +239,8 @@ export class CellProduction extends SystemObject {
    * Phase 4: Route vesicles to membrane and install
    */
   private updateVesicleRouting(deltaSeconds: number) {
-    for (const transcript of this.worldRefs.transcripts.values()) {
+    const transcripts = this.transcriptState.transcripts;
+    for (const transcript of Object.values(transcripts)) {
       if (transcript.isCarried) continue;
 
       if (transcript.state === 'packaged_for_transport') {
@@ -189,10 +257,11 @@ export class CellProduction extends SystemObject {
   // === TRANSCRIPT SPAWNING HELPERS ===
 
   private processInstallOrders() {
-    // Move new install orders to pending queue
-    for (const [orderId, order] of this.worldRefs.installOrders) {
+    // Move new install orders to pending queue from the InstallOrderSystem
+    for (const order of this.installOrderSystem.getAllOrders()) {
       this.pendingSpawnQueue.push(order);
-      this.worldRefs.installOrders.delete(orderId);
+      // Remove the processed order from the system
+      this.installOrderSystem.removeProcessedOrder(order.id);
     }
     
     // Try to spawn from pending queue
@@ -235,6 +304,10 @@ export class CellProduction extends SystemObject {
     return null;
   }
 
+  /**
+   * Server-only: Create transcript from install order
+   */
+  @RunOnServer()
   private createTranscriptAtNucleus(order: InstallOrder, nucleusCoord: HexCoord) {
     const nucleusOrganelle = this.worldRefs.organelleSystem.getOrganelleAtTile(nucleusCoord);
     if (!nucleusOrganelle) {
@@ -261,7 +334,7 @@ export class CellProduction extends SystemObject {
 
     // Create transcript at the assigned seat position
     const transcript: Transcript = {
-      id: `transcript_${this.worldRefs.nextTranscriptId++}`,
+      id: `transcript_${this.transcriptState.nextTranscriptId++}`,
       proteinId: order.proteinId,
       atHex: { q: seatPosition.q, r: seatPosition.r },
       ttlSeconds: 60, // 1 minute lifetime
@@ -275,7 +348,7 @@ export class CellProduction extends SystemObject {
       itinerary // Attach route plan
     };
     
-    this.worldRefs.transcripts.set(transcript.id, transcript);
+    this.transcriptState.transcripts[transcript.id] = transcript;
     console.log(`📝 Created transcript for ${order.proteinId} at nucleus seat (${seatPosition.q}, ${seatPosition.r}) with ${itinerary.stages.length} stage itinerary`);
   }
 
@@ -442,7 +515,8 @@ export class CellProduction extends SystemObject {
 
   private isHexFree(coord: HexCoord, currentTranscriptId: string): boolean {
     // Check if another transcript is already at this hex
-    for (const transcript of this.worldRefs.transcripts.values()) {
+    const transcripts = this.transcriptState.transcripts;
+    for (const transcript of Object.values(transcripts)) {
       if (transcript.id === currentTranscriptId) continue;
       if (transcript.atHex.q === coord.q && transcript.atHex.r === coord.r) {
         return false;
@@ -453,6 +527,10 @@ export class CellProduction extends SystemObject {
 
   // === ER PROCESSING HELPERS ===
 
+  /**
+   * Server-only: Complete ER processing and create vesicle
+   */
+  @RunOnServer()
   private completeERProcessing(transcript: Transcript) {
     const erTile = this.worldRefs.hexGrid.getTile(transcript.atHex);
     if (!erTile) return;
@@ -470,8 +548,7 @@ export class CellProduction extends SystemObject {
 
       // Milestone 8: Create vesicle with partial glycosylation (to be completed at Golgi)
       if (transcript.destHex) {
-        const vesicle = createVesicleAtER(
-          this.worldRefs,
+        const vesicle = this.createVesicleAtER(
           transcript.proteinId,
           transcript.destHex,
           transcript.atHex,
@@ -483,7 +560,7 @@ export class CellProduction extends SystemObject {
           this.releaseTranscriptSeat(transcript);
           
           // Remove transcript (replaced by vesicle)
-          this.worldRefs.transcripts.delete(transcript.id);
+          delete this.transcriptState.transcripts[transcript.id];
           console.log(`📦 ${transcript.proteinId} transcript converted to vesicle at ER`);
         } else {
           console.log(`⚠️ Cannot create vesicle for ${transcript.proteinId} - budget exceeded, keeping transcript`);
@@ -493,7 +570,7 @@ export class CellProduction extends SystemObject {
         this.releaseTranscriptSeat(transcript);
         
         // Remove transcript even if no destination
-        this.worldRefs.transcripts.delete(transcript.id);
+        delete this.transcriptState.transcripts[transcript.id];
       }
     } else {
       // Insufficient resources - wait and try again next frame
@@ -570,14 +647,14 @@ export class CellProduction extends SystemObject {
     // Verify this is a membrane tile
     if (!this.worldRefs.hexGrid.isMembraneCoord(coord)) {
       console.warn(`Installation failed: (${coord.q}, ${coord.r}) is not a membrane tile`);
-      this.worldRefs.transcripts.delete(transcript.id);
+      delete this.transcriptState.transcripts[transcript.id];
       return;
     }
 
     // Check if protein can be installed
     if (this.worldRefs.membraneExchangeSystem.hasInstalledProtein(coord)) {
       console.warn(`Installation failed: membrane tile (${coord.q}, ${coord.r}) already has a protein`);
-      this.worldRefs.transcripts.delete(transcript.id);
+      delete this.transcriptState.transcripts[transcript.id];
       return;
     }
 
@@ -604,7 +681,7 @@ export class CellProduction extends SystemObject {
     }
 
     // Remove the transcript (installation complete)
-    this.worldRefs.transcripts.delete(transcript.id);
+    delete this.transcriptState.transcripts[transcript.id];
   }
 
   // === RENDERING ===
@@ -613,7 +690,8 @@ export class CellProduction extends SystemObject {
     this.transcriptGraphics.clear();
     
     // Render transcripts
-    for (const transcript of this.worldRefs.transcripts.values()) {
+    const transcripts = this.transcriptState.transcripts;
+    for (const transcript of Object.values(transcripts)) {
       // Skip rendering locally carried transcripts (handled by local player)
       // But DO render network-controlled carried transcripts (from remote players)
       if (transcript.isCarried && !transcript.isNetworkControlled) continue;
@@ -684,7 +762,8 @@ export class CellProduction extends SystemObject {
     }
     
     // Milestone 8: Render vesicles
-    for (const vesicle of this.worldRefs.vesicles.values()) {
+    const vesicles = this.vesicleState.vesicles;
+    for (const vesicle of Object.values(vesicles)) {
       // Skip rendering locally carried vesicles (handled by local player)
       // But DO render network-controlled carried vesicles (from remote players)
       if (vesicle.isCarried && !vesicle.isNetworkControlled) continue;
@@ -757,6 +836,45 @@ export class CellProduction extends SystemObject {
     }
   }
 
+  /**
+   * Server-only: Create vesicle at ER using state channels
+   */
+  @RunOnServer()
+  private createVesicleAtER(
+    proteinId: ProteinId,
+    destHex: HexCoord,
+    erHex: HexCoord,
+    glyco: 'partial' | 'complete' = 'partial'
+  ): Vesicle | null {
+    // Check vesicle budget
+    const currentVesicleCount = Object.keys(this.vesicleState.vesicles).length;
+    const MAX_VESICLES = 200; // From vesicle-system.ts
+    
+    if (currentVesicleCount >= MAX_VESICLES) {
+      console.warn(`⚠️ Vesicle budget exceeded (${currentVesicleCount}/${MAX_VESICLES}) - cannot create vesicle for ${proteinId}`);
+      return null;
+    }
+    
+    const vesicle: Vesicle = {
+      id: `vesicle_${this.vesicleState.nextVesicleId++}`,
+      proteinId,
+      atHex: { q: erHex.q, r: erHex.r },
+      ttlMs: 30000, // 30 second lifetime
+      worldPos: this.worldRefs.hexGrid.hexToWorld(erHex),
+      isCarried: false,
+      destHex: { q: destHex.q, r: destHex.r },
+      state: 'QUEUED_ER' as VesicleState,
+      glyco,
+      processingTimer: 0,
+      retryCounter: 0
+    };
+    
+    this.vesicleState.vesicles[vesicle.id] = vesicle;
+    console.log(`🚛 Created vesicle ${vesicle.id} for ${proteinId} at ER (${erHex.q}, ${erHex.r}) with glyco: ${glyco}`);
+    
+    return vesicle;
+  }
+
   private brightenColor(color: number, factor: number): number {
     const r = Math.min(255, Math.floor(((color >> 16) & 0xFF) * (1 + factor)));
     const g = Math.min(255, Math.floor(((color >> 8) & 0xFF) * (1 + factor)));
@@ -764,8 +882,8 @@ export class CellProduction extends SystemObject {
     return (r << 16) | (g << 8) | b;
   }
 
-  override destroy() {
+  destroy() {
     this.transcriptGraphics?.destroy();
-    super.destroy();
+    // NetComponent doesn't have a destroy method, so we don't call super
   }
 }

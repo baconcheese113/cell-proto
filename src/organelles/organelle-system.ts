@@ -11,6 +11,9 @@ import { ORGANELLE_FOOTPRINTS, getFootprintTiles, type OrganelleFootprint } from
 import { getOrganelleIOProfile, type OrganelleIOProfile } from "./organelle-io-profiles";
 import { getStarterOrganelleDefinitions, definitionToConfig, type OrganelleType } from "./organelle-registry";
 import type { SpeciesId } from "../species/species-registry";
+import { NetComponent } from "../network/net-entity";
+import { RunOnServer } from "../network/decorators";
+import type { NetBus } from "../network/net-bus";
 
 export interface OrganelleConfig {
   // Basic properties
@@ -53,9 +56,9 @@ export interface Organelle {
   capacity: number; // Max concurrent vesicles (defaults to 1)
 }
 
-export class OrganelleSystem {
+export class OrganelleSystem extends NetComponent {
   private hexGrid: HexGrid;
-  private organelles: Map<string, Organelle> = new Map();
+  private organelleState = this.stateChannel<{ organelles: Record<string, Organelle> }>('organelles', { organelles: {} });
   private organellesByTile: Map<string, Organelle> = new Map();
   
   // Processing state
@@ -70,7 +73,21 @@ export class OrganelleSystem {
   // Milestone 13: Seat reservation events
   private seatEventListeners: Set<(event: 'seatReserved' | 'seatReleased', organelleId: string, seatId: string) => void> = new Set();
 
-  constructor(hexGrid: HexGrid) {
+  // Helper methods for state channel access
+  private get organelles(): Record<string, Organelle> {
+    return this.organelleState.organelles;
+  }
+
+  private setOrganelleInState(id: string, organelle: Organelle): void {
+    this.organelleState.organelles[id] = organelle;
+  }
+
+  private deleteOrganelleFromState(id: string): void {
+    delete this.organelleState.organelles[id];
+  }
+
+  constructor(netBus: NetBus, hexGrid: HexGrid) {
+    super(netBus, { address: 'OrganelleSystem' });
     this.hexGrid = hexGrid;
     this.initializeStarterOrganelles();
   }
@@ -102,7 +119,7 @@ export class OrganelleSystem {
       }
     }
 
-    console.log(`Organelle system initialized with ${this.organelles.size} starter organelles`);
+    console.log(`Organelle system initialized with ${Object.keys(this.organelles).length} starter organelles`);
     this.logOrganellePlacements();
     
     // Add some initial test species near organelles for demonstration
@@ -163,7 +180,7 @@ export class OrganelleSystem {
     }
 
     // Place organelle on all tiles in its footprint
-    this.organelles.set(organelle.id, organelle);
+    this.setOrganelleInState(organelle.id, organelle);
     for (const tileCoord of footprintTiles) {
       this.organellesByTile.set(this.coordToKey(tileCoord), organelle);
     }
@@ -185,14 +202,14 @@ export class OrganelleSystem {
    * Get organelle by ID
    */
   public getOrganelle(id: string): Organelle | undefined {
-    return this.organelles.get(id);
+    return this.organelles[id];
   }
 
   /**
    * Get all organelles
    */
   public getAllOrganelles(): Organelle[] {
-    return Array.from(this.organelles.values());
+    return Object.values(this.organelles);
   }
 
   /**
@@ -205,6 +222,7 @@ export class OrganelleSystem {
   /**
    * Create and place a new organelle dynamically (for blueprint completion)
    */
+  @RunOnServer()
   public createOrganelle(config: Omit<OrganelleConfig, 'footprint'> & { footprint: string }, coord: HexCoord): boolean {
     console.log(`🏭 OrganelleSystem.createOrganelle called: type="${config.type}", coord=(${coord.q}, ${coord.r}), footprint="${config.footprint}"`);
     
@@ -243,7 +261,7 @@ export class OrganelleSystem {
    * Get organelles by type
    */
   public getOrganellesByType(type: OrganelleType): Organelle[] {
-    return Array.from(this.organelles.values()).filter(org => org.type === type);
+    return Object.values(this.organelles).filter(org => org.type === type);
   }
 
   /**
@@ -263,7 +281,7 @@ export class OrganelleSystem {
     this.tileChanges.clear();
 
     // Get all organelles sorted by priority (lower number = higher priority)
-    const organellesByPriority = Array.from(this.organelles.values())
+    const organellesByPriority = Object.values(this.organelles)
       .filter(org => org.isActive)
       .sort((a, b) => a.config.priority - b.config.priority);
 
@@ -416,7 +434,7 @@ export class OrganelleSystem {
    */
   private logOrganellePlacements(): void {
     console.log('=== ORGANELLE PLACEMENTS ===');
-    for (const organelle of this.organelles.values()) {
+    for (const organelle of Object.values(this.organelles)) {
       console.log(`${organelle.config.label}: (${organelle.coord.q}, ${organelle.coord.r}) - Cap: ${organelle.config.throughputCap}, Priority: ${organelle.config.priority}`);
     }
   }
@@ -569,7 +587,7 @@ export class OrganelleSystem {
    * @returns available seat position or null if full
    */
   public getFreeSeat(organelleId: string): HexCoord | null {
-    const organelle = this.organelles.get(organelleId);
+    const organelle = this.organelles[organelleId];
     if (!organelle) {
       return null;
     }
@@ -607,7 +625,7 @@ export class OrganelleSystem {
    * @returns seat ID if successful, null if organelle is full
    */
   public reserveSeat(organelleId: string, vesicleId: string, expectedArrival?: number): string | null {
-    const organelle = this.organelles.get(organelleId);
+    const organelle = this.organelles[organelleId];
     if (!organelle) {
       console.warn(`Cannot reserve seat: organelle ${organelleId} not found`);
       return null;
@@ -691,7 +709,7 @@ export class OrganelleSystem {
    * @returns true if seat was released, false if not found
    */
   public releaseSeat(organelleId: string, seatId: string): boolean {
-    const organelle = this.organelles.get(organelleId);
+    const organelle = this.organelles[organelleId];
     if (!organelle) {
       console.warn(`Cannot release seat: organelle ${organelleId} not found`);
       return false;
@@ -713,7 +731,7 @@ export class OrganelleSystem {
    * @returns true if seats are available, false if full or not found
    */
   public hasAvailableSeats(organelleId: string): boolean {
-    const organelle = this.organelles.get(organelleId);
+    const organelle = this.organelles[organelleId];
     if (!organelle) {
       return false;
     }
@@ -728,7 +746,7 @@ export class OrganelleSystem {
    * @returns hex coordinate of the seat, or null if not found
    */
   public getSeatPosition(organelleId: string, seatId: string): HexCoord | null {
-    const organelle = this.organelles.get(organelleId);
+    const organelle = this.organelles[organelleId];
     if (!organelle) {
       return null;
     }
@@ -743,7 +761,7 @@ export class OrganelleSystem {
    * @returns seat occupancy info or null if organelle not found
    */
   public getSeatInfo(organelleId: string): { occupied: number; capacity: number; seats: SeatInfo[] } | null {
-    const organelle = this.organelles.get(organelleId);
+    const organelle = this.organelles[organelleId];
     if (!organelle) {
       return null;
     }

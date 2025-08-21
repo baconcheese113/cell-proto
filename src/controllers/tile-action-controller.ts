@@ -1,27 +1,26 @@
 import Phaser from "phaser";
 import type { HexTile, HexCoord } from "../hex/hex-grid";
 import type { OrganelleType } from "../organelles/organelle-registry";
-import type { WorldRefs, InstallOrder, ProteinId } from "../core/world-refs";
+import type { WorldRefs, ProteinId } from "../core/world-refs";
+import type { NetBundle } from "../app/net-bundle";
 
 interface TileActionConfig {
   scene: Phaser.Scene;
   worldRefs: WorldRefs;
+  net: NetBundle;
 }
 
 export class TileActionController {
-  private scene: Phaser.Scene;
   private worldRefs: WorldRefs;
+  private net: NetBundle;
   
   // Mode tracking
   private isInProteinRequestMode: boolean = false;
   private selectedRecipeId: OrganelleType | null = null;
-  
-  // Order generation
-  private nextOrderId = 1;
 
   constructor(config: TileActionConfig) {
-    this.scene = config.scene;
     this.worldRefs = config.worldRefs;
+    this.net = config.net;
   }
 
   /**
@@ -104,43 +103,27 @@ export class TileActionController {
       return;
     }
 
-    // Check if we're in a networked game and need to route through the network
-    const netSyncSystem = (this.scene as any).netSyncSystem;
-    if (netSyncSystem && !netSyncSystem.isHost) {
-      // Client - send request to host
-      console.log(`📤 CLIENT: Requesting install order for ${proteinId} at (${destHex.q}, ${destHex.r})`);
-      
-      const commandId = netSyncSystem.requestAction('installOrder', {
-        proteinId,
-        destHex: { q: destHex.q, r: destHex.r }
-      });
-      
-      if (commandId) {
-        this.worldRefs.showToast(`Requesting ${proteinId} for (${destHex.q}, ${destHex.r})...`);
-      } else {
-        this.worldRefs.showToast('Failed to send install order request');
-      }
-      return;
+    // Always use network call - it routes properly whether we're host or client
+    console.log(`📤 Requesting install order for ${proteinId} at (${destHex.q}, ${destHex.r})`);
+    
+    // Use the new InstallOrderSystem to create the install order
+    const result = this.net.installOrders.createInstallOrder(proteinId, destHex);
+    
+    if (result?.success) {
+      console.log(`✅ ${result.message} (Order ID: ${result.orderId})`);
+      this.worldRefs.showToast(`✅ ${result.message}`);
+    } else {
+      console.log(`❌ Failed to create install order: ${result?.message || 'Unknown error'}`);
+      this.worldRefs.showToast(`❌ ${result?.message || 'Failed to create install order'}`);
     }
-
-    // Host or single-player - create order directly
-    const order: InstallOrder = {
-      id: `order_${this.nextOrderId++}`,
-      proteinId,
-      destHex: { q: destHex.q, r: destHex.r },
-      createdAt: Date.now()
-    };
-
-    this.worldRefs.installOrders.set(order.id, order);
-    this.worldRefs.showToast(`Requested ${proteinId} for (${destHex.q}, ${destHex.r})`);
   }
 
   /**
    * Check if there's already a pending installation for the given destination
    */
   private hasPendingInstallation(destHex: HexCoord): boolean {
-    // Check for existing install orders targeting this destination
-    for (const order of this.worldRefs.installOrders.values()) {
+    // Check for existing install orders targeting this destination using the new system
+    for (const order of this.net.installOrders.getAllOrders()) {
       if (order.destHex.q === destHex.q && order.destHex.r === destHex.r) {
         console.log(`🚫 Blocking duplicate request: Install order ${order.id} already targeting (${destHex.q}, ${destHex.r})`);
         return true;

@@ -1,6 +1,5 @@
 // Base "component" with React-like stateChannel<T>() + automatic, batched replication.
 
-import { Multicast } from './decorators';
 import type { NetBus } from './net-bus';
 
 type JSONObject = Record<string, unknown>;
@@ -30,8 +29,8 @@ export interface StatePatch {
  * - Implements: generic state replication via two multicast methods (_send/_apply)
  */
 export abstract class NetComponent {
-  /** Bus for RPC/multicast. Undefined in SP/offline. */
-  protected _netBus?: NetBus;
+  /** Bus for RPC/multicast. Always defined, even in of SP/offline. */
+  protected _netBus: NetBus;
 
   /** Is this instance running on the authoritative host/server? */
   protected _isHost = false;
@@ -39,13 +38,20 @@ export abstract class NetComponent {
   /** Stable address used to route messages to this *specific* instance on all peers. */
   readonly netAddress: string;
 
-  constructor(netBus?: NetBus, opts?: NetComponentOptions) {
+  constructor(netBus: NetBus, opts?: NetComponentOptions) {
     this._netBus = netBus;
-    this._isHost = !!netBus?.isHost;
+    this._isHost = !!netBus.isHost;
     this.netAddress = opts?.address ?? autoAddress(this.constructor.name);
 
     // Let the bus register any decorated methods on this instance.
-    this._netBus?.registerInstance(this);
+    this._netBus.registerInstance(this);
+    
+    // Manually register the patch receiver method (not decorated but needs routing)
+    const patchTargetKey = `${this.netAddress}._applyStatePatch`;
+    this._netBus.registerHandler(patchTargetKey, (args: unknown[]) => {
+      const patch = args[0] as StatePatch;
+      this._applyStatePatch(patch);
+    });
   }
 
   // ---------------------------
@@ -55,113 +61,133 @@ export abstract class NetComponent {
   /** Per-instance map: channel -> live state object */
   private __stateObjs = new Map<string, JSONObject>();
 
-  /** Host-only: channel -> partial patch accumulated this tick */
-  private __pending = new Map<string, JSONObject>();
-
   /** Host-only: channel -> last sent revision */
   private __revSend = new Map<string, number>();
 
   /** Receiver-side: channel -> last applied revision */
   private __revRecv = new Map<string, number>();
 
-  /** Batch nesting (explicit .batch()) */
-  private __batchDepth = 0;
-
-  /** Whether a microtask flush is already scheduled. */
-  private __flushScheduled = false;
+  /** Host-only: channel -> last synced state snapshot for change detection */
+  private __lastSynced = new Map<string, string>();
 
   /**
    * Create (or get) a replicated "state object" for a named channel.
-   * - Host: returns a Proxy that records property writes and auto-batches them.
-   * - Clients: returns a sealed object updated by inbound patches.
+   * - Host: returns a reactive proxy that auto-syncs on mutations
+   * - Clients: returns a sealed object updated by full state sync
    */
   protected stateChannel<T extends JSONObject>(channel: string, initial: T): T {
     if (this.__stateObjs.has(channel)) return this.__stateObjs.get(channel) as T;
-
+    
     const base = { ...initial } as T;
     this.__stateObjs.set(channel, base);
-
+    
     if (!this._isHost) {
-      // Clients never emit; they only receive and mutate the sealed object via _applyStatePatch
+      // Clients receive full state updates via syncState()
       return Object.seal(base);
     }
+    
+    // Host: return reactive proxy that auto-syncs on mutations
+    return this.createReactiveProxy(base, channel);
+  }
 
-    // Host: proxy writes (mutate then record deltas)
-    const self = this;
-    const proxy = new Proxy(base, {
-      set(target, prop: string | symbol, value: unknown) {
-        // 1) mutate authoritative local object
-        (target as any)[prop] = value;
-
-        // 2) accumulate partials
-        const current = self.__pending.get(channel) ?? {};
-        (current as any)[prop] = value;
-        self.__pending.set(channel, current);
-
-        // 3) schedule or defer flush
-        if (self.__batchDepth === 0 && !self.__flushScheduled) {
-          self.__flushScheduled = true;
-          queueMicrotask(() => self.flushState());
+  /**
+   * Create a reactive proxy that automatically syncs state on mutations
+   */
+  private createReactiveProxy<T extends JSONObject>(target: T, channel: string): T {
+    return new Proxy(target, {
+      get: (obj, prop) => {
+        const value = Reflect.get(obj, prop);
+        
+        // If the value is an object (but not null or array), make it reactive too
+        if (value && typeof value === 'object' && !Array.isArray(value) && value.constructor === Object) {
+          return this.createReactiveProxy(value as JSONObject, channel);
         }
-        return true;
+        
+        return value;
       },
+      
+      set: (obj, prop, value) => {
+        // Only trigger sync if the value actually changed
+        const currentValue = Reflect.get(obj, prop);
+        if (currentValue === value) {
+          return true; // Value unchanged, don't trigger sync
+        }
+        
+        // Apply the change
+        const result = Reflect.set(obj, prop, value);
+        
+        // Auto-sync on next microtask (debounces multiple changes in same frame)
+        queueMicrotask(() => {
+          this.syncState(channel);
+        });
+        
+        return result;
+      },
+      
+      deleteProperty: (obj, prop) => {
+        // Apply the deletion
+        const result = Reflect.deleteProperty(obj, prop);
+        
+        // Auto-sync on next microtask
+        queueMicrotask(() => {
+          this.syncState(channel);
+        });
+        
+        return result;
+      }
     });
-
-    this.__stateObjs.set(channel, proxy);
-    return proxy;
   }
 
   /**
-   * Explicitly batch multiple state writes into a single patch per channel.
-   * Useful across complex call stacks or when `await` is involved.
+   * Host: Send the complete state of a channel to all clients.
+   * Only syncs if the state has actually changed since last sync.
    */
-  protected batch<T>(fn: () => T): T {
-    this.__batchDepth++;
-    try {
-      return fn();
-    } finally {
-      this.__batchDepth--;
-      if (this.__batchDepth === 0) this.flushState();
+  protected syncState(channel: string): void {
+    if (!this._isHost) return;
+    
+    const stateObj = this.__stateObjs.get(channel);
+    if (!stateObj) return;
+    
+    // Check if state has changed since last sync
+    const currentState = JSON.stringify(stateObj);
+    const lastSynced = this.__lastSynced.get(channel);
+    
+    if (currentState === lastSynced) {
+      // No changes detected, skip sync
+      return;
     }
+    
+    // State has changed, proceed with sync
+    const nextRev = (this.__revSend.get(channel) ?? 0) + 1;
+    this.__revSend.set(channel, nextRev);
+    this.__lastSynced.set(channel, currentState);
+    
+    // Send complete state to all clients
+    this._netBus.sendPatch(this.netAddress, channel, nextRev, stateObj);
   }
 
   /**
-   * Flush all pending state channels into outbound patches (host only).
-   * You may call this once per frame from your NetSyncSystem instead of relying on microtasks.
+   * Receiver for state patches; applies if newer per-channel revision.
+   * This method is invoked by NetBus when patches arrive.
    */
-  protected flushState(): void {
-    this.__flushScheduled = false;
-    if (!this._isHost || this.__pending.size === 0) return;
-
-    for (const [chan, partial] of this.__pending) {
-      const nextRev = (this.__revSend.get(chan) ?? 0) + 1;
-      this.__revSend.set(chan, nextRev);
-      const patch: StatePatch = { __chan: chan, __rev: nextRev, data: partial };
-      this._sendStatePatch(patch); // multicast to all peers (including self)
-    }
-    this.__pending.clear();
-  }
-
-  /**
-   * Generic sender for state patches. Marked @Multicast to transport to all peers,
-   * and called by flushState(). Do not call directly from gameplay; just write to your state object.
-   */
-  @Multicast()
-  protected _sendStatePatch(_patch: StatePatch): void {
-    // The decorator handles network dispatch; local host will receive via _applyStatePatch below.
-  }
-
-  /**
-   * Generic receiver for state patches; applies if newer per-channel revision.
-   * This method is invoked on *all* peers (including sender) by @Multicast delivery.
-   */
-  @Multicast()
-  protected _applyStatePatch(patch: StatePatch): void {
+  _applyStatePatch(patch: StatePatch): void {
     const last = this.__revRecv.get(patch.__chan) ?? 0;
     if (patch.__rev <= last) return; // idempotent / ordering guard
     this.__revRecv.set(patch.__chan, patch.__rev);
 
     const obj = this.__stateObjs.get(patch.__chan);
-    if (obj) Object.assign(obj, patch.data);
+    if (obj) {
+      Object.assign(obj, patch.data);
+      // Call optional hook after applying the patch
+      this.onStatePatched(patch.__chan);
+    }
+  }
+
+  /**
+   * Optional hook called after a state patch is applied to a channel.
+   * Override in subclasses to react to state changes.
+   */
+  protected onStatePatched(_chan: string): void {
+    // Optional override in subclasses
   }
 }

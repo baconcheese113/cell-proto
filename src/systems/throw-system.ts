@@ -17,6 +17,7 @@
 import type { WorldRefs, Transcript, Vesicle } from "../core/world-refs";
 import type { HexCoord } from "../hex/hex-grid";
 import { SystemObject } from "./system-object";
+import type { UnifiedCargoSystem } from "./unified-cargo-system";
 
 // Story 12.2: Throw input & aim configuration
 interface ThrowConfig {
@@ -132,7 +133,7 @@ export class ThrowSystem extends SystemObject {
   constructor(
     scene: Phaser.Scene,
     private worldRefs: WorldRefs,
-    private unifiedCargoSystem: any, // Will be properly typed when UnifiedCargoSystem is imported
+    private unifiedCargoSystem: UnifiedCargoSystem,
     isHost: boolean = true, // Default to true for standalone mode
     config: Partial<ThrowConfig> = {}
   ) {

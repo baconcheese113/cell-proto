@@ -363,6 +363,16 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   /**
+   * Get current velocity from physics body
+   */
+  getVelocity(): Phaser.Math.Vector2 {
+    return new Phaser.Math.Vector2(
+      this.sprite.body?.velocity.x ?? 0,
+      this.sprite.body?.velocity.y ?? 0
+    );
+  }
+
+  /**
    * Set network control mode - when enabled, disables local physics movement
    */
   setNetworkControlled(enabled: boolean): void {
