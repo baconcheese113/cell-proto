@@ -5,6 +5,7 @@
  * and monitoring passive effect behavior.
  */
 
+import Phaser from "phaser";
 import { HexGrid } from "../hex/hex-grid";
 import { getAllSpeciesIds, type SpeciesId } from "../species/species-registry";
 import { PassiveEffectsSystem } from "./passive-effects-system";
@@ -21,12 +22,28 @@ export class ConservationTracker {
   private passiveEffectsSystem: PassiveEffectsSystem;
   private data: Map<string, ConservationData> = new Map();
   private lastUpdateTime = 0;
-  private isPaused = false;
+  private panel: Phaser.GameObjects.Text;
 
-  constructor(hexGrid: HexGrid, passiveEffectsSystem: PassiveEffectsSystem) {
+  constructor(scene: Phaser.Scene, hexGrid: HexGrid, passiveEffectsSystem: PassiveEffectsSystem) {
     this.hexGrid = hexGrid;
     this.passiveEffectsSystem = passiveEffectsSystem;
     this.initializeData();
+    
+    this.panel = scene.add.text(14, 800, "", {
+      fontFamily: "monospace",
+      fontSize: "10px",
+      color: "#ffcc88",
+      backgroundColor: "#000000",
+      padding: { x: 6, y: 4 },
+      stroke: "#444444",
+      strokeThickness: 1,
+    });
+    
+    this.panel.setDepth(1001);
+    this.panel.setScrollFactor(0);
+    this.panel.setVisible(false);
+    
+    console.log('Conservation tracker initialized');
   }
 
   /**
@@ -47,7 +64,6 @@ export class ConservationTracker {
    * Update conservation tracking
    */
   public update(): void {
-    if (this.isPaused) return;
 
     const currentTime = Date.now();
     const deltaSeconds = this.lastUpdateTime > 0 ? (currentTime - this.lastUpdateTime) / 1000 : 0;
@@ -66,6 +82,10 @@ export class ConservationTracker {
         }
       }
     }
+
+    const report = this.getSummaryReport();
+    this.panel.setText(report.join('\n'));
+    this.panel.setVisible(true);
     
     this.lastUpdateTime = currentTime;
   }
@@ -85,33 +105,10 @@ export class ConservationTracker {
   }
 
   /**
-   * Get conservation data for a species
-   */
-  public getConservationData(speciesId: SpeciesId): ConservationData | undefined {
-    return this.data.get(speciesId);
-  }
-
-  /**
    * Get all conservation data
    */
   public getAllConservationData(): ConservationData[] {
     return Array.from(this.data.values());
-  }
-
-  /**
-   * Toggle pause state
-   */
-  public togglePause(): boolean {
-    this.isPaused = !this.isPaused;
-    console.log(`Conservation tracking ${this.isPaused ? 'paused' : 'resumed'}`);
-    return this.isPaused;
-  }
-
-  /**
-   * Check if simulation is paused
-   */
-  public isPausedState(): boolean {
-    return this.isPaused;
   }
 
   /**
@@ -133,10 +130,6 @@ export class ConservationTracker {
         `[expected: ${changeSign}${expectedRate.toFixed(2)}/s] ` +
         `${isConserved ? '✓' : '✗'}`
       );
-    }
-    
-    if (this.isPaused) {
-      report.push("*** SIMULATION PAUSED ***");
     }
     
     return report;

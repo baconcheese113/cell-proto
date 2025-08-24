@@ -11,7 +11,7 @@
 
 import type { WorldRefs } from "../core/world-refs";
 import type { ThrowSystem } from "./throw-system";
-import type { UnifiedCargoSystem } from "./unified-cargo-system";
+import type { CargoSystem } from "./cargo-system";
 import type { NetBundle } from "../app/net-bundle";
 import type { Player } from "../actors/player";
 
@@ -42,7 +42,7 @@ export class ThrowInputController {
     private scene: Phaser.Scene,
     private worldRefs: WorldRefs,
     private throwSystem: ThrowSystem,
-    private cargoSystem: UnifiedCargoSystem,
+    private cargoSystem: CargoSystem,
     private net: NetBundle,
     private playerActor: Player,
     config: Partial<ThrowInputConfig> = {}
@@ -212,47 +212,69 @@ export class ThrowInputController {
    * Check if player is carrying something
    */
   private isCarryingSomething(): boolean {
-    return this.cargoSystem.isCarrying();
+    const playerInventory = this.cargoSystem.getMyPlayerInventory();
+    console.log(`🔍 ThrowController.isCarryingSomething(): isCarrying=${!!playerInventory}, localId=${this.net.bus.localId}, inventory.length=${playerInventory.length}`);
+    return !!playerInventory;
   }
 
   /**
-   * Execute throw using cargo system
+   * Execute throw using unified cargo and throw systems
    */
   private executeNetworkAwareThrow(): boolean {
-    console.log(`🎯 Executing throw via cargo system`);
+    console.log(`🎯 Executing throw via ThrowSystem`);
     
-    // Use cargo system to execute throw - it handles networking automatically
+    // Calculate charge level
     const holdTime = this.scene.time.now - this.aimStartTime;
     const chargeLevel = Math.min(holdTime / this.config.chargeTime, 1.0);
     
-    // Calculate target position the same way as in updateAimingInput
-    let targetPosition: Phaser.Math.Vector2;
-    if (this.config.mouseAiming && this.scene.input.activePointer) {
-      const worldX = this.lastMousePos.x;
-      const worldY = this.lastMousePos.y;
-      const cellRoot = this.worldRefs.cellRoot;
-      const localX = worldX - cellRoot.x;
-      const localY = worldY - cellRoot.y;
-      targetPosition = new Phaser.Math.Vector2(localX, localY);
-    } else {
-      const playerPos = this.getPlayerPosition();
-      targetPosition = new Phaser.Math.Vector2(playerPos.x + 80, playerPos.y);
+    // Get current player position as hex coordinates
+    const playerPos = this.playerActor.getHexCoord();
+    if (!playerPos) {
+      console.warn('🎯 Could not get player position for throw');
+      return false;
     }
     
-    // Always use network call for cargo throwing
-    const playerPos = this.getPlayerPosition();
-    const direction = new Phaser.Math.Vector2(
-      targetPosition.x - playerPos.x,
-      targetPosition.y - playerPos.y
-    ).normalize();
+    // Get the first cargo item from player inventory
+    const playerInventory = this.cargoSystem.getMyPlayerInventory();
+    if (playerInventory.length === 0) {
+      console.warn('🎯 No cargo to throw');
+      return false;
+    }
     
-    this.net.cargo.throwCargo(
-      { x: playerPos.x, y: playerPos.y },
-      { x: direction.x, y: direction.y },
-      chargeLevel
+    const cargoToThrow = playerInventory[0];
+    
+    // Convert aim target to hex coordinates
+    const aimTarget = this.throwSystem.getAimTarget();
+    if (!aimTarget) {
+      console.warn('🎯 No aim target set');
+      return false;
+    }
+    
+    // For now, convert world position to approximate hex (this is a simplified conversion)
+    // TODO: Implement proper world-to-hex coordinate conversion
+    const aimX = aimTarget.x;
+    const aimY = aimTarget.y;
+    const targetHex = { q: Math.round(aimX / 32), r: Math.round(aimY / 32) }; // Approximate conversion
+    
+    // Calculate velocity based on charge level (higher charge = faster projectile)
+    const baseVelocity = 3.0;
+    const maxVelocity = 8.0;
+    const velocity = baseVelocity + (chargeLevel * (maxVelocity - baseVelocity));
+    
+    console.log(`🎯 Throwing cargo ${cargoToThrow.id} from (${playerPos.q}, ${playerPos.r}) to (${targetHex.q}, ${targetHex.r}) with velocity ${velocity}`);
+    
+    // Use the actual throwCargo method instead of the placeholder executeThrow
+    const success = this.throwSystem.throwCargo(
+      this.net.bus.localId,
+      cargoToThrow.id,
+      playerPos,
+      targetHex,
+      velocity
     );
-      
-    return true;
+    
+    console.log(`🎯 ThrowSystem throwCargo result: ${success}`);
+    
+    return success;
   }
 
   /**

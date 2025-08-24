@@ -8,7 +8,7 @@ import Phaser from "phaser";
 import type { Blueprint } from "./blueprint-system";
 import { BlueprintSystem } from "./blueprint-system";
 import { CONSTRUCTION_RECIPES } from "./construction-recipes";
-import type { HexGrid } from "../hex/hex-grid";
+import type { HexCoord, HexGrid } from "../hex/hex-grid";
 
 export class BlueprintRenderer {
   private scene: Phaser.Scene;
@@ -69,10 +69,10 @@ export class BlueprintRenderer {
     this.renderFootprintOutline(footprintTiles, recipe.color || 0x4a90e2);
     
     // Render progress bar at centroid
-    this.renderProgressBar(blueprint, centroid, recipe);
+    this.renderProgressBar(blueprint, centroid);
   }
 
-  private renderFootprintOutline(footprintTiles: any[], color: number): void {
+  private renderFootprintOutline(footprintTiles: HexCoord[], color: number): void {
     this.graphics.lineStyle(2, color, 0.8);
     
     for (const tileCoord of footprintTiles) {
@@ -145,7 +145,7 @@ export class BlueprintRenderer {
     }
   }
 
-  private calculateCentroid(footprintTiles: any[]): { x: number; y: number } {
+  private calculateCentroid(footprintTiles: HexCoord[]): { x: number; y: number } {
     if (footprintTiles.length === 0) return { x: 0, y: 0 };
 
     let totalX = 0;
@@ -166,7 +166,7 @@ export class BlueprintRenderer {
       : { x: 0, y: 0 };
   }
 
-  private renderProgressBar(blueprint: Blueprint, centroid: { x: number; y: number }, _recipe: any): void {
+  private renderProgressBar(blueprint: Blueprint, centroid: { x: number; y: number }): void {
     const totalCost = CONSTRUCTION_RECIPES.getTotalCost(blueprint.recipeId);
     const progress = blueprint.totalProgress / totalCost;
     

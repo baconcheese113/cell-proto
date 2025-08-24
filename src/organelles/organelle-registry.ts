@@ -208,7 +208,7 @@ export function getStarterOrganelleDefinitions(): OrganelleDefinition[] {
 /**
  * Convert organelle definition to config format for organelle system
  */
-export function definitionToConfig(definition: OrganelleDefinition, instanceId?: string): any {
+export function definitionToConfig(definition: OrganelleDefinition, instanceId?: string) {
   return {
     id: instanceId || `${definition.type}-${Date.now()}`,
     type: definition.type,

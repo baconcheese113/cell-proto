@@ -20,7 +20,7 @@
  * - **Observable**: Comprehensive telemetry for external monitoring
  */
 
-import type { ProteinId, VesicleState, GlycosylationState, SystemPerformanceMetrics } from "../core/world-refs";
+import type { ProteinId, CargoState, GlycosylationState, SystemPerformanceMetrics } from "../core/world-refs";
 import type { HexCoord } from "../hex/hex-grid";
 
 /**
@@ -42,8 +42,8 @@ export interface MembraneProteinDefinition {
 export interface VesicleProcessingEvent {
   vesicleId: string;
   proteinId: ProteinId;
-  fromState: VesicleState;
-  toState: VesicleState;
+  fromState: CargoState;
+  toState: CargoState;
   atHex: HexCoord;
   timestamp: number;
   glycosylationState: GlycosylationState;
@@ -53,7 +53,7 @@ export interface VesicleProcessingEvent {
  * Story 8.11: External interface for secretory pipeline monitoring
  */
 export interface SecretoryPipelineMetrics extends SystemPerformanceMetrics {
-  vesiclesByState: Record<VesicleState, number>;
+  vesiclesByState: Record<CargoState, number>;
   glycosylationCompletionRate: number; // vesicles/second completing glycosylation
   membraneInstallationRate: number; // proteins/second being installed
   averageTransitTime: number; // seconds from ER to membrane
@@ -119,14 +119,11 @@ export class MembranePortSystem {
       memoryUsage: 0,
       averageLifetime: 0,
       vesiclesByState: {
-        'QUEUED_ER': 0,
-        'EN_ROUTE_GOLGI': 0,
-        'QUEUED_GOLGI': 0,
-        'EN_ROUTE_MEMBRANE': 0,
+        'TRANSPORTING': 0,
+        'QUEUED': 0,
         'INSTALLING': 0,
         'DONE': 0,
-        'EXPIRED': 0,
-        'BLOCKED': 0
+        'EXPIRED': 0
       },
       glycosylationCompletionRate: 0,
       membraneInstallationRate: 0,
@@ -169,7 +166,7 @@ export class MembranePortSystem {
   /**
    * Internal: Notify about vesicle state change (called by vesicle system)
    */
-  notifyVesicleStateChange(event: VesicleProcessingEvent): void {
+  notifyCargoStateChange(event: VesicleProcessingEvent): void {
     this.emit('state-change', event);
   }
 

@@ -1,6 +1,6 @@
 import { NetComponent, type NetComponentOptions } from "../network/net-entity";
 import { RunOnServer } from "../network/decorators";
-import type { InstallOrder, ProteinId } from "../core/world-refs";
+import type { InstallOrder, ProteinId, CargoItinerary, CargoStage } from "../core/world-refs";
 import type { NetBus } from "@/network/net-bus";
 import type { HexCoord } from "@/hex/hex-grid";
 
@@ -42,7 +42,8 @@ export class InstallOrderSystem extends NetComponent {
       id: orderId,
       proteinId,
       destHex,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      itinerary: this.createStandardItinerary(destHex)
     };
 
     // Add to replicated state (only HOST can modify)
@@ -54,10 +55,6 @@ export class InstallOrderSystem extends NetComponent {
       message: `Install order created for ${proteinId}`,
       orderId
     };
-  }
-
-  protected override onStatePatched(_chan: string): void {
-    // State replication working correctly - orders are syncing between host and client
   }
 
   @RunOnServer()
@@ -81,14 +78,55 @@ export class InstallOrderSystem extends NetComponent {
   }
 
   /**
-   * Get all pending install orders for consumption by CellProduction
+   * Create standard itinerary for membrane protein production
+   */
+  private createStandardItinerary(destHex: HexCoord): CargoItinerary {
+    const stages: CargoStage[] = [];
+    
+    // Stage 1: Nucleus processing (transcription)
+    stages.push({
+      kind: 'nucleus',
+      enterMs: 1000,
+      processMs: 2000
+    });
+
+    // Stage 2: ER processing (translation/folding)
+    stages.push({
+      kind: 'proto-er',
+      enterMs: 1000,
+      processMs: 3000
+    });
+
+    // Stage 3: Golgi processing (modification/packaging)
+    stages.push({
+      kind: 'golgi',
+      enterMs: 1000,
+      processMs: 2500
+    });
+
+    // Stage 4: Membrane installation
+    stages.push({
+      kind: 'transporter',
+      targetHex: destHex,
+      enterMs: 500,
+      processMs: 2000
+    });
+
+    return {
+      stages,
+      stageIndex: 0
+    };
+  }
+
+  /**
+   * Get all pending install orders for consumption
    */
   getAllOrders(): InstallOrder[] {
     return Object.values(this.orderState.orders);
   }
 
   /**
-   * Remove an order from the replicated state (used by CellProduction after processing)
+   * Remove an order from the replicated state
    */
   @RunOnServer()
   removeProcessedOrder(orderId: string): void {

@@ -1,6 +1,5 @@
 import Phaser from "phaser";
 import type { HexGrid, HexCoord, HexTile } from "../hex/hex-grid";
-import type { Transcript } from "../core/world-refs";
 
 interface PlayerConfig {
   scene: Phaser.Scene;
@@ -38,10 +37,6 @@ export class Player extends Phaser.GameObjects.Container {
   private cellRadius: number;
   private lastMembraneHit = 0;
   private cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Store cellRoot for membrane effects
-  
-  // Transcript carrying
-  private carriedTranscripts: Transcript[] = [];
-  private readonly CARRY_CAPACITY = 2;
   
   // Current position tracking
   private currentTileRef: HexTile | null = null;
@@ -412,72 +407,6 @@ export class Player extends Phaser.GameObjects.Container {
    */
   private updateCurrentTile() {
     this.currentTileRef = this.getCurrentHex();
-  }
-
-  /**
-   * Update carried transcript positions to orbit around player
-   */
-  updateCarriedTranscripts() {
-    if (this.carriedTranscripts.length > 0) {
-      const playerWorldPos = this.getWorldPosition();
-      const orbitRadius = 25; // Distance from player center
-      
-      for (let i = 0; i < this.carriedTranscripts.length; i++) {
-        const transcript = this.carriedTranscripts[i];
-        
-        // Calculate orbit position
-        const angle = (i / this.carriedTranscripts.length) * Math.PI * 2;
-        const offsetX = Math.cos(angle) * orbitRadius;
-        const offsetY = Math.sin(angle) * orbitRadius;
-        
-        transcript.worldPos.set(
-          playerWorldPos.x + offsetX,
-          playerWorldPos.y + offsetY
-        );
-      }
-    }
-  }
-
-  /**
-   * Try to pick up a transcript at the current location
-   */
-  pickupTranscript(transcript: Transcript): boolean {
-    if (this.carriedTranscripts.length >= this.CARRY_CAPACITY) {
-      return false; // Already at capacity
-    }
-    
-    transcript.isCarried = true;
-    this.carriedTranscripts.push(transcript);
-    return true;
-  }
-
-  /**
-   * Drop the first carried transcript at current location
-   */
-  dropTranscript(): Transcript | null {
-    if (this.carriedTranscripts.length === 0) {
-      return null;
-    }
-    
-    const transcript = this.carriedTranscripts.shift()!;
-    transcript.isCarried = false;
-    
-    // Set transcript position to current player hex
-    const currentHex = this.getCurrentHex();
-    if (currentHex) {
-      transcript.atHex = { q: currentHex.coord.q, r: currentHex.coord.r };
-      const worldPos = this.hexGrid.hexToWorld(transcript.atHex);
-      transcript.worldPos.set(worldPos.x, worldPos.y);
-    }
-    
-    return transcript;
-  }
-
-  /**
-   * Get the list of carried transcripts (read-only)
-   */
-  getCarriedTranscripts(): readonly Transcript[] {
-    return this.carriedTranscripts;
   }
 
   /**

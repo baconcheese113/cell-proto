@@ -5,7 +5,7 @@
  * For now, assumes constant external availability for a few species.
  */
 
-import type { HexGrid, HexCoord } from "../hex/hex-grid";
+import type { HexGrid, HexCoord, HexTile } from "../hex/hex-grid";
 import type { SpeciesId } from "../species/species-registry";
 import { MEMBRANE_PROTEIN_REGISTRY, type MembraneProtein, type TransporterProtein, type ReceptorProtein } from "./membrane-protein-registry";
 
@@ -164,7 +164,7 @@ export class MembraneExchangeSystem {
     }
   }
 
-  private applyTransporterFlux(tile: any, transporter: MembraneTransporter, deltaSeconds: number): void {
+  private applyTransporterFlux(tile: HexTile, transporter: MembraneTransporter, deltaSeconds: number): void {
     const { speciesId, fluxRate } = transporter;
     const fluxAmount = fluxRate * deltaSeconds;
     
@@ -199,7 +199,7 @@ export class MembraneExchangeSystem {
    * Milestone 8: Include glycosylation-based throughput multiplier
    */
   private applyTransporterProtein(
-    tile: any, 
+    tile: HexTile, 
     protein: TransporterProtein, 
     deltaSeconds: number, 
     installedProtein: InstalledMembraneProtein
@@ -239,7 +239,7 @@ export class MembraneExchangeSystem {
    * Milestone 6: Apply receptor protein effect (Task 5)
    */
   private applyReceptorProtein(
-    tile: any, 
+    tile: HexTile, 
     protein: ReceptorProtein, 
     deltaSeconds: number, 
     installedProtein: InstalledMembraneProtein

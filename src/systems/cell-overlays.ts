@@ -1,11 +1,12 @@
 import type { WorldRefs } from "../core/world-refs";
-import { SystemObject } from "./system-object";
+import { System } from "./system";
+import type { NetBus } from "../network/net-bus";
 
 /**
  * Consolidated Cell Overlays System
  * Handles: visual updates, icons, badges, flow indicators
  */
-export class CellOverlays extends SystemObject {
+export class CellOverlays extends System {
   private worldRefs: WorldRefs;
   private overlayGraphics: Phaser.GameObjects.Graphics;
   private showQueueBadges = true;
@@ -14,8 +15,8 @@ export class CellOverlays extends SystemObject {
   // Milestone 8: Story 8.7 - Dirty tile redraw system
   private dirtyTiles: Set<string> = new Set(); // hex coordinates that need redraw
 
-  constructor(scene: Phaser.Scene, worldRefs: WorldRefs, parentContainer?: Phaser.GameObjects.Container) {
-    super(scene, 'CellOverlays', (deltaSeconds: number) => this.update(deltaSeconds));
+  constructor(scene: Phaser.Scene, bus: NetBus, worldRefs: WorldRefs, parentContainer?: Phaser.GameObjects.Container) {
+    super(scene, bus, 'CellOverlays', (deltaSeconds: number) => this.update(deltaSeconds));
     this.worldRefs = worldRefs;
     this.cellRoot = parentContainer; // HOTFIX H5: Store reference for text creation
     
@@ -32,7 +33,7 @@ export class CellOverlays extends SystemObject {
   /**
    * Main update cycle - updates visual overlays
    */
-  override update(_deltaSeconds: number) {
+  public override update(_deltaSeconds: number) {
     // Clear previous frame overlays
     this.overlayGraphics.clear();
     
@@ -83,8 +84,9 @@ export class CellOverlays extends SystemObject {
     const incomingCounts = new Map<string, number>();
     
     // Count incoming vesicles by destination
-    for (const vesicle of this.worldRefs.vesicles.values()) {
-      if (vesicle.state === 'EN_ROUTE_MEMBRANE' || vesicle.state === 'INSTALLING') {
+    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
+    for (const vesicle of vesicles) {
+      if (vesicle.state === 'TRANSPORTING' || vesicle.state === 'INSTALLING') {
         const destKey = `${vesicle.destHex.q},${vesicle.destHex.r}`;
         incomingCounts.set(destKey, (incomingCounts.get(destKey) || 0) + 1);
       }
@@ -193,8 +195,9 @@ export class CellOverlays extends SystemObject {
    */
   private getERQueueCount(): number {
     let count = 0;
-    for (const vesicle of this.worldRefs.vesicles.values()) {
-      if (vesicle.state === 'QUEUED_ER') {
+    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
+    for (const vesicle of vesicles) {
+      if (vesicle.state === 'QUEUED') {
         count++;
       }
     }
@@ -206,8 +209,9 @@ export class CellOverlays extends SystemObject {
    */
   private getGolgiQueueCount(): number {
     let count = 0;
-    for (const vesicle of this.worldRefs.vesicles.values()) {
-      if (vesicle.state === 'QUEUED_GOLGI') {
+    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
+    for (const vesicle of vesicles) {
+      if (vesicle.state === 'QUEUED') {
         count++;
       }
     }
@@ -324,7 +328,7 @@ export class CellOverlays extends SystemObject {
    * Milestone 13: Render progress indicators for vesicles in transit and processing
    */
   private renderTransportProgress(): void {
-    const vesicles = Array.from(this.worldRefs.vesicles.values());
+    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
     
     for (const vesicle of vesicles) {
       // Render rail transit progress
@@ -334,7 +338,7 @@ export class CellOverlays extends SystemObject {
       
       // Render processing progress for vesicles with active timers
       if (vesicle.processingTimer > 0 && 
-          (vesicle.state === 'QUEUED_GOLGI' || vesicle.state === 'INSTALLING')) {
+          (vesicle.state === 'QUEUED' || vesicle.state === 'INSTALLING')) {
         this.renderProcessingProgress(vesicle);
       }
     }
@@ -368,7 +372,7 @@ export class CellOverlays extends SystemObject {
     let iconColor = 0xffffff;
     
     // Determine total processing time based on state
-    if (vesicle.state === 'QUEUED_GOLGI') {
+    if (vesicle.state === 'QUEUED') {
       totalTime = 3.5; // Max Golgi processing time
       iconColor = 0x9d4edd; // Purple for Golgi
     } else if (vesicle.state === 'INSTALLING') {

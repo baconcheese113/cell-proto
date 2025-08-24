@@ -87,7 +87,7 @@ export class LoopbackTransport implements NetworkTransport {
 export class WebRTCTransport implements NetworkTransport {
   isHost: boolean; // Mutable since it gets set during room join/create
   readonly hostId: PeerId = "host";
-  readonly localId: PeerId;
+  localId: PeerId;
 
   private roomId: string;
   private ws: WebSocket;
@@ -105,7 +105,7 @@ export class WebRTCTransport implements NetworkTransport {
     signalingUrl?: string;
     iceServers?: RTCIceServer[];
   }) {
-    this.localId = crypto.randomUUID();
+    this.localId = 'peer-1'; // crypto.randomUUID();
     this.isHost = false; // Will be set during room join/create
     this.roomId = opts.roomId;
     
@@ -160,7 +160,8 @@ export class WebRTCTransport implements NetworkTransport {
         break;
         
       case "room-created":
-        console.log("🎉 Room created successfully");
+        this.localId = "host-01";
+        console.log(`🎉 Room created successfully by ${this.localId}`);
         this.setupHostChannels();
         break;
         
@@ -176,7 +177,8 @@ export class WebRTCTransport implements NetworkTransport {
         break;
         
       case "offer":
-        console.log("📨 Received offer");
+        this.localId = "client-01";
+        console.log(`📨 Received offer for ${this.localId}`);
         await this.handleOffer(message.sdp, roomId);
         break;
         

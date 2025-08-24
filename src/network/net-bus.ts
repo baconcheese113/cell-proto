@@ -42,11 +42,6 @@ export class NetBus {
     this.handlers.set(targetKey, handler);
   }
 
-  /** Send an RPC to the host to invoke the target method on its instance. */
-  sendRpc(key: string, method: string, args: unknown[]): void {
-    this.transport.send(this.transport.hostId, { t: 'rpc', key, method, args }, true);
-  }
-
   /** Send state patch to all peers */
   sendPatch(key: string, chan: string, rev: number, data: unknown): void {
     const patchMsg = { t: 'patch', key, chan, rev, data };

@@ -52,7 +52,7 @@ export interface Organelle {
   isActive: boolean;
   
   // Milestone 13: Seat-based capacity management
-  seats: Map<string, SeatInfo>; // seatId -> seat info
+  seats: Record<string, SeatInfo>; // seatId -> seat info
   capacity: number; // Max concurrent vesicles (defaults to 1)
 }
 
@@ -129,7 +129,7 @@ export class OrganelleSystem extends NetComponent {
           type: definition.type,
           coord: definition.starterPlacement.coord,
           config: fullConfig,
-          seats: new Map(),
+          seats: {},
           capacity: ORGANELLE_FOOTPRINTS[definition.footprint].tiles.length // Use footprint size as capacity
         });
       }
@@ -292,7 +292,7 @@ export class OrganelleSystem extends NetComponent {
       type: config.type,
       coord,
       config: fullConfig,
-      seats: new Map(),
+      seats: {},
       capacity: footprint.tiles.length // Use footprint size as capacity
     };
 
@@ -644,7 +644,7 @@ export class OrganelleSystem extends NetComponent {
     }
 
     // Check capacity
-    if (organelle.seats.size >= organelle.capacity) {
+    if (Object.keys(organelle.seats).length >= organelle.capacity) {
       return null;
     }
 
@@ -653,7 +653,7 @@ export class OrganelleSystem extends NetComponent {
     const occupiedPositions = new Set<string>();
     
     // Mark positions already taken by other seats
-    for (const existingSeat of organelle.seats.values()) {
+    for (const existingSeat of Object.values(organelle.seats)) {
       occupiedPositions.add(`${existingSeat.position.q},${existingSeat.position.r}`);
     }
     
@@ -683,12 +683,14 @@ export class OrganelleSystem extends NetComponent {
     }
 
     console.log(`🔍 SEAT DEBUG: Attempting to reserve seat in ${organelleId} for vesicle ${vesicleId}`);
-    console.log(`🔍 SEAT DEBUG: Current seats: ${organelle.seats.size}, Capacity: ${organelle.capacity}`);
+    
+    const currentSeatsCount = Object.keys(organelle.seats).length;
+    console.log(`🔍 SEAT DEBUG: Current seats: ${currentSeatsCount}, Capacity: ${organelle.capacity}`);
 
     // Check capacity
-    if (organelle.seats.size >= organelle.capacity) {
+    if (currentSeatsCount >= organelle.capacity) {
       // Organelle is full
-      console.log(`🔍 SEAT DEBUG: Organelle ${organelleId} is full (${organelle.seats.size}/${organelle.capacity})`);
+      console.log(`🔍 SEAT DEBUG: Organelle ${organelleId} is full (${currentSeatsCount}/${organelle.capacity})`);
       return null;
     }
 
@@ -699,7 +701,7 @@ export class OrganelleSystem extends NetComponent {
     const occupiedPositions = new Set<string>();
     
     // Mark positions already taken by other seats
-    for (const existingSeat of organelle.seats.values()) {
+    for (const existingSeat of Object.values(organelle.seats)) {
       occupiedPositions.add(`${existingSeat.position.q},${existingSeat.position.r}`);
     }
     
@@ -729,8 +731,8 @@ export class OrganelleSystem extends NetComponent {
     }
 
     // Milestone 13: Additional validation for seat management
-    if (organelle.seats.size >= organelle.capacity) {
-      console.error(`VALIDATION FAILED: Attempted to reserve seat when organelle ${organelleId} is at capacity (${organelle.seats.size}/${organelle.capacity})`);
+    if (currentSeatsCount >= organelle.capacity) {
+      console.error(`VALIDATION FAILED: Attempted to reserve seat when organelle ${organelleId} is at capacity (${currentSeatsCount}/${organelle.capacity})`);
       return null;
     }
 
@@ -744,7 +746,9 @@ export class OrganelleSystem extends NetComponent {
       position: availablePosition
     };
 
-    organelle.seats.set(seatId, seat);
+    // Store seat in record
+    organelle.seats[seatId] = seat;
+    
     console.log(`🎫 Reserved seat ${seatId} for vesicle ${vesicleId} in organelle ${organelleId} at position (${availablePosition.q},${availablePosition.r})`);
     
     // Emit seat reserved event
@@ -766,8 +770,10 @@ export class OrganelleSystem extends NetComponent {
       return false;
     }
 
-    const released = organelle.seats.delete(seatId);
+    // Check if seat exists and delete it
+    const released = seatId in organelle.seats;
     if (released) {
+      delete organelle.seats[seatId];
       console.log(`🎫 Released seat ${seatId} in organelle ${organelleId}`);
       // Emit seat released event
       this.emitSeatEvent('seatReleased', organelleId, seatId);
@@ -787,7 +793,8 @@ export class OrganelleSystem extends NetComponent {
       return false;
     }
     
-    return organelle.seats.size < organelle.capacity;
+    const occupiedCount = Object.keys(organelle.seats).length;
+    return occupiedCount < organelle.capacity;
   }
 
   /**
@@ -802,7 +809,7 @@ export class OrganelleSystem extends NetComponent {
       return null;
     }
     
-    const seat = organelle.seats.get(seatId);
+    const seat = organelle.seats[seatId];
     return seat ? seat.position : null;
   }
 
@@ -816,11 +823,14 @@ export class OrganelleSystem extends NetComponent {
     if (!organelle) {
       return null;
     }
+
+    const seatsArray = Object.values(organelle.seats);
+    console.log(`🔍 SEAT DEBUG: Organelle ${organelleId} has ${seatsArray.length}/${organelle.capacity} seats occupied`, organelle.seats);
     
     return {
-      occupied: organelle.seats.size,
+      occupied: seatsArray.length,
       capacity: organelle.capacity,
-      seats: Array.from(organelle.seats.values())
+      seats: seatsArray
     };
   }
 
@@ -835,5 +845,45 @@ export class OrganelleSystem extends NetComponent {
     // the cytoskeleton graph for cargo with handoffKind='actin-end-dwell'
     // near this organelle's rim coordinates
     return 0; // Placeholder - would need integration with cytoskeleton system
+  }
+
+  /**
+   * Check if two organelles are adjacent by comparing their footprint tiles
+   */
+  public areOrganellesAdjacent(organelle1: Organelle, organelle2: Organelle): boolean {
+    if (!organelle1 || !organelle2 || !organelle1.config || !organelle2.config) return false;
+    
+    // Get footprint objects directly
+    const footprint1 = organelle1.config.footprint;
+    const footprint2 = organelle2.config.footprint;
+    
+    if (!footprint1 || !footprint2) return false;
+    
+    // Get actual world tile positions for both organelles
+    const tiles1 = getFootprintTiles(footprint1, organelle1.coord.q, organelle1.coord.r);
+    const tiles2 = getFootprintTiles(footprint2, organelle2.coord.q, organelle2.coord.r);
+    
+    // Check if any tile from organelle1 is adjacent to any tile from organelle2
+    const hexDirections = [
+      { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
+      { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }
+    ];
+    
+    for (const tile1 of tiles1) {
+      for (const tile2 of tiles2) {
+        // Check if tile2 is adjacent to tile1
+        for (const dir of hexDirections) {
+          const adjacentQ = tile1.q + dir.q;
+          const adjacentR = tile1.r + dir.r;
+          if (adjacentQ === tile2.q && adjacentR === tile2.r) {
+            console.log(`🔗 Found adjacent organelles: ${organelle1.type} at (${organelle1.coord.q},${organelle1.coord.r}) ↔ ${organelle2.type} at (${organelle2.coord.q},${organelle2.coord.r})`);
+            console.log(`   Adjacent tiles: (${tile1.q},${tile1.r}) ↔ (${tile2.q},${tile2.r})`);
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
   }
 }

@@ -25,32 +25,29 @@ import { MembranePortSystem } from "../membrane/membrane-port-system";
 import { Player } from "../actors/player";
 import { TileActionController } from "../controllers/tile-action-controller";
 // Consolidated system architecture
-import { ProductionSystem } from "../systems/production-system";
 import { CellTransport } from "../systems/cell-transport";
 import { CellOverlays } from "../systems/cell-overlays";
+import { CargoHUD } from "../systems/cargo-hud";
 // Milestone 9: Cell locomotion systems
 import { CellSpaceSystem } from "../core/cell-space-system";
 import { SubstrateSystem } from "../core/substrate-system";
 import { CellMotility } from "../systems/cell-motility";
-// Milestone 12: Throw & Membrane Interactions v1
+// Milestone 12: Throw & Membrane Interactions v2 - Networked Systems
 import { ThrowSystem } from "../systems/throw-system";
-import { UnifiedCargoSystem } from "../systems/unified-cargo-system";
+import { CargoSystem } from "../systems/cargo-system";
 import { MembraneTrampoline } from "../systems/membrane-trampoline";
 import { ThrowInputController } from "../systems/throw-input-controller";
-import { CargoHUD } from "../systems/cargo-hud";
 // Milestone 13: Cytoskeleton Transport v1
 import { CytoskeletonSystem } from "../systems/cytoskeleton-system";
 import { CytoskeletonRenderer } from "../systems/cytoskeleton-renderer";
 import { FilamentBuilder } from "../systems/filament-builder";
-import { initializeEnhancedVesicleRouting, updateEnhancedVesicleRouting } from "../systems/cytoskeleton-vesicle-integration";
-import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
+import type { WorldRefs, InstallOrder } from "../core/world-refs";
 import { LoopbackTransport } from "../network/transport";
 import type { NetBundle } from "../app/net-bundle";
 import { RoomUI } from "../network/room-ui";
 import type { NetworkTransport } from "../network/transport";
 // New network approach
 import { NetBus } from "../network/net-bus";
-import { CargoSystem } from "../systems/cargo-system";
 import { SpeciesSystem } from "../systems/species-system";
 import { PlayerSystem } from "../systems/player-system";
 import { EmoteSystem } from "../systems/emote-system";
@@ -68,6 +65,7 @@ export class GameScene extends Phaser.Scene {
 
   // NEW: Modular controllers and systems
   private tileActionController!: TileActionController;
+  private throwInputController!: ThrowInputController;
 
   private cellCenter = new Phaser.Math.Vector2(0, 0);
   private cellRadius = 216; // Original size for hex grid area
@@ -114,7 +112,6 @@ export class GameScene extends Phaser.Scene {
 
   // Conservation tracking - Task 8
   private conservationTracker!: ConservationTracker;
-  private conservationPanel!: Phaser.GameObjects.Text;
 
   // Organelle system - Milestone 3 Task 1
   private organelleSystem!: OrganelleSystem;
@@ -138,24 +135,17 @@ export class GameScene extends Phaser.Scene {
   // Milestone 6: Toast system - Task 2
   private toastText!: Phaser.GameObjects.Text;
 
-  // Milestone 7: Orders & Transcripts system - Task 1
+  // Milestone 7: Orders system
   private installOrders: Map<string, InstallOrder> = new Map(); // keyed by order.id
-  private transcripts: Map<string, Transcript> = new Map(); // keyed by transcript.id
-  private transcriptGraphics!: Phaser.GameObjects.Graphics; // for rendering transcript dots
-  private carriedTranscripts: Transcript[] = []; // transcripts carried by player (max 1-2)
   private nextOrderId = 1;
-  private nextTranscriptId = 1;
 
-  // Milestone 8: Vesicle system for secretory pipeline
-  private vesicles: Map<string, Vesicle> = new Map();
-  private carriedVesicles: Vesicle[] = [];
-  private nextVesicleId = 1;
+  // NOTE: Transcripts and Vesicles now managed by CargoSystem
+  // Legacy Maps removed - use this.cargoSystem instead
 
   // NOTE: Movement mechanics now handled by Player actor
   // NOTE: Membrane physics now handled by Player actor
 
-  // Consolidated system architecture - NEW
-  private productionSystem!: ProductionSystem;
+  // Consolidated system architecture
   private cellTransport!: CellTransport;
   
   // Store WorldRefs instance to ensure consistent reference
@@ -168,11 +158,11 @@ export class GameScene extends Phaser.Scene {
   private cellMotility!: CellMotility;
   
   // Milestone 12: Throw & Membrane Interactions v1
+  // Milestone 12: Networked Cargo & Throw Systems
   private throwSystem!: ThrowSystem;
-  private unifiedCargoSystem!: UnifiedCargoSystem;
+  private cargoSystem!: CargoSystem;
+  private cargoHUD?: CargoHUD; // CargoHUD instance
   private membraneTrampoline!: MembraneTrampoline;
-  public throwInputController!: ThrowInputController;
-  private cargoHUD!: CargoHUD;
   
   // Milestone 13: Cytoskeleton Transport v1
   private cytoskeletonSystem!: CytoskeletonSystem;
@@ -185,15 +175,8 @@ export class GameScene extends Phaser.Scene {
   // New network approach
   public net!: NetBundle;
   
-  // Deferred ProductionSystem creation (after WorldRefs is ready)
-  private deferredProductionSystemCreation?: {
-    bus: NetBus;
-    installOrders: InstallOrderSystem;
-  };
-  
   // Remote player rendering
   private remoteSprites = new Map<string, Phaser.GameObjects.Graphics>();
-  private selfId!: string; // from transport
   
   // Milestone 9: Cell motility mode
   private cellDriveMode = false;
@@ -273,7 +256,7 @@ export class GameScene extends Phaser.Scene {
     this.initializePassiveEffectsSystem();
     this.initializeDiffusionSystem();
     this.initializeMembraneExchangeSystem();
-    this.initializeConservationTracker();
+    this.conservationTracker = new ConservationTracker(this, this.hexGrid, this.passiveEffectsSystem);
     
     // Milestone 9: Initialize cell locomotion systems
     this.initializeCellLocomotionSystems();
@@ -292,7 +275,6 @@ export class GameScene extends Phaser.Scene {
       diffusionSystem: this.diffusionSystem,
       passiveEffectsSystem: this.passiveEffectsSystem,
       heatmapSystem: this.heatmapSystem,
-      conservationTracker: this.conservationTracker,
       cellSpaceSystem: this.cellSpaceSystem,
       substrateSystem: this.substrateSystem,
       
@@ -305,20 +287,16 @@ export class GameScene extends Phaser.Scene {
       cellMotility: null as any,
       cytoskeletonSystem: null as any,
       cytoskeletonGraph: null as any,
+      cargoSystem: null as any,
+      installOrderSystem: null as any,
       
       // Data collections
       installOrders: this.installOrders,
-      transcripts: this.transcripts,
-      carriedTranscripts: this.carriedTranscripts,
       nextOrderId: this.nextOrderId,
-      nextTranscriptId: this.nextTranscriptId,
-      vesicles: this.vesicles,
-      carriedVesicles: this.carriedVesicles,
-      nextVesicleId: this.nextVesicleId,
       
       // UI methods
       showToast: (message: string) => this.showToast(message),
-      refreshTileInfo: () => {} // Placeholder
+      refreshTileInfo: () => {}, // Placeholder
     };
     
     // Store minimal worldRefs instance for networking initialization
@@ -336,13 +314,17 @@ export class GameScene extends Phaser.Scene {
     this.initializeBlueprintSystem(); // Now that networking is ready
     this.initializeOrganelleSystem();
 
+    // Initialize CargoSystem early and add to worldRefs
+    this.cargoSystem = new CargoSystem(this, this.net.bus, this.worldRefsInstance);
+
     // UPDATE WorldRefs with newly created network-dependent systems
     this.worldRefsInstance.organelleSystem = this.organelleSystem;
     this.worldRefsInstance.organelleRenderer = this.organelleRenderer;
     this.worldRefsInstance.blueprintSystem = this.blueprintSystem;
+    this.worldRefsInstance.cargoSystem = this.cargoSystem;
     
     // Create CellMotility now that we have worldRefs structure
-    this.cellMotility = new CellMotility(this, this.worldRefsInstance, this.cellSpaceSystem);
+    this.cellMotility = new CellMotility(this, this.net.bus, this.worldRefsInstance, this.cellSpaceSystem);
     this.worldRefsInstance.cellMotility = this.cellMotility;
 
     // Create modular controllers and systems
@@ -354,25 +336,30 @@ export class GameScene extends Phaser.Scene {
 
     // Initialize consolidated systems - NEW ARCHITECTURE
     
-    // Initialize ProductionSystem now that WorldRefs is ready
-    if (this.deferredProductionSystemCreation) {
-      this.productionSystem = new ProductionSystem(
-        this.deferredProductionSystemCreation.bus, 
-        this.deferredProductionSystemCreation.installOrders, 
-        this, 
-        this.worldRefsInstance, 
-        this.cellRoot,
-        { address: 'ProductionSystem' }
-      );
-      this.deferredProductionSystemCreation = undefined; // Clean up
-    }
-    
-    this.cellTransport = new CellTransport(this, this.worldRefsInstance);
-    this.cellOverlays = new CellOverlays(this, this.worldRefsInstance, this.cellRoot); // Now cellMotility is defined
+    this.cellTransport = new CellTransport(this, this.net.bus, this.worldRefsInstance);
+    this.cellOverlays = new CellOverlays(this, this.net.bus, this.worldRefsInstance, this.cellRoot); // Now cellMotility is defined
     this.worldRefsInstance.cellOverlays = this.cellOverlays;
 
-    // Milestone 12: Initialize Unified Cargo System (throw system after networking)
-    this.unifiedCargoSystem = new UnifiedCargoSystem(this, this.worldRefsInstance);
+    // Milestone 12: CargoSystem already initialized above
+    
+    // Phase 2.1: Add CargoSystem to WorldRefs for unified access
+    this.worldRefsInstance.cargoSystem = this.cargoSystem;
+    
+    // Initialize CargoHUD after CargoSystem
+    this.cargoHUD = new CargoHUD(this, this.cargoSystem);
+    
+    this.throwSystem = new ThrowSystem(this.net.bus, this, this.cargoSystem);
+    
+    // Initialize ThrowInputController after systems are ready
+    this.throwInputController = new ThrowInputController(
+      this,
+      this.worldRefsInstance,
+      this.throwSystem,
+      this.cargoSystem,
+      this.net,
+      this.playerActor
+    );
+    
     this.membraneTrampoline = new MembraneTrampoline(this, this.worldRefsInstance);
     
     // Milestone 13: Initialize Cytoskeleton Transport v1
@@ -382,23 +369,6 @@ export class GameScene extends Phaser.Scene {
     this.cytoskeletonRenderer = new CytoskeletonRenderer(this, this.worldRefsInstance, this.cytoskeletonSystem);
     this.worldRefsInstance.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
     this.filamentBuilder = new FilamentBuilder(this, this.worldRefsInstance, this.cytoskeletonSystem, this.net);
-    
-    // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
-    initializeEnhancedVesicleRouting(this.worldRefsInstance);
-
-    // Milestone 12: Initialize Throw System (networking already initialized, this.net is always available)
-    this.throwSystem = new ThrowSystem(this, this.worldRefsInstance, this.unifiedCargoSystem, this.net.isHost);
-    this.throwInputController = new ThrowInputController(
-      this, 
-      this.worldRefsInstance, 
-      this.throwSystem, 
-      this.unifiedCargoSystem,
-      this.net,
-      this.playerActor
-    );
-    this.cargoHUD = new CargoHUD(this, this.unifiedCargoSystem, {
-      position: { x: 20, y: 130 } // Position below other HUD elements
-    });
 
     // Input keys
     this.keys = {
@@ -452,7 +422,6 @@ export class GameScene extends Phaser.Scene {
     this.initializeHexInteraction();
     this.initializeTileInfoPanel();
     this.initializeDebugInfo();
-    this.initializeTranscriptSystem(); // Milestone 7 Task 1
     
     // Initialize protein glyphs by rendering membrane debug
     this.renderMembraneDebug();
@@ -516,7 +485,6 @@ export class GameScene extends Phaser.Scene {
 
     // Setup shutdown handler for consolidated systems
     this.events.once('shutdown', () => {
-      this.productionSystem?.destroy();
       this.cellTransport?.destroy();
       this.cellOverlays?.destroy();
       this.net.emotes?.destroy();
@@ -610,11 +578,12 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
       // Debug key: Log cytoskeleton and vesicle stats
       let railVesicles = 0;
-      for (const vesicle of this.vesicles.values()) {
+      const vesicles = this.cargoSystem?.getVesicles() || [];
+      for (const vesicle of vesicles) {
         if (vesicle.railState) railVesicles++;
       }
       
-      this.showToast(`Vesicles: ${this.vesicles.size} total, ${railVesicles} on rails`);
+      this.showToast(`Vesicles: ${vesicles.length} total, ${railVesicles} on rails`);
     }
 
     // MILESTONE 13: Filament building
@@ -640,11 +609,6 @@ export class GameScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
       this.roomUI.toggle();
     }
-    
-    // O key for creating test entities (multiplayer testing)
-    if (Phaser.Input.Keyboard.JustDown(this.keys.O)) {
-      this.createTestEntities();
-    }
 
     // ZERO key for emotes
     if (Phaser.Input.Keyboard.JustDown(this.keys.ZERO)) {
@@ -653,6 +617,8 @@ export class GameScene extends Phaser.Scene {
 
     // Debug species controls - Task 4
     this.handleDebugControls();
+
+    this.handleTileInteractions();
 
     // NEW: Modular input handling through tile action controller
     // (Handles build mode, protein requests, etc.)
@@ -711,14 +677,12 @@ export class GameScene extends Phaser.Scene {
     // Use modular tile action controller for input handling
     this.tileActionController.handleInput(this.keys, this.currentTileRef);
     
-    // NOTE: Consolidated systems (ProductionSystem, CellTransport, CellOverlays) 
+    // NOTE: Consolidated systems (CargoSystem, CellTransport, CellOverlays) 
     // are now automatically updated by Phaser's lifecycle via SystemObject
     
     // Manual updates for systems not yet consolidated:
-    if (!this.conservationTracker.isPausedState()) {
-      // Update blueprint construction - Milestone 5
-      this.blueprintSystem.processConstruction(this.game.loop.delta);
-    }
+    // Update blueprint construction - Milestone 5
+    this.blueprintSystem.processConstruction(this.game.loop.delta);
     
     // Update heatmap - Task 5
     this.heatmapSystem.update();
@@ -729,28 +693,25 @@ export class GameScene extends Phaser.Scene {
     // Update blueprint rendering - Milestone 5 Task 5
     this.blueprintRenderer.render();
     
-    // NOTE: Transcript rendering now handled by ProductionSystem
-    
     // Update build palette position to maintain fixed screen location
     this.buildPalette.updatePosition();
     
     // Milestone 12: Update throw & membrane interaction systems
     this.throwInputController.update();
-    this.cargoHUD.update();
+    this.cargoHUD?.update();
     
     // Update player cargo indicator
-    const carriedCargo = this.unifiedCargoSystem.getCarriedCargo();
-    this.playerActor.updateCargoIndicator(carriedCargo ? carriedCargo.type : null);
+    const carriedCargo = this.cargoSystem.getMyPlayerInventory()[0] || null;
+    this.playerActor.updateCargoIndicator(carriedCargo ? 'transcript' : null); // Simplified for now
+    
+    // Render cargo
+    this.cargoSystem.renderCargo();
     
     // Update HUD with current information
     this.updateHUD();
     
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
-    this.updateConservationPanel();
-    
-    // Milestone 13 Part D: Update enhanced vesicle routing
-    updateEnhancedVesicleRouting();
     
     // Update EmoteSystem for visual effects
     // this.net.emotes.update();
@@ -829,7 +790,7 @@ export class GameScene extends Phaser.Scene {
     // Update or create sprites for remote players only (exclude self)
     for (const [id, p] of Object.entries(mirror.byId)) {
       // Skip creating a remote sprite for self - we already have a local player
-      if (id === this.selfId) continue;
+      if (id === this.net.bus.localId) continue;
       
       let g = this.remoteSprites.get(id);
       if (!g) {
@@ -845,7 +806,7 @@ export class GameScene extends Phaser.Scene {
     
     // Optionally hide sprites for ids no longer present
     for (const [id, g] of this.remoteSprites) {
-      if (!mirror.byId[id] || id === this.selfId) { // Also clean up any self sprites that shouldn't exist
+      if (!mirror.byId[id] || id === this.net.bus.localId) { // Also clean up any self sprites that shouldn't exist
         g.destroy(); 
         this.remoteSprites.delete(id); 
       }
@@ -884,13 +845,13 @@ export class GameScene extends Phaser.Scene {
    * Send local player state to network for replication
    */
   private synchronizePlayerState(): void {    
-    if (!this.selfId || !this.playerActor) return;
+    if (!this.net.bus.localId || !this.playerActor) return;
     
     // Get input from keyboard
     const input = this.getInputAcceleration();
     
     // Send input to PlayerSystem for server processing
-    this.net.players.setInput(this.selfId, input);
+    this.net.players.setInput(this.net.bus.localId, input);
     
     // Get current player position and velocity for comparison
     const worldPos = this.playerActor.getWorldPosition();
@@ -898,7 +859,7 @@ export class GameScene extends Phaser.Scene {
     
     if (this.net.isHost) {
       // Host: Update state directly - only sync if there are meaningful changes
-      const playerData = this.net.players.get(this.selfId);
+      const playerData = this.net.players.get(this.net.bus.localId);
       if (playerData) {
         const newState = { x: worldPos.x, y: worldPos.y, vx: velocity.x, vy: velocity.y };
         
@@ -917,7 +878,7 @@ export class GameScene extends Phaser.Scene {
       
       if (this.hasPlayerStateChanged(lastPos, newState)) {
         this.net.players.updatePosition(
-          this.selfId,
+          this.net.bus.localId,
           newState.x,
           newState.y,
           newState.vx,
@@ -1428,24 +1389,25 @@ export class GameScene extends Phaser.Scene {
       }
       
       // Milestone 13: Show cargo (transcripts/vesicles) at this tile
-      const cargoAtTile = this.getCargoAtTile(tile.coord);
+      const cargoAtTile = this.cargoSystem.getCargoAtTile(tile.coord);
       if (cargoAtTile.length > 0) {
         info.push(`📦 Cargo at this tile:`);
         for (const cargo of cargoAtTile) {
-          if (cargo.type === 'transcript') {
-            const transcript = cargo.item as Transcript;
-            const stageInfo = transcript.itinerary 
-              ? `${transcript.itinerary.stageIndex + 1}/${transcript.itinerary.stages.length} (${transcript.itinerary.stages[transcript.itinerary.stageIndex]?.kind || 'unknown'})`
-              : 'legacy';
-            info.push(`  📝 Transcript ${transcript.proteinId} - Stage ${stageInfo}`);
-            info.push(`    TTL: ${transcript.ttlSeconds.toFixed(1)}s, State: ${transcript.state}`);
+          // Calculate real-time TTL like CargoHUD does
+          const elapsedSeconds = (Date.now() - cargo.createdAt) / 1000;
+          const remainingTTL = Math.max(0, cargo.ttlSecondsInitial - elapsedSeconds);
+          if (cargo.currentType === 'transcript') {
+            const stageInfo = cargo.itinerary 
+              ? `${cargo.itinerary.stageIndex + 1}/${cargo.itinerary.stages.length} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`
+              : 'stage info unavailable';
+            info.push(`  📝 Transcript ${cargo.proteinId} - Stage ${stageInfo}`);
+            info.push(`    TTL: ${remainingTTL.toFixed(1)}s, State: ${cargo.state}`);
           } else {
-            const vesicle = cargo.item as Vesicle;
-            const stageInfo = vesicle.itinerary 
-              ? `${vesicle.itinerary.stageIndex + 1}/${vesicle.itinerary.stages.length} (${vesicle.itinerary.stages[vesicle.itinerary.stageIndex]?.kind || 'unknown'})`
-              : 'legacy';
-            info.push(`  🧬 Vesicle ${vesicle.proteinId} - Stage ${stageInfo}`);
-            info.push(`    TTL: ${(vesicle.ttlMs / 1000).toFixed(1)}s, State: ${vesicle.state}`);
+            const stageInfo = cargo.itinerary 
+              ? `${cargo.itinerary.stageIndex + 1}/${cargo.itinerary.stages.length} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`
+              : 'stage info unavailable';
+            info.push(`  🧬 Vesicle ${cargo.proteinId} - Stage ${stageInfo}`);
+            info.push(`    TTL: ${remainingTTL.toFixed(1)}s, State: ${cargo.state}`);
           }
         }
         info.push(''); // Add spacing
@@ -1556,29 +1518,6 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /**
-   * Milestone 13: Get cargo (transcripts/vesicles) at a specific tile
-   */
-  private getCargoAtTile(coord: HexCoord): Array<{type: 'transcript' | 'vesicle', item: Transcript | Vesicle}> {
-    const cargo: Array<{type: 'transcript' | 'vesicle', item: Transcript | Vesicle}> = [];
-    
-    // Check transcripts
-    for (const transcript of this.transcripts.values()) {
-      if (!transcript.isCarried && transcript.atHex.q === coord.q && transcript.atHex.r === coord.r) {
-        cargo.push({ type: 'transcript', item: transcript });
-      }
-    }
-    
-    // Check vesicles
-    for (const vesicle of this.vesicles.values()) {
-      if (!vesicle.isCarried && vesicle.atHex.q === coord.q && vesicle.atHex.r === coord.r) {
-        cargo.push({ type: 'vesicle', item: vesicle });
-      }
-    }
-    
-    return cargo;
-  }
-
   // Debug Info Panel - Task 4
   
   private initializeDebugInfo(): void {
@@ -1614,7 +1553,7 @@ export class GameScene extends Phaser.Scene {
     this.debugInfoPanel.setScrollFactor(0);
 
     // Milestone 6 Task 1: Initialize current tile label
-    this.currentTileLabel = this.add.text(600, 5, "Current Tile: none", {
+    this.currentTileLabel = this.add.text(600, 50, "Current Tile: none", {
       fontFamily: "monospace",
       fontSize: "12px",
       color: "#ffcc00",
@@ -1660,38 +1599,7 @@ export class GameScene extends Phaser.Scene {
     this.buildDateText.setDepth(1000);
     this.buildDateText.setScrollFactor(0);
   }
-
-  // Milestone 7 Task 1: Initialize transcript system
-  private initializeTranscriptSystem(): void {
-    // Graphics for rendering transcript dots
-    this.transcriptGraphics = this.add.graphics();
-    this.transcriptGraphics.setDepth(3.5); // Above organelles, below player
-    
-    // HOTFIX H2: Re-parent transcript graphics to cellRoot
-    this.cellRoot.add(this.transcriptGraphics);
-    
-    console.log('Transcript system initialized');
-  }
   
-  private initializeConservationTracker(): void {
-    this.conservationTracker = new ConservationTracker(this.hexGrid, this.passiveEffectsSystem);
-    
-    this.conservationPanel = this.add.text(14, 750, "", {
-      fontFamily: "monospace",
-      fontSize: "10px",
-      color: "#ffcc88",
-      backgroundColor: "#000000",
-      padding: { x: 6, y: 4 },
-      stroke: "#444444",
-      strokeThickness: 1,
-    });
-    
-    this.conservationPanel.setDepth(1001);
-    this.conservationPanel.setScrollFactor(0);
-    this.conservationPanel.setVisible(false);
-    
-    console.log('Conservation tracker initialized');
-  }
 
   // Organelle System - Milestone 3 Task 1
   
@@ -1787,11 +1695,11 @@ export class GameScene extends Phaser.Scene {
       blueprintStatus = ` | 🔨 Building: ${recipe?.label}`;
     }
     
-    // Milestone 7 Task 8: Transcript and order status (updated for unified cargo)
-    const carriedCargo = this.unifiedCargoSystem.getCarriedCargo();
-    const carriedCount = carriedCargo ? 1 : 0;
-    const carriedType = carriedCargo ? carriedCargo.type : 'none';
-    const totalTranscripts = this.transcripts.size;
+    // Milestone 7 Task 8: Transcript and order status (updated for networked cargo)
+    const carriedInventory = this.cargoSystem.getMyPlayerInventory();
+    const carriedCount = carriedInventory.length;
+    const carriedType = carriedInventory[0]?.currentType || 'none';
+    const totalTranscripts = this.cargoSystem?.getTranscripts().length || 0;
     const pendingOrders = this.net.installOrders.getOrderCount();
     const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalTranscripts} transcripts total | Orders: ${pendingOrders} pending`;
     
@@ -1841,19 +1749,6 @@ export class GameScene extends Phaser.Scene {
     const filled = Math.floor(ratio * barLength);
     const empty = barLength - filled;
     return '[' + '█'.repeat(filled) + '░'.repeat(empty) + ']';
-  }
-
-  private updateConservationPanel(): void {
-    if (!this.conservationPanel || !this.conservationTracker) return;
-    
-    const isPaused = this.conservationTracker.isPausedState();
-    if (isPaused) {
-      const report = this.conservationTracker.getSummaryReport();
-      this.conservationPanel.setText(report.join('\n'));
-      this.conservationPanel.setVisible(true);
-    } else {
-      this.conservationPanel.setVisible(false);
-    }
   }
 
   // Heatmap System - Task 5
@@ -1934,49 +1829,43 @@ export class GameScene extends Phaser.Scene {
   // Always-networked initialization - create systems once, never switch transports
   private initNetwork({ transport, isHost, roomId }: 
     { transport: NetworkTransport; isHost: boolean; roomId: string }) {
-    const world = this.getWorldRefs();
 
     const bus = new NetBus(transport);
     
     const players        = new PlayerSystem(bus);
-    const cargo          = new CargoSystem(bus, world);
-    const species        = new SpeciesSystem(bus, world);
+    const species        = new SpeciesSystem(bus, this.worldRefsInstance);
     const installOrders  = new InstallOrderSystem(bus, { address: 'InstallOrderSystem' });
     const cytoskeleton   = this.cytoskeletonSystem; // Use existing system
     const emotes         = new EmoteSystem(bus, this, players, this.cellRoot);
 
-    for (const c of [players, cargo, species, installOrders, emotes].filter(c => c)) bus.registerInstance(c);
+    for (const c of [players, this.cargoSystem, species, installOrders, emotes].filter(c => c)) bus.registerInstance(c);
 
     // Host initializes self in player roster
     if (bus.isHost) {
       players.join(bus.localId, 0, 0);
     }
 
-    // Store self ID for rendering logic
-    this.selfId = bus.localId;
+    console.log(`🆔 Player ID: ${bus.localId})`);
 
     this.net = { 
       bus, 
       isHost: bus.isHost, 
       players,            // Direct PlayerSystem access
-      cargo, 
+      cargo: this.cargoSystem, 
       species,
       installOrders,
       cytoskeleton, 
       emotes 
     };
 
-    // Store network components for later ProductionSystem creation
-    this.deferredProductionSystemCreation = {
-      bus,
-      installOrders
-    };
+    // Add InstallOrderSystem to WorldRefs for CargoSystem access
+    this.worldRefsInstance.installOrderSystem = installOrders;
 
     // Optional per-frame host flush (microtask batching also works):
     const flush = () => {
       if (bus.isHost) {
         (players as any).flushState?.();
-        (cargo as any).flushState?.();
+        (this.cargoSystem as any).flushState?.();
         (species as any).flushState?.();
         (emotes as any).flushState?.();
       }
@@ -1985,64 +1874,14 @@ export class GameScene extends Phaser.Scene {
     requestAnimationFrame(flush);
     
     console.log(`Network initialized: ${isHost ? 'HOST' : 'CLIENT'} in room ${roomId}`);
-  }
-  
-  /**
-   * Create test entities for multiplayer replication testing
-   */
-  private createTestEntities(): void {
-    const playerPos = this.getPlayerHexCoord();
-    if (!playerPos) return;
     
-    // Create a test transcript near the player
-    const transcriptId = `transcript_${this.nextTranscriptId++}`;
-    const transcriptHex = { q: playerPos.q + 1, r: playerPos.r };
-    const transcript: Transcript = {
-      id: transcriptId,
-      proteinId: 'GLUT', // Test protein
-      atHex: transcriptHex,
-      ttlSeconds: 30, // 30 second TTL
-      worldPos: this.hexGrid.hexToWorld(transcriptHex),
-      isCarried: false,
-      moveAccumulator: 0,
-      state: 'traveling',
-      processingTimer: 0,
-      glycosylationState: 'none'
-    };
-    
-    this.transcripts.set(transcriptId, transcript);
-    
-    // Create a test vesicle near the player  
-    const vesicleId = `vesicle_${this.nextVesicleId++}`;
-    const vesicleHex = { q: playerPos.q - 1, r: playerPos.r };
-    const vesicle: Vesicle = {
-      id: vesicleId,
-      proteinId: 'GLUT',
-      atHex: vesicleHex,
-      ttlMs: 45000, // 45 second TTL
-      worldPos: this.hexGrid.hexToWorld(vesicleHex),
-      isCarried: false,
-      destHex: { q: playerPos.q, r: playerPos.r + 2 },
-      state: 'EN_ROUTE_GOLGI',
-      glyco: 'partial',
-      processingTimer: 0,
-      retryCounter: 0
-    };
-    
-    this.vesicles.set(vesicleId, vesicle);
-    
-    this.showToast(`Created test entities: 1 transcript, 1 vesicle`);
-    console.log(`🧪 Created test entities for entity replication testing`);
-  }
-
-  // Helper to get current world refs
-  private getWorldRefs(): WorldRefs {
-    return this.worldRefsInstance;
+    // CargoSystem now provides UI interface methods directly - no wrapper needed
+    console.log('CargoSystem provides UI interface methods directly');
   }
 
   
   private handleDebugControls(): void {
-    const playerCoord = this.getPlayerHexCoord();
+    const playerCoord = this.playerActor.getHexCoord();
     if (!playerCoord) return;
 
     // Clear all species on player's current tile
@@ -2113,16 +1952,8 @@ export class GameScene extends Phaser.Scene {
         this.showToast('No blueprint found here');
       }
     }
-
-    // Tile interactions - Tasks 2-9
-    this.handleTileInteractions();
   }
 
-  /**
-   * Debug function to instantly complete any blueprint construction on the given tile
-   */
-  // Blueprint System Input Handling - Milestone 5
-  
   /**
    * Handle essential build input that was lost in modular refactor
    */
@@ -2287,20 +2118,22 @@ export class GameScene extends Phaser.Scene {
   private handleUnifiedCargoInput(): void {
     // R key: Pick up or drop cargo using unified cargo system
     if (Phaser.Input.Keyboard.JustDown(this.keys.R)) {
-      const playerHex = this.getPlayerHexCoord();
+      const playerHex = this.playerActor.getHexCoord();
       if (!playerHex) return;
 
-      // Always use network calls - they route properly whether we're host or client
-      const isCarrying = this.unifiedCargoSystem.isCarrying();
-      if (!isCarrying) {
-        this.net.cargo.pickup(playerHex);
-        console.log(`📤 Requested cargo pickup at (${playerHex.q}, ${playerHex.r})`);
-        this.showToast("Pickup request sent...");
+      const isCarrying = this.cargoSystem.getMyPlayerInventory();
+      
+      // TODO should only run on server - CargoSystem handles everything via @RunOnServer
+      if (isCarrying.length === 0) {
+        this.cargoSystem.pickup(playerHex, this.net.bus.localId);
+        console.log(`📦 Requested cargo pickup at (${playerHex.q}, ${playerHex.r})`);
       } else {
-        this.net.cargo.drop(playerHex);
-        console.log(`📤 Requested cargo drop at (${playerHex.q}, ${playerHex.r})`);
-        this.showToast("Drop request sent...");
+        // Try to drop cargo - CargoSystem handles everything via @RunOnServer
+        this.cargoSystem.drop(playerHex, this.net.bus.localId);
+        console.log(`📦 Requested cargo drop at (${playerHex.q}, ${playerHex.r})`);
       }
+      
+      // No complex timing logic needed - state sync will update UI automatically
     }
   }
 
@@ -2310,7 +2143,7 @@ export class GameScene extends Phaser.Scene {
    */
   private updateBuildPaletteFilter(): void {
     if (!this.currentTileRef) {
-      // Player outside grid - show all recipes (legacy behavior)
+      // Player outside grid - show all recipes
       this.buildPalette.rebuildPalette('all');
       return;
     }
@@ -2386,35 +2219,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Get the hex coordinate of the tile the player is currently standing on
-   */
-  private getPlayerHexCoord(): { q: number; r: number } | null {
-    // NEW: Use player actor for position
-    return this.playerActor.getHexCoord();
-  }
-
-  /**
    * Milestone 6 Task 1: Get the player's current hex tile
    * Converts player world coords → axial/hex and returns the tile (or null if outside the grid)
    */
   private getPlayerHex(): HexTile | null {
-    const coord = this.getPlayerHexCoord();
+    const coord = this.playerActor.getHexCoord();
     if (!coord) return null;
     return this.hexGrid.getTile(coord) || null;
-  }
-
-  /**
-   * Milestone 6 Task 1: Get read-only access to current tile
-   */
-  public getCurrentTile(): HexTile | null {
-    return this.currentTileRef;
-  }
-
-  /**
-   * Public method to refresh membrane visuals (for network replication)
-   */
-  public refreshMembraneVisuals(): void {
-    this.renderMembraneDebug();
   }
 
   /**
@@ -2503,11 +2314,6 @@ export class GameScene extends Phaser.Scene {
       }
     }
     
-    // Check for manual vesicle installation on membrane tiles
-    if (this.tryManualVesicleInstallation(coord, currentSpecies)) {
-      return; // Installation handled
-    }
-    
     // Normal drop onto tile if no blueprint or contribution failed
     const result = this.playerInventory.dropOntoTile(this.hexGrid, coord, currentSpecies);
     
@@ -2518,50 +2324,8 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /**
-   * Try to manually install a vesicle on a membrane tile
-   * Returns true if installation was attempted (success or failure)
-   */
-  private tryManualVesicleInstallation(coord: HexCoord, speciesId: SpeciesId): boolean {
-    // Check if we're dropping on a membrane tile
-    if (!this.hexGrid.isMembraneCoord(coord)) {
-      return false; // Not a membrane tile
-    }
-
-    // Check if the species is a vesicle (contains protein)
-    if (!speciesId.startsWith('VESICLE_')) {
-      return false; // Not a vesicle
-    }
-
-    // Extract protein ID from vesicle ID (e.g., "VESICLE_GLUT1" -> "GLUT1")
-    const proteinId = speciesId.replace('VESICLE_', '');
-    
-    // Check if player has any of this vesicle
-    const available = this.playerInventory.getAmount(speciesId);
-    if (available <= 0) {
-      console.log(`No ${speciesId} in inventory to install`);
-      return true; // We handled it (even if failed)
-    }
-
-    // Try to install the protein
-    const installed = this.membraneExchangeSystem.installMembraneProtein(coord, proteinId);
-    
-    if (installed) {
-      // Consume one vesicle from inventory
-      const consumed = this.playerInventory.drop(speciesId, 1);
-      console.log(`Manually installed ${proteinId} protein from ${consumed} vesicle(s) at (${coord.q}, ${coord.r})`);
-      
-      // Refresh UI to show the newly installed protein
-      this.updateTileInfoPanel();
-    } else {
-      console.log(`Failed to install ${proteinId} protein at (${coord.q}, ${coord.r}) - tile may be occupied`);
-    }
-    
-    return true; // We handled the drop attempt
-  }
-
   private injectSpecies(speciesId: SpeciesId, amount: number): void {
-    const playerCoord = this.getPlayerHexCoord();
+    const playerCoord = this.playerActor.getHexCoord();
     if (!playerCoord) return;
 
     // Always use network call - it will route properly whether we're host or client
@@ -2572,9 +2336,6 @@ export class GameScene extends Phaser.Scene {
     this.showToast(`Requesting injection of ${amount} ${speciesId}...`);
   }
 
-
-  /**
-   * Get transcripts at a specific hex
   /**
    * Debug command: Print status of consolidated systems
    */
@@ -2588,10 +2349,10 @@ export class GameScene extends Phaser.Scene {
       this.showToast(`Drive Mode: ${driveStatus}`);
     }
     
-    // ProductionSystem metrics
-    const transcriptCount = this.transcripts.size;
+    // CargoSystem metrics
+    const transcriptCount = this.cargoSystem?.getTranscripts().length || 0;
     const orderCount = this.net.installOrders.getOrderCount();
-    console.log(`🔬 ProductionSystem: ${transcriptCount} transcripts, ${orderCount} pending orders`);
+    console.log(`🔬 CargoSystem: ${transcriptCount} transcripts, ${orderCount} pending orders`);
     
     // CellTransport metrics  
     const organelleCount = this.organelleSystem.getAllOrganelles().length;

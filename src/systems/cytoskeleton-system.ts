@@ -231,7 +231,7 @@ export class CytoskeletonSystem extends NetComponent {
     this.initializeStarterCytoskeleton();
     
     // Milestone 13 Summary: Transport stack consolidated
-    console.log("🚂 Transport Stack: cytoskeleton-graph.ts → adapter → vesicle-system.ts (3 modules)");
+    console.log("🚂 Transport Stack: cytoskeleton-graph.ts → adapter → vesicle-utils.ts (3 modules)");
     
     // Debug: Show initial graph state
     setTimeout(() => {

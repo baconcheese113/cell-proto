@@ -126,7 +126,8 @@ export class TileActionController {
     }
 
     // Check for transcripts heading to this destination
-    for (const transcript of this.worldRefs.transcripts.values()) {
+    const transcripts = this.worldRefs.cargoSystem?.getTranscripts() || [];
+    for (const transcript of transcripts) {
       if (transcript.destHex && 
           transcript.destHex.q === destHex.q && 
           transcript.destHex.r === destHex.r) {
@@ -136,14 +137,14 @@ export class TileActionController {
     }
 
     // Check for vesicles heading to this destination
-    for (const vesicle of this.worldRefs.vesicles.values()) {
+    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
+    for (const vesicle of vesicles) {
       if (vesicle.destHex && 
           vesicle.destHex.q === destHex.q && 
           vesicle.destHex.r === destHex.r &&
-          (vesicle.state === 'EN_ROUTE_MEMBRANE' || 
+          (vesicle.state === 'TRANSPORTING' ||
            vesicle.state === 'INSTALLING' ||
-           vesicle.state === 'QUEUED_GOLGI' ||
-           vesicle.state === 'EN_ROUTE_GOLGI')) {
+           vesicle.state === 'QUEUED')) {
         console.log(`🚫 Blocking duplicate request: Vesicle ${vesicle.id} already targeting (${destHex.q}, ${destHex.r}) with state ${vesicle.state}`);
         return true;
       }
@@ -168,20 +169,5 @@ export class TileActionController {
   activateProteinRequestMode() {
     this.isInProteinRequestMode = true;
     this.worldRefs.showToast("Protein Request Mode: 1=GLUT, 2=AA_TRANS, 3=NT_TRANS, 4=ROS_EXP, 5=SECR_PUMP, 6=GF_RECEPT");
-  }
-
-  /**
-   * Update method for regular processing (currently no per-frame updates needed)
-   */
-  update(_deltaSeconds: number) {
-    // TileActionController handles input events, no continuous updates needed
-    // This method exists for consistency with other modular systems
-  }
-
-  /**
-   * Clean up resources
-   */
-  destroy() {
-    // Simple controller, nothing to clean up
   }
 }

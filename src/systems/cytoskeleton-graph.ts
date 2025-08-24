@@ -2,11 +2,11 @@
  * Cytoskeleton Graph System - "Real Rails" Transport
  * 
  * Replaces coverage-based heuristics with actual graph pathfinding.
- * Vesicles must follow built filament segments, not arbitrary routes.
+ * Cargos must follow built filament segments, not arbitrary routes.
  */
 
 import type { HexCoord } from "../hex/hex-grid";
-import type { WorldRefs, Vesicle } from "../core/world-refs";
+import type { WorldRefs, Cargo, CargoType } from "../core/world-refs";
 import type { FilamentSegment, OrganelleUpgrade, UpgradeType } from "./cytoskeleton-system";
 
 // Debug flag for rail transport logging
@@ -85,7 +85,7 @@ export class CytoskeletonGraph {
   private isDirty = true;
 
   // Deadlock prevention
-  private strandedVesicles = new Map<string, number>(); // vesicleId -> stranded timestamp
+  private strandedCargos = new Map<string, number>(); // CargoId -> stranded timestamp
 
   constructor(private worldRefs: WorldRefs) { }
 
@@ -365,7 +365,7 @@ export class CytoskeletonGraph {
   }
 
   // Find path using A* algorithm
-  findPath(startHex: HexCoord, endHex: HexCoord, cargoType: 'transcript' | 'vesicle', preferOrganelles = false): PathResult {
+  findPath(startHex: HexCoord, endHex: HexCoord, cargoType: CargoType, preferOrganelles = false): PathResult {
     if (this.isDirty) {
       this.rebuildGraph();
     }
@@ -467,7 +467,7 @@ export class CytoskeletonGraph {
   }
 
   // A* pathfinding between two specific nodes
-  private aStarSinglePath(startNodeId: string, endNodeId: string, cargoType: 'transcript' | 'vesicle'): PathResult {
+  private aStarSinglePath(startNodeId: string, endNodeId: string, cargoType: CargoType): PathResult {
     // Reduced logging for performance
     if (Math.random() < 0.1) {
       console.log(`🔎 A* pathfinding: ${startNodeId} → ${endNodeId}`);
@@ -534,7 +534,7 @@ export class CytoskeletonGraph {
         }
 
         // Cargo type restrictions
-        if (cargoType === 'vesicle' && edge.type === 'actin') {
+        if (edge.type === 'actin') {
           // Allow vesicles on actin for now
         }
 
@@ -580,7 +580,7 @@ export class CytoskeletonGraph {
     return Math.abs(nodeA.hex.q - nodeB.hex.q) + Math.abs(nodeA.hex.r - nodeB.hex.r);
   }
 
-  private getEdgeCost(edge: GraphEdge, cargoType: 'transcript' | 'vesicle'): number {
+  private getEdgeCost(edge: GraphEdge, cargoType: CargoType): number {
     let baseCost = 1 / edge.speed; // Faster = cheaper
     const log = Math.random() < 0.01; // Random log factor to add variability
     
@@ -607,21 +607,21 @@ export class CytoskeletonGraph {
   }
 
   // Move cargo along the rail network
-  moveCargo(vesicle: Vesicle, deltaSeconds: number, shouldLog: boolean): boolean {
-    if (!vesicle.railState) {
-      console.warn(`⚠️ Vesicle ${vesicle.id} has no rail state`);
+  moveCargo(cargo: Cargo, deltaSeconds: number, shouldLog: boolean): boolean {
+    if (!cargo.railState) {
+      console.warn(`⚠️ cargo ${cargo.id} has no rail state`);
       return false;
     }
 
-    const railState = vesicle.railState;
+    const railState = cargo.railState;
     const currentNode = this.nodes.get(railState.nodeId);
 
     if (!currentNode) {
-      console.warn(`⚠️ Vesicle ${vesicle.id} on invalid node ${railState.nodeId}`);
+      console.warn(`⚠️ cargo ${cargo.id} on invalid node ${railState.nodeId}`);
       return false;
     }
 
-    if(shouldLog) console.log(`🚛 Vesicle ${vesicle.id} moveCargo: status=${railState.status}, node=${railState.nodeId}, pathIndex=${railState.pathIndex}/${railState.plannedPath.length}`);
+    if(shouldLog) console.log(`🚛 cargo ${cargo.id} moveCargo: status=${railState.status}, node=${railState.nodeId}, pathIndex=${railState.pathIndex}/${railState.plannedPath.length}`);
 
     // A) Handle handoff behaviors (dwell)
     if (railState.handoffKind === 'actin-end-dwell') {
@@ -629,7 +629,7 @@ export class CytoskeletonGraph {
         railState.handoffTimer = Date.now();
         railState.handoffDuration = 500; // 500ms dwell
         if (DEBUG_RAILS) {
-          console.log(`⏸️ Vesicle ${vesicle.id} starting actin-end dwell (500ms)`);
+          console.log(`⏸️ cargo ${cargo.id} starting actin-end dwell (500ms)`);
         }
       }
 
@@ -643,43 +643,43 @@ export class CytoskeletonGraph {
         railState.handoffTimer = undefined;
         railState.handoffDuration = undefined;
         if (DEBUG_RAILS) {
-          console.log(`▶️ Vesicle ${vesicle.id} actin-end dwell complete`);
+          console.log(`▶️ cargo ${cargo.id} actin-end dwell complete`);
         }
       }
     }
 
     if (railState.status === 'moving' && railState.edgeId) {
       // Continue moving along current edge
-      return this.continueMoveAlongEdge(vesicle, deltaSeconds, shouldLog);
+      return this.continueMoveAlongEdge(cargo, deltaSeconds, shouldLog);
     } else if (railState.status === 'queued' || railState.status === 'stranded') {
       // Try to start moving to next node
-      return this.tryStartNextMove(vesicle);
+      return this.tryStartNextMove(cargo);
     }
 
     return false;
   }
 
-  private continueMoveAlongEdge(vesicle: Vesicle, deltaSeconds: number, shouldLog: boolean): boolean {
-    const railState = vesicle.railState!;
+  private continueMoveAlongEdge(cargo: Cargo, deltaSeconds: number, shouldLog: boolean): boolean {
+    const railState = cargo.railState!;
     const edge = this.edges.get(railState.edgeId!)!;
     const targetNode = this.nodes.get(railState.nextNodeId!)!;
 
-    if(shouldLog) console.log(`🎯 Vesicle ${vesicle.id} moving on ${edge.type} edge from ${railState.nodeId} to ${railState.nextNodeId}`);
+    if(shouldLog) console.log(`🎯 cargo ${cargo.id} moving on ${edge.type} edge from ${railState.nodeId} to ${railState.nextNodeId}`);
 
     // Special handling for actin filaments - 3-step process
     if (edge.type === 'actin') {
-      return this.handleActinTraversal(vesicle, deltaSeconds, edge, targetNode, shouldLog);
+      return this.handleActinTraversal(cargo, deltaSeconds, edge, targetNode, shouldLog);
     }
 
     // Regular handling for microtubules and access edges
-    return this.handleRegularTraversal(vesicle, deltaSeconds, edge, targetNode);
+    return this.handleRegularTraversal(cargo, deltaSeconds, edge, targetNode);
   }
 
   // New method for 3-step actin traversal
-  private handleActinTraversal(vesicle: Vesicle, deltaSeconds: number, edge: GraphEdge, _targetNode: GraphNode, shouldLog: boolean): boolean {
-    const railState = vesicle.railState!;
+  private handleActinTraversal(cargo: Cargo, deltaSeconds: number, edge: GraphEdge, _targetNode: GraphNode, shouldLog: boolean): boolean {
+    const railState = cargo.railState!;
 
-    if(shouldLog) console.log(`🔄 Vesicle ${vesicle.id} handleActinTraversal called: phase=${railState.actinPhase}, deltaSeconds=${deltaSeconds.toFixed(3)}`);
+    if(shouldLog) console.log(`🔄 cargo ${cargo.id} handleActinTraversal called: phase=${railState.actinPhase}, deltaSeconds=${deltaSeconds.toFixed(3)}`);
 
     // Initialize actin state if not set
     if (!railState.actinPhase) {
@@ -687,7 +687,7 @@ export class CytoskeletonGraph {
       railState.actinTimer = 0;
       railState.actinProgress = 0;
 
-      if(shouldLog) console.log(`🔄 Vesicle ${vesicle.id} starting actin traversal - Phase 1: Move to start`);
+      if(shouldLog) console.log(`🔄 cargo ${cargo.id} starting actin traversal - Phase 1: Move to start`);
     }
 
     const currentNode = this.nodes.get(railState.nodeId)!;
@@ -699,24 +699,24 @@ export class CytoskeletonGraph {
     
     const segment = this.worldRefs.cytoskeletonSystem.getAllSegments().find(seg => seg.id === segmentId);
     
-    if(shouldLog) console.log(`🔍 Vesicle ${vesicle.id} segment lookup: edgeId=${railState.edgeId}, segmentId=${segmentId}, segment=${segment ? 'found' : 'NOT FOUND'}`);
+    if(shouldLog) console.log(`🔍 cargo ${cargo.id} segment lookup: edgeId=${railState.edgeId}, segmentId=${segmentId}, segment=${segment ? 'found' : 'NOT FOUND'}`);
     
     if (segment) {
       const movingFromSegmentStart = (currentNode.hex.q === segment.fromHex.q && currentNode.hex.r === segment.fromHex.r);
       const startHex = movingFromSegmentStart ? segment.fromHex : segment.toHex;
       const endHex = movingFromSegmentStart ? segment.toHex : segment.fromHex;
 
-      if(shouldLog) console.log(`🧭 Vesicle ${vesicle.id} direction: movingFromSegmentStart=${movingFromSegmentStart}, start=(${startHex.q},${startHex.r}), end=(${endHex.q},${endHex.r})`);
+      if(shouldLog) console.log(`🧭 cargo ${cargo.id} direction: movingFromSegmentStart=${movingFromSegmentStart}, start=(${startHex.q},${startHex.r}), end=(${endHex.q},${endHex.r})`);
 
       if (railState.actinPhase === 'move-to-start') {
         // Phase 1: Move to start of filament (instant) and pause for 1s
-        vesicle.atHex = { ...startHex };
-        vesicle.worldPos = this.worldRefs.hexGrid.hexToWorld(startHex);
+        cargo.atHex = { ...startHex };
+        cargo.worldPos = this.worldRefs.hexGrid.hexToWorld(startHex);
         railState.actinPhase = 'arrival-pause';
         railState.actinTimer = 0;
         
         if (DEBUG_RAILS) {
-          if(shouldLog) console.log(`🎯 Vesicle ${vesicle.id} arrived at start of actin at (${startHex.q},${startHex.r}) - Phase 1b: Arrival pause (3s)`);
+          if(shouldLog) console.log(`🎯 cargo ${cargo.id} arrived at start of actin at (${startHex.q},${startHex.r}) - Phase 1b: Arrival pause (3s)`);
         }
         return false; // Not complete yet
       }
@@ -728,12 +728,12 @@ export class CytoskeletonGraph {
         railState.actinTimer = oldTimer + deltaSeconds;
         
         // Stay at start position during pause
-        vesicle.atHex = { ...startHex };
-        vesicle.worldPos = this.worldRefs.hexGrid.hexToWorld(startHex);
+        cargo.atHex = { ...startHex };
+        cargo.worldPos = this.worldRefs.hexGrid.hexToWorld(startHex);
         
         // Debug: Log timer progress periodically
         if (DEBUG_RAILS && Math.floor(railState.actinTimer * 4) !== Math.floor(oldTimer * 4)) {
-          console.log(`⏱️ Vesicle ${vesicle.id} arrival-pause timer: ${railState.actinTimer.toFixed(2)}s / ${pauseDuration}s`);
+          console.log(`⏱️ cargo ${cargo.id} arrival-pause timer: ${railState.actinTimer.toFixed(2)}s / ${pauseDuration}s`);
         }
         
         if (railState.actinTimer >= pauseDuration) {
@@ -741,7 +741,7 @@ export class CytoskeletonGraph {
           railState.actinTimer = 0;
           
           if (DEBUG_RAILS) {
-            console.log(`⏰ Vesicle ${vesicle.id} finished arrival pause - Phase 2: Working (5s progress bar)`);
+            console.log(`⏰ cargo ${cargo.id} finished arrival pause - Phase 2: Working (5s progress bar)`);
           }
         }
         return false; // Not complete yet
@@ -754,11 +754,11 @@ export class CytoskeletonGraph {
         railState.actinProgress = Math.min(1.0, railState.actinTimer / workDuration);
         
         // Stay at start position during work phase
-        vesicle.atHex = { ...startHex };
-        vesicle.worldPos = this.worldRefs.hexGrid.hexToWorld(startHex);
+        cargo.atHex = { ...startHex };
+        cargo.worldPos = this.worldRefs.hexGrid.hexToWorld(startHex);
         
         if (DEBUG_RAILS && Math.floor(railState.actinProgress * 10) !== Math.floor((railState.actinProgress - deltaSeconds/workDuration) * 10)) {
-          console.log(`⚙️ Vesicle ${vesicle.id} working on actin: ${(railState.actinProgress * 100).toFixed(0)}%`);
+          console.log(`⚙️ cargo ${cargo.id} working on actin: ${(railState.actinProgress * 100).toFixed(0)}%`);
         }
         
         if (railState.actinProgress >= 1.0) {
@@ -766,7 +766,7 @@ export class CytoskeletonGraph {
           railState.actinTimer = 0;
           
           if (DEBUG_RAILS) {
-            console.log(`✅ Vesicle ${vesicle.id} work complete - Phase 3: Move to end`);
+            console.log(`✅ cargo ${cargo.id} work complete - Phase 3: Move to end`);
           }
         }
         return false; // Not complete yet
@@ -774,11 +774,11 @@ export class CytoskeletonGraph {
       
       else if (railState.actinPhase === 'move-to-end') {
         // Phase 3: Move to end of filament (instant)
-        vesicle.atHex = { ...endHex };
-        vesicle.worldPos = this.worldRefs.hexGrid.hexToWorld(endHex);
+        cargo.atHex = { ...endHex };
+        cargo.worldPos = this.worldRefs.hexGrid.hexToWorld(endHex);
         
         if (DEBUG_RAILS) {
-          console.log(`🏁 Vesicle ${vesicle.id} reached end of actin at (${endHex.q},${endHex.r}) - Traversal complete`);
+          console.log(`🏁 cargo ${cargo.id} reached end of actin at (${endHex.q},${endHex.r}) - Traversal complete`);
         }
         
         // Clean up actin state
@@ -797,7 +797,7 @@ export class CytoskeletonGraph {
         return railState.pathIndex >= railState.plannedPath.length - 1; // Return true if journey complete
       }
     } else {
-      console.error(`❌ Vesicle ${vesicle.id} segment not found for edgeId=${railState.edgeId} - cannot proceed with actin traversal`);
+      console.error(`❌ cargo ${cargo.id} segment not found for edgeId=${railState.edgeId} - cannot proceed with actin traversal`);
       return false;
     }
 
@@ -805,8 +805,8 @@ export class CytoskeletonGraph {
   }
 
   // Regular traversal for microtubules and access edges
-  private handleRegularTraversal(vesicle: Vesicle, deltaSeconds: number, edge: GraphEdge, targetNode: GraphNode): boolean {
-    const railState = vesicle.railState!;
+  private handleRegularTraversal(cargo: Cargo, deltaSeconds: number, edge: GraphEdge, targetNode: GraphNode): boolean {
+    const railState = cargo.railState!;
 
     // Initialize transit timing if not set
     if (railState.transitTimer === undefined || railState.totalTransitTime === undefined) {
@@ -829,7 +829,7 @@ export class CytoskeletonGraph {
       railState.transitProgress = 0.0;
 
       if (DEBUG_RAILS) {
-        console.log(`🚂 Starting transit: ${railState.totalTransitTime.toFixed(1)}s for ${edge.type} edge for vesicle ${vesicle.id}`);
+        console.log(`🚂 Starting transit: ${railState.totalTransitTime.toFixed(1)}s for ${edge.type} edge for cargo ${cargo.id}`);
       }
     }
 
@@ -837,7 +837,7 @@ export class CytoskeletonGraph {
     railState.transitTimer! -= deltaSeconds;
     railState.transitProgress = Math.max(0, 1.0 - (railState.transitTimer! / railState.totalTransitTime!));
 
-    // Update vesicle position based on progress (interpolate between actual segment endpoints)
+    // Update cargo position based on progress (interpolate between actual segment endpoints)
     const currentNode = this.nodes.get(railState.nodeId)!;
     const progress = railState.transitProgress!;
 
@@ -852,31 +852,31 @@ export class CytoskeletonGraph {
       const endHex = movingFromSegmentStart ? segment.toHex : segment.fromHex;
       
       // Linear interpolation between actual segment endpoints
-      vesicle.atHex = {
+      cargo.atHex = {
         q: Math.round(startHex.q + (endHex.q - startHex.q) * progress),
         r: Math.round(startHex.r + (endHex.r - startHex.r) * progress)
       };
       
       if (DEBUG_RAILS) {
-        console.log(`🚂 Vesicle ${vesicle.id} moving along segment from (${startHex.q},${startHex.r}) to (${endHex.q},${endHex.r}), progress: ${(progress * 100).toFixed(1)}%`);
+        console.log(`🚂 cargo ${cargo.id} moving along segment from (${startHex.q},${startHex.r}) to (${endHex.q},${endHex.r}), progress: ${(progress * 100).toFixed(1)}%`);
       }
     } else {
       // Fallback to node-based interpolation if segment not found
       const currentHex = currentNode.hex;
       const targetHex = targetNode.hex;
-      vesicle.atHex = {
+      cargo.atHex = {
         q: Math.round(currentHex.q + (targetHex.q - currentHex.q) * progress),
         r: Math.round(currentHex.r + (targetHex.r - currentHex.r) * progress)
       };
     }
     
-    vesicle.worldPos = this.worldRefs.hexGrid.hexToWorld(vesicle.atHex);
+    cargo.worldPos = this.worldRefs.hexGrid.hexToWorld(cargo.atHex);
 
     // Check if transit is complete
     if (railState.transitTimer! <= 0) {
       // Arrived at target node
-      vesicle.atHex = { ...targetNode.hex };
-      vesicle.worldPos = this.worldRefs.hexGrid.hexToWorld(targetNode.hex);
+      cargo.atHex = { ...targetNode.hex };
+      cargo.worldPos = this.worldRefs.hexGrid.hexToWorld(targetNode.hex);
 
       edge.occupiedBy = undefined; // Release edge
       railState.nodeId = railState.nextNodeId!;
@@ -891,13 +891,13 @@ export class CytoskeletonGraph {
       railState.totalTransitTime = undefined;
 
       if (DEBUG_RAILS) {
-        console.log(`🚂 Vesicle ${vesicle.id} arrived at node ${railState.nodeId}`);
+        console.log(`🚂 cargo ${cargo.id} arrived at node ${railState.nodeId}`);
       }
 
       // Check if reached final destination
       if (railState.pathIndex >= railState.plannedPath.length - 1) {
-        console.log(`🏁 Vesicle ${vesicle.id} completed rail journey to ${railState.nodeId} at (${vesicle.atHex.q}, ${vesicle.atHex.r})`);
-        vesicle.railState = undefined;
+        console.log(`🏁 cargo ${cargo.id} completed rail journey to ${railState.nodeId} at (${cargo.atHex.q}, ${cargo.atHex.r})`);
+        cargo.railState = undefined;
         return true;
       }
     }
@@ -907,8 +907,8 @@ export class CytoskeletonGraph {
 
 
 
-  private tryStartNextMove(vesicle: Vesicle): boolean {
-    const railState = vesicle.railState!;
+  private tryStartNextMove(cargo: Cargo): boolean {
+    const railState = cargo.railState!;
 
     if (railState.pathIndex >= railState.plannedPath.length - 1) {
       return false; // Already at destination
@@ -920,18 +920,18 @@ export class CytoskeletonGraph {
     // Validate current node exists
     const currentNode = this.nodes.get(currentNodeId);
     if (!currentNode) {
-      console.warn(`🚫 Vesicle ${vesicle.id} stranded - current node ${currentNodeId} no longer exists`);
+      console.warn(`🚫 cargo ${cargo.id} stranded - current node ${currentNodeId} no longer exists`);
       railState.status = 'stranded';
-      vesicle.state = 'BLOCKED'; // Force vesicle to retry pathfinding
+      cargo.state = 'QUEUED'; // Force cargo to retry pathfinding
       return false;
     }
 
     // Validate next node exists
     const nextNode = this.nodes.get(nextNodeId);
     if (!nextNode) {
-      console.warn(`🚫 Vesicle ${vesicle.id} stranded - next node ${nextNodeId} no longer exists`);
+      console.warn(`🚫 cargo ${cargo.id} stranded - next node ${nextNodeId} no longer exists`);
       railState.status = 'stranded';
-      vesicle.state = 'BLOCKED'; // Force vesicle to retry pathfinding
+      cargo.state = 'QUEUED'; // Force cargo to retry pathfinding
       return false;
     }
 
@@ -956,7 +956,7 @@ export class CytoskeletonGraph {
 
     if (availableEdges.length === 0) {
       // Enhanced diagnostic information
-      console.warn(`🚫 Vesicle ${vesicle.id} stranded at ${currentNodeId} (${currentNode.edges.length} edges)`);
+      console.warn(`🚫 cargo ${cargo.id} stranded at ${currentNodeId} (${currentNode.edges.length} edges)`);
       console.warn(`   Trying to reach: ${nextNodeId}`);
       console.warn(`   Available edges: ${currentNode.edges.map(id => {
         const edge = this.edges.get(id);
@@ -964,13 +964,13 @@ export class CytoskeletonGraph {
       }).join(', ')}`);
 
       // Check for potential deadlocks - if blocked for too long, clear stale edge occupations
-      if (!this.strandedVesicles.has(vesicle.id)) {
-        this.strandedVesicles.set(vesicle.id, Date.now());
-        console.log(`🕰️ Started tracking stranded vesicle ${vesicle.id} at ${Date.now()}`);
-      } else if (Date.now() - this.strandedVesicles.get(vesicle.id)! > 2000) { // 2 seconds timeout
-        console.warn(`🕰️ Vesicle ${vesicle.id} stranded for >2s, clearing blocking edge occupation`);
+      if (!this.strandedCargos.has(cargo.id)) {
+        this.strandedCargos.set(cargo.id, Date.now());
+        console.log(`🕰️ Started tracking stranded cargo ${cargo.id} at ${Date.now()}`);
+      } else if (Date.now() - this.strandedCargos.get(cargo.id)! > 2000) { // 2 seconds timeout
+        console.warn(`🕰️ cargo ${cargo.id} stranded for >2s, clearing blocking edge occupation`);
 
-        // Clear the specific edge that's blocking this vesicle's next move
+        // Clear the specific edge that's blocking this Cargo's next move
         const nextNodeId = railState.plannedPath[railState.pathIndex + 1];
         if (nextNodeId) {
           const blockingEdgeId = this.findEdgeBetweenNodes(railState.nodeId, nextNodeId);
@@ -986,19 +986,19 @@ export class CytoskeletonGraph {
         // Also clear any other stale occupations on current node edges as backup
         for (const edgeId of currentNode.edges) {
           const edge = this.edges.get(edgeId);
-          if (edge?.occupiedBy && edge.occupiedBy !== vesicle.id) {
+          if (edge?.occupiedBy && edge.occupiedBy !== cargo.id) {
             console.warn(`🧹 Clearing stale occupation: edge ${edgeId} was occupied by ${edge.occupiedBy}`);
             edge.occupiedBy = undefined;
           }
         }
 
-        this.strandedVesicles.delete(vesicle.id);
+        this.strandedCargos.delete(cargo.id);
         // Try again immediately
-        return this.tryStartNextMove(vesicle);
+        return this.tryStartNextMove(cargo);
       }
 
       railState.status = 'stranded';
-      vesicle.state = 'BLOCKED'; // Force vesicle to recalculate path
+      cargo.state = 'QUEUED'; // Force cargo to recalculate path
       return false;
     }
 
@@ -1010,7 +1010,7 @@ export class CytoskeletonGraph {
         targetEdge = actinEdges[0]; // Choose first available actin edge
         railState.handoffKind = 'actin-launch';
         if (DEBUG_RAILS) {
-          console.log(`🚀 Actin-first launch: vesicle ${vesicle.id} using actin edge ${targetEdge.id}`);
+          console.log(`🚀 Actin-first launch: cargo ${cargo.id} using actin edge ${targetEdge.id}`);
         }
       } else {
         targetEdge = availableEdges[0]; // Fall back to first available edge
@@ -1020,13 +1020,13 @@ export class CytoskeletonGraph {
     }
 
     // Reserve edge and start moving
-    targetEdge.occupiedBy = vesicle.id;
+    targetEdge.occupiedBy = cargo.id;
     railState.nextNodeId = nextNodeId;
     railState.edgeId = targetEdge.id;
     railState.status = 'moving';
 
     // Clear stranded timer since we're moving
-    this.strandedVesicles.delete(vesicle.id);
+    this.strandedCargos.delete(cargo.id);
 
     if (DEBUG_RAILS) {
       console.log(`J(${currentNodeId}) -> Edge(${targetEdge.id}) -> J(${nextNodeId})`);
@@ -1045,18 +1045,19 @@ export class CytoskeletonGraph {
   markDirty(): void {
     this.isDirty = true;
 
-    // When graph changes, invalidate all vesicle rail states to force recalculation
-    this.invalidateVesicleRailStates();
+    // When graph changes, invalidate all cargo rail states to force recalculation
+    this.invalidateCargoRailStates();
   }
 
-  // Invalidate all vesicle rail states when graph topology changes
-  private invalidateVesicleRailStates(): void {
+  // Invalidate all cargo rail states when graph topology changes
+  private invalidateCargoRailStates(): void {
     let invalidatedCount = 0;
-    for (const vesicle of this.worldRefs.vesicles.values()) {
-      if (vesicle.railState) {
-        vesicle.railState = undefined;
-        if (vesicle.state === 'EN_ROUTE_GOLGI' || vesicle.state === 'EN_ROUTE_MEMBRANE') {
-          vesicle.state = 'BLOCKED'; // Force recalculation
+    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
+    for (const cargo of vesicles) {
+      if (cargo.railState) {
+        cargo.railState = undefined;
+        if (cargo.state === 'TRANSPORTING') {
+          cargo.state = 'QUEUED'; // Force recalculation
         }
         invalidatedCount++;
       }
@@ -1081,18 +1082,18 @@ export class CytoskeletonGraph {
     return undefined;
   }
 
-  // Clean up stranded vesicle tracking when vesicle completes or is removed
-  cleanupStrandedVesicle(vesicleId: string): void {
-    this.strandedVesicles.delete(vesicleId);
+  // Clean up stranded cargo tracking when cargo completes or is removed
+  cleanupStrandedCargo(CargoId: string): void {
+    this.strandedCargos.delete(CargoId);
   }
 
-  // Release all edges occupied by a specific vesicle
-  releaseVesicleEdges(vesicleId: string): void {
+  // Release all edges occupied by a specific Cargo
+  releaseCargoEdges(CargoId: string): void {
     for (const [edgeId, edge] of this.edges) {
-      if (edge.occupiedBy === vesicleId) {
+      if (edge.occupiedBy === CargoId) {
         edge.occupiedBy = undefined;
         if (DEBUG_RAILS) {
-          console.log(`🔓 Released edge ${edgeId} from vesicle ${vesicleId}`);
+          console.log(`🔓 Released edge ${edgeId} from cargo ${CargoId}`);
         }
       }
     }

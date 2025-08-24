@@ -5,7 +5,8 @@
  * Displays unified cargo information with visual indicators
  */
 
-import type { UnifiedCargoSystem, CargoType } from "./unified-cargo-system";
+import type { Cargo, CargoType } from "@/core/world-refs";
+import type { CargoSystem } from "./cargo-system";
 
 export interface CargoHUDConfig {
   position: { x: number; y: number };
@@ -30,11 +31,12 @@ export class CargoHUD {
   
   constructor(
     private scene: Phaser.Scene,
-    private cargoSystem: UnifiedCargoSystem,
+    private cargoSystem: CargoSystem,
     config: Partial<CargoHUDConfig> = {}
   ) {
+    console.log(`🎨 CargoHUD: Constructor called for player`);
     this.config = {
-      position: { x: 20, y: 20 },
+      position: { x: 20, y: 220 },
       width: 220,
       height: 100,
       backgroundColor: 0x000000,
@@ -44,6 +46,7 @@ export class CargoHUD {
     };
     
     this.createHUDElements();
+    console.log(`🎨 CargoHUD: Constructor complete, container created:`, !!this.container);
   }
   
   private createHUDElements(): void {
@@ -94,43 +97,57 @@ export class CargoHUD {
     
     // Initially hidden
     this.container.setVisible(false);
+    this.container.setScrollFactor(0);
   }
   
   public update(): void {
-    const hudInfo = this.cargoSystem.getHUDInfo();
+    // Get carried cargo for this player
+    const carriedCargo = this.cargoSystem.getMyPlayerInventory();
+    const showLogs = Math.random() < 0.001; // don't Log more frequently for debugging
+    if(showLogs)console.log(`🎨 CargoHUD.update(): carriedCargo=${carriedCargo.length}, isVisible=${this.isVisible}`);
     
-    if (hudInfo) {
+    if (carriedCargo.length > 0) {
       if (!this.isVisible) {
+        if(showLogs) console.log(`🎨 CargoHUD: Showing HUD with ${carriedCargo.length} carried cargo`);
         this.container.setVisible(true);
         this.isVisible = true;
       }
       
-      this.updateCargoDisplay(hudInfo);
+      // Show info for the first carried cargo item
+      const cargo = carriedCargo[0];
+      
+      // Calculate real-time TTL on client for smooth display
+      const now = Date.now();
+      const elapsedMs = now - cargo.createdAt;
+      const elapsedSeconds = elapsedMs / 1000;
+      const ttlRemaining = Math.max(0, cargo.ttlSecondsInitial - elapsedSeconds);
+      
+      // Pass the cargo object directly instead of extracting individual properties
+      this.updateCargoDisplay(cargo, ttlRemaining);
     } else {
       if (this.isVisible) {
+        if(showLogs) console.log(`🎨 CargoHUD: Hiding HUD - no carried cargo`);
         this.container.setVisible(false);
         this.isVisible = false;
       }
     }
   }
   
-  private updateCargoDisplay(hudInfo: {
-    type: CargoType;
-    ttlRemaining: number;
-    ttlPercent: number;
-    targets: Array<{ targetType: string; distance: number; isValid: boolean }>;
-  }): void {
+  private updateCargoDisplay(cargo: Cargo, ttlRemaining: number): void {
+    // Calculate TTL percentage
+    const ttlPercent = ttlRemaining / cargo.ttlSecondsInitial;
+    
     // Update cargo icon
-    this.updateCargoIcon(hudInfo.type);
+    this.updateCargoIcon(cargo.currentType);
     
     // Update cargo type text
-    this.cargoTypeText.setText(this.getCargoDisplayName(hudInfo.type));
+    this.cargoTypeText.setText(this.getCargoDisplayName(cargo.currentType));
     
     // Update TTL display
-    this.updateTTLDisplay(hudInfo.ttlRemaining, hudInfo.ttlPercent);
+    this.updateTTLDisplay(ttlRemaining, ttlPercent);
     
-    // Update targets display
-    this.updateTargetsDisplay(hudInfo.targets);
+    // Update targets display using cargo.itinerary directly
+    this.updateTargetsDisplayFromItinerary(cargo);
   }
   
   private updateCargoIcon(type: CargoType): void {
@@ -204,22 +221,19 @@ export class CargoHUD {
     this.ttlBar.strokeRect(barX, barY, barWidth, barHeight);
   }
   
-  private updateTargetsDisplay(targets: Array<{ targetType: string; distance: number; isValid: boolean }>): void {
-    let targetsText = "Targets:\n";
+  /**
+   * Updated method that uses cargo.itinerary directly instead of separate parameters
+   */
+  private updateTargetsDisplayFromItinerary(cargo: Cargo): void {
+    let targetsText = "";
     
-    if (targets.length === 0) {
-      targetsText += "None available";
-    } else {
-      for (let i = 0; i < Math.min(3, targets.length); i++) { // Show max 3 targets
-        const target = targets[i];
-        const distance = Math.round(target.distance);
-        const status = target.isValid ? "✓" : "○";
-        
-        targetsText += `${status} ${target.targetType} (${distance}px)\n`;
-      }
-      
-      if (targets.length > 3) {
-        targetsText += `... +${targets.length - 3} more`;
+    // Show current stage info from itinerary
+    if (cargo.itinerary) {
+      const currentStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
+      if (currentStage) {
+        const stageNumber = cargo.itinerary.stageIndex + 1;
+        const totalStages = cargo.itinerary.stages.length;
+        targetsText += `Target: ${currentStage.kind} (Stage ${stageNumber}/${totalStages})\n`;
       }
     }
     
