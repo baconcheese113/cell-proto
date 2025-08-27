@@ -37,6 +37,7 @@ import { CellMotility } from "../systems/cell-motility";
 import { ThrowSystem } from "../systems/throw-system";
 import { CargoSystem } from "../systems/cargo-system";
 import { MembraneTrampoline } from "../systems/membrane-trampoline";
+import { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
 import { ThrowInputController } from "../systems/throw-input-controller";
 // Milestone 13: Cytoskeleton Transport v1
 import { CytoskeletonSystem } from "../systems/cytoskeleton-system";
@@ -54,7 +55,7 @@ import { PlayerSystem } from "../systems/player-system";
 import { EmoteSystem } from "../systems/emote-system";
 import { InstallOrderSystem } from "../systems/install-order-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F4" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -168,6 +169,7 @@ export class GameScene extends Phaser.Scene {
   private cargoSystem!: CargoSystem;
   private cargoHUD?: CargoHUD; // CargoHUD instance
   private membraneTrampoline!: MembraneTrampoline;
+  private membranePhysics!: MembranePhysicsSystem; // NEW: Dynamic membrane physics
   
   // Milestone 13: Cytoskeleton Transport v1
   private cytoskeletonSystem!: CytoskeletonSystem;
@@ -222,10 +224,11 @@ export class GameScene extends Phaser.Scene {
     this.cellRoot = this.add.container(view.width * 0.5, view.height * 0.5);
     this.cellRoot.setDepth(1); // Above background, will contain all cell visuals
     
-    // Cell membrane
+    // Cell membrane (static fallback - will be hidden when dynamic membrane is active)
     this.cellCenter.set(view.width * 0.5, view.height * 0.5);
     const cellKey = makeCellTexture(this, this.cellRadius * 2 + this.membraneThickness * 2, this.membraneThickness, this.col.cellFill, this.col.membrane);
     this.cellSprite = this.add.image(0, 0, cellKey).setDepth(1); // Position relative to cellRoot
+    this.cellSprite.setVisible(false); // Hide static membrane in favor of dynamic physics membrane
     
     // HOTFIX H2: Re-parent cell sprite to cellRoot
     this.cellRoot.add(this.cellSprite);
@@ -420,6 +423,7 @@ export class GameScene extends Phaser.Scene {
       F1: this.input.keyboard!.addKey("F1"), // Build actin filaments
       F2: this.input.keyboard!.addKey("F2"), // Build microtubules
       F3: this.input.keyboard!.addKey("F3"), // Toggle pathfinding debug
+      F4: this.input.keyboard!.addKey("F4"), // Test membrane physics (NEW)
       F9: this.input.keyboard!.addKey("F9"), // Toggle network HUD
       F10: this.input.keyboard!.addKey("F10"), // Toggle room UI
       F11: this.input.keyboard!.addKey("F11"), // Simulate packet loss
@@ -535,6 +539,11 @@ export class GameScene extends Phaser.Scene {
     // Handle pathfinding debug toggle
     if (Phaser.Input.Keyboard.JustDown(this.keys.F3)) {
       this.togglePathfindingDebug();
+    }
+
+    // NEW: Test membrane physics impacts
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F4)) {
+      this.testMembranePhysics();
     }
 
     // Handle heatmap controls - Task 5
@@ -936,6 +945,35 @@ export class GameScene extends Phaser.Scene {
     this.cellRoot.add(this.membraneGraphics);
     
     // Note: renderMembraneDebug() will be called after membrane exchange system is initialized
+  }
+
+  private testMembranePhysics(): void {
+    if (!this.membranePhysics) {
+      console.log("No membrane physics system available for testing");
+      return;
+    }
+
+    // Log debug info about membrane physics system
+    console.log(`🧬 Membrane Physics Debug: ${(this.membranePhysics as any).getDebugInfo?.()}`);
+
+    // Apply test impacts at random locations around the cell membrane
+    const numImpacts = 3;
+    for (let i = 0; i < numImpacts; i++) {
+      const angle = (Math.PI * 2 * i) / numImpacts + Math.random() * 0.5;
+      // Position impacts near the membrane radius (in cellRoot local coordinates)
+      const impactRadius = this.cellRadius * 0.8; // Just inside the membrane
+      const x = Math.cos(angle) * impactRadius;
+      const y = Math.sin(angle) * impactRadius;
+      const force = 50 + Math.random() * 100;
+      
+      // Create Vector2 objects for position and direction in cell-local coordinates
+      const position = new Phaser.Math.Vector2(x, y);
+      const direction = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
+      
+      this.membranePhysics.applyImpact(position, force, direction, 'external');
+    }
+
+    console.log("Applied test impacts to membrane physics system near cell membrane");
   }
 
   private renderMembraneDebug(): void {
@@ -1905,6 +1943,9 @@ export class GameScene extends Phaser.Scene {
     console.log('Membrane exchange system and port system initialized');
   }
 
+  // NOTE: initializeMembranePhysics() removed - membrane physics is now initialized 
+  // in initNetwork() for proper network replication support
+
   private initializeCellLocomotionSystems(): void {
     // Initialize cell space system with current cell center
     this.cellSpaceSystem = new CellSpaceSystem(this.cellCenter.x, this.cellCenter.y);
@@ -1959,8 +2000,12 @@ export class GameScene extends Phaser.Scene {
     const installOrders  = new InstallOrderSystem(bus, { address: 'InstallOrderSystem' });
     const cytoskeleton   = this.cytoskeletonSystem; // Use existing system
     const emotes         = new EmoteSystem(bus, this, players, this.cellRoot);
+    
+    // Initialize networked membrane physics system
+    const membranePhysics = new MembranePhysicsSystem(this, this.worldRefsInstance, bus);
+    this.membranePhysics = membranePhysics;
 
-    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes].filter(c => c)) bus.registerInstance(c);
+    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes, membranePhysics].filter(c => c)) bus.registerInstance(c);
 
     // Host initializes self in player roster
     if (bus.isHost) {
@@ -1977,7 +2022,8 @@ export class GameScene extends Phaser.Scene {
       species,
       installOrders,
       cytoskeleton, 
-      emotes 
+      emotes,
+      membranePhysics     // Add membrane physics to network interface
     };
 
     // Add InstallOrderSystem to WorldRefs for CargoSystem access
@@ -1996,6 +2042,10 @@ export class GameScene extends Phaser.Scene {
     requestAnimationFrame(flush);
     
     console.log(`Network initialized: ${isHost ? 'HOST' : 'CLIENT'} in room ${roomId}`);
+    
+    // Connect membrane physics to player now that it's initialized
+    (this.playerActor as any).membranePhysics = membranePhysics;
+    console.log('🧬 Dynamic membrane physics system initialized and connected to player');
     
     // CargoSystem now provides UI interface methods directly - no wrapper needed
     console.log('CargoSystem provides UI interface methods directly');

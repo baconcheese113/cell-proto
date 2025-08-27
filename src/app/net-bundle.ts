@@ -5,6 +5,7 @@ import type { SpeciesSystem } from "../systems/species-system";
 import type { CytoskeletonSystem } from "../systems/cytoskeleton-system";
 import type { EmoteSystem } from "../systems/emote-system";
 import type { InstallOrderSystem } from "../systems/install-order-system";
+import type { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
 
 export interface NetBundle {
   bus: NetBus;
@@ -15,4 +16,5 @@ export interface NetBundle {
   installOrders: InstallOrderSystem;
   cytoskeleton: CytoskeletonSystem;
   emotes: EmoteSystem;
+  membranePhysics: MembranePhysicsSystem;  // Network-replicated membrane physics
 }

@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import type { HexGrid, HexCoord, HexTile } from "../hex/hex-grid";
+import type { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
 
 interface PlayerConfig {
   scene: Phaser.Scene;
@@ -15,6 +16,7 @@ interface PlayerConfig {
   cellCenter: Phaser.Math.Vector2;
   cellRadius: number;
   cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Add cellRoot for membrane effects
+  membranePhysics?: MembranePhysicsSystem; // NEW: Dynamic membrane physics
 }
 
 export class Player extends Phaser.GameObjects.Container {
@@ -37,6 +39,7 @@ export class Player extends Phaser.GameObjects.Container {
   private cellRadius: number;
   private lastMembraneHit = 0;
   private cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Store cellRoot for membrane effects
+  private membranePhysics?: MembranePhysicsSystem; // NEW: Dynamic membrane physics reference
   
   // Current position tracking
   private currentTileRef: HexTile | null = null;
@@ -55,6 +58,7 @@ export class Player extends Phaser.GameObjects.Container {
     this.cellCenter = config.cellCenter;
     this.cellRadius = config.cellRadius;
     this.cellRoot = config.cellRoot; // HOTFIX H5: Store cellRoot reference
+    this.membranePhysics = config.membranePhysics; // NEW: Store membrane physics reference
 
     // Create sprite with physics body
     const pkey = this.makePlayerTexture(config.playerColor);
@@ -279,29 +283,85 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   /**
-   * Calculate elastic forces to keep player within cell membrane (INCREASED BOUNCINESS)
+   * Calculate elastic forces using dynamic membrane physics
    */
   private calculateElasticForces(): Phaser.Math.Vector2 {
     const force = new Phaser.Math.Vector2(0, 0);
     const playerPos = this.getWorldPosition();
     
-    const distanceFromCenter = Phaser.Math.Distance.BetweenPoints(playerPos, this.cellCenter);
-    const maxDistance = this.cellRadius - this.sprite.width / 2; // Use actual player size
+    // Convert to cell-local coordinates
+    const cellLocalPos = playerPos.clone().subtract(this.cellCenter);
+    const angle = Math.atan2(cellLocalPos.y, cellLocalPos.x);
+    const distanceFromCenter = cellLocalPos.length();
+    
+    // Get dynamic membrane radius at this angle
+    let membraneRadius = this.cellRadius;
+    let membraneElasticity = 0.3;
+    
+    if (this.membranePhysics) {
+      try {
+        const dynamicRadius = this.membranePhysics.getMembraneRadiusAt(angle);
+        const dynamicElasticity = this.membranePhysics.getMembraneElasticityAt(angle);
+        
+        // Validate the results before using them
+        if (typeof dynamicRadius === 'number' && !isNaN(dynamicRadius) && dynamicRadius > 0) {
+          membraneRadius = dynamicRadius;
+        } else if (Math.random() < 0.01) { // Occasionally log debug info
+          console.warn(`Invalid membrane radius: ${dynamicRadius}. Debug: ${(this.membranePhysics as any).getDebugInfo?.()}`);
+        }
+        
+        if (typeof dynamicElasticity === 'number' && !isNaN(dynamicElasticity)) {
+          membraneElasticity = dynamicElasticity;
+        }
+      } catch (error) {
+        // Silent fallback to default values
+        if (Math.random() < 0.01) { // Occasionally log errors
+          console.error('Error accessing membrane physics:', error);
+        }
+      }
+    }
+    
+    const maxDistance = membraneRadius - this.sprite.width / 2;
     
     if (distanceFromCenter > maxDistance) {
       const penetration = distanceFromCenter - maxDistance;
-      const directionToCenter = new Phaser.Math.Vector2(
-        this.cellCenter.x - playerPos.x,
-        this.cellCenter.y - playerPos.y
-      ).normalize();
+      const directionToCenter = cellLocalPos.clone().normalize().negate();
       
-      // INCREASED spring force for more bouncy membrane feel
-      const membraneSpringForce = 600; // Increased from 400 for more bounciness
+      // Use dynamic membrane elasticity
+      const membraneSpringForce = 600 * (1 + membraneElasticity);
       const springForce = directionToCenter.scale(penetration * membraneSpringForce);
       force.add(springForce);
       
-      // Create visual feedback (throttled)
-      if (this.scene.time.now - this.lastMembraneHit > 150) { // Reduced throttle for more responsive feedback
+      // Apply impact to membrane physics system
+      if (this.membranePhysics && this.scene.time.now - this.lastMembraneHit > 100) {
+        const impactForce = this.sprite.body.velocity.length() * 0.5;
+        
+        // Calculate the membrane contact point in cell-local coordinates
+        // Direction from center to player (outward from center)
+        const centerToPlayerDirection = cellLocalPos.clone().normalize();
+        const membraneContactLocalPos = centerToPlayerDirection.scale(membraneRadius);
+        
+        // Impact direction should be outward from the membrane (player pushing outward)
+        const impactDirection = centerToPlayerDirection; // Points away from center
+        
+        // Use the consolidated applyImpact method with cell-local coordinates
+        this.membranePhysics.applyImpact(
+          membraneContactLocalPos,
+          impactForce,
+          impactDirection,
+          this.isDashing ? 'dash' : 'collision'
+        );
+        
+        // Debug log the calculation
+        if (Math.random() < 0.1) { // 10% chance
+          console.log(`🎯 Player collision: cellLocal=(${cellLocalPos.x.toFixed(1)}, ${cellLocalPos.y.toFixed(1)}) -> membraneContact=(${membraneContactLocalPos.x.toFixed(1)}, ${membraneContactLocalPos.y.toFixed(1)})`);
+        }
+        
+        this.lastMembraneHit = this.scene.time.now;
+      }
+      
+      // Legacy ripple effect for fallback
+      if (!this.membranePhysics && this.scene.time.now - this.lastMembraneHit > 150) {
         this.lastMembraneHit = this.scene.time.now;
         this.createMembraneRipple(playerPos);
       }
