@@ -13,23 +13,21 @@ import type { MembraneExchangeSystem } from "../membrane/membrane-exchange-syste
 import type { SpeciesId } from "../species/species-registry";
 import type { OrganelleType } from "../organelles/organelle-registry";
 import { getAllSpeciesIds } from "../species/species-registry";
-import { NetComponent } from "../network/net-entity";
+import { System } from "../systems/system";
 import { RunOnServer } from "../network/decorators";
 import type { NetBus } from "../network/net-bus";
+import type { BaseBlueprint } from "./base-blueprint";
+import { BlueprintProgressUtils } from "./base-blueprint";
+import type { CytoskeletonSystem } from "@/systems/cytoskeleton-system";
 
-export interface Blueprint {
-  id: string;
+export interface Blueprint extends BaseBlueprint {
+  anchorCoord: HexCoord; // Primary placement coordinate  
   recipeId: OrganelleType;
-  anchorCoord: HexCoord; // Primary placement coordinate
-  
-  // Construction state
-  progress: Record<SpeciesId, number>; // species ID -> amount contributed
-  totalProgress: number; // sum of all progress
-  isActive: boolean;
   
   // Runtime
-  createdAt: number;
   lastTickTime: number;
+  
+  // Note: totalProgress removed - use BlueprintProgressUtils.calculateOverallProgress() instead
 }
 
 export interface PlacementValidation {
@@ -38,25 +36,21 @@ export interface PlacementValidation {
   footprintTiles: HexCoord[];
 }
 
-export class BlueprintSystem extends NetComponent {
-  private hexGrid: HexGrid;
+export class BlueprintSystem extends System {
   private blueprintState = this.stateChannel<{ blueprints: Record<string, Blueprint> }>('blueprints', { blueprints: {} });
   private blueprintsByTile: Map<string, Blueprint> = new Map(); // tile key -> blueprint
   private nextBlueprintId: number = 1;
 
-  // For organelle system integration
-  private getOccupiedTiles: () => Set<string>;
-  private spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void;
-  
-  // Milestone 6: Membrane system integration
-  private membraneExchangeSystem?: MembraneExchangeSystem;
-
-  constructor(netBus: NetBus, hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void, membraneExchangeSystem?: MembraneExchangeSystem) {
-    super(netBus, { address: 'BlueprintSystem' });
-    this.hexGrid = hexGrid;
-    this.getOccupiedTiles = getOccupiedTiles;
-    this.spawnOrganelle = spawnOrganelle;
-    this.membraneExchangeSystem = membraneExchangeSystem;
+  constructor(
+    scene: Phaser.Scene,
+    netBus: NetBus, 
+    private hexGrid: HexGrid, 
+    private getOccupiedTiles: () => Set<string>, 
+    private membraneExchangeSystem: MembraneExchangeSystem,
+    private cytoskeletonSystem: CytoskeletonSystem, // CytoskeletonSystem (avoid circular import)
+    private spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void, 
+  ) {
+    super(scene, netBus, 'BlueprintSystem', (deltaSeconds: number) => this.processConstruction(deltaSeconds), { address: 'BlueprintSystem' });
   }
 
   // Helper methods for state channel access
@@ -152,6 +146,12 @@ export class BlueprintSystem extends NetComponent {
       if (!recipe.membraneOnly && isMembraneTile) {
         errors.push(`Non-membrane structures cannot be built on membrane tiles`);
       }
+      
+      // Milestone 13: Check for existing cytoskeleton segments
+      const segmentsAtTile = this.cytoskeletonSystem.getSegmentsAtTile({ q: tile.q, r: tile.r });
+      if (segmentsAtTile.length > 0) {
+        errors.push(`Tile (${tile.q}, ${tile.r}) is occupied by cytoskeleton segments`);
+      }
     }
 
     return {
@@ -189,7 +189,7 @@ export class BlueprintSystem extends NetComponent {
       recipeId,
       anchorCoord: { q: anchorQ, r: anchorR },
       progress,
-      totalProgress: 0,
+      required: { ...recipe.buildCost }, // Add required resources from recipe
       isActive: true,
       createdAt: Date.now(),
       lastTickTime: Date.now()
@@ -213,10 +213,11 @@ export class BlueprintSystem extends NetComponent {
   }
 
   /**
+   * Construction processing called automatically by System base class
    * Task 3: Construction progress - pull species from footprint tiles
    * Task 8: Respects priority order (runs after organelles)
    */
-  public processConstruction(deltaTime: number): void {
+  private processConstruction(deltaTime: number): void {
     // Process blueprints in creation order (FIFO - first placed gets priority)
     const sortedBlueprints = Object.values(this.blueprints)
       .filter(bp => bp.isActive)
@@ -238,7 +239,7 @@ export class BlueprintSystem extends NetComponent {
     );
 
     // Calculate how much we can pull this tick
-    const maxPullPerTick = recipe.buildRatePerTick * (deltaTime / 1000); // convert to per-second rate
+    const maxPullPerTick = recipe.buildRatePerTick * deltaTime; // deltaTime is already in seconds
 
     // Try to pull each required species
     for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost) as [SpeciesId, number][]) {
@@ -256,9 +257,6 @@ export class BlueprintSystem extends NetComponent {
       
       if (actualPulled > 0) {
         blueprint.progress[speciesId] = blueprint.progress[speciesId] + actualPulled;
-        blueprint.totalProgress += actualPulled;
-        
-        // console.log(`Blueprint ${blueprint.id} consumed ${actualPulled.toFixed(2)} ${speciesId} (${blueprint.progress[speciesId].toFixed(2)}/${requiredAmount})`);
       }
     }
 
@@ -305,7 +303,6 @@ export class BlueprintSystem extends NetComponent {
 
     if (actualContribution > 0) {
       blueprint.progress[speciesId] = currentProgress + actualContribution;
-      blueprint.totalProgress += actualContribution;
       
       console.log(`Player contributed ${actualContribution.toFixed(2)} ${speciesId} to ${blueprint.id}`);
       
@@ -320,17 +317,8 @@ export class BlueprintSystem extends NetComponent {
    * Task 6: Check completion and spawn organelle
    */
   private checkCompletion(blueprint: Blueprint, recipe: ConstructionRecipe): void {
-    // Check if ALL species requirements are met (not just total progress)
-    let allRequirementsMet = true;
-    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost) as [SpeciesId, number][]) {
-      const currentProgress = blueprint.progress[speciesId] || 0;
-      if (currentProgress < requiredAmount) {
-        allRequirementsMet = false;
-        break;
-      }
-    }
-    
-    if (allRequirementsMet) {
+    // Use shared completion logic
+    if (BlueprintProgressUtils.isComplete(blueprint)) {
       console.log(`Blueprint ${blueprint.id} completed! All requirements met. Spawning ${recipe.onCompleteType}`);
       
       // Spawn organelle if callback is provided and recipe specifies an organelle to create
@@ -471,7 +459,6 @@ export class BlueprintSystem extends NetComponent {
     // Fill all requirements instantly
     for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
       blueprint.progress[speciesId as SpeciesId] = requiredAmount;
-      blueprint.totalProgress += requiredAmount;
     }
 
     // Force completion check

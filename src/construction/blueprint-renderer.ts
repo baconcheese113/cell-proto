@@ -8,6 +8,7 @@ import Phaser from "phaser";
 import type { Blueprint } from "./blueprint-system";
 import { BlueprintSystem } from "./blueprint-system";
 import { CONSTRUCTION_RECIPES } from "./construction-recipes";
+import { BlueprintProgressUtils } from "./base-blueprint";
 import type { HexCoord, HexGrid } from "../hex/hex-grid";
 
 export class BlueprintRenderer {
@@ -167,8 +168,7 @@ export class BlueprintRenderer {
   }
 
   private renderProgressBar(blueprint: Blueprint, centroid: { x: number; y: number }): void {
-    const totalCost = CONSTRUCTION_RECIPES.getTotalCost(blueprint.recipeId);
-    const progress = blueprint.totalProgress / totalCost;
+    const progress = BlueprintProgressUtils.calculateOverallProgress(blueprint);
     
     const barWidth = 40;
     const barHeight = 6;

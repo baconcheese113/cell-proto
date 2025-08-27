@@ -14,7 +14,6 @@ import type { HexCoord } from "../hex/hex-grid";
 import type { WorldRefs } from "../core/world-refs";
 import type { CytoskeletonSystem, FilamentType } from "./cytoskeleton-system";
 import { SystemObject } from "./system-object";
-import type { NetBundle } from "../app/net-bundle";
 
 interface PlacementState {
   isPlacing: boolean;
@@ -55,7 +54,6 @@ interface FilamentBuildConfig {
 export class FilamentBuilder extends SystemObject {
   private worldRefs: WorldRefs;
   private cytoskeletonSystem: CytoskeletonSystem;
-  private net: NetBundle;
   
   // Placement state
   private placementState: PlacementState = {
@@ -93,14 +91,12 @@ export class FilamentBuilder extends SystemObject {
   constructor(
     scene: Phaser.Scene,
     worldRefs: WorldRefs,
-    cytoskeletonSystem: CytoskeletonSystem,
-    net: NetBundle
+    cytoskeletonSystem: CytoskeletonSystem
   ) {
     super(scene, "FilamentBuilder", (_deltaSeconds: number) => this.update());
     
     this.worldRefs = worldRefs;
     this.cytoskeletonSystem = cytoskeletonSystem;
-    this.net = net;
     
     this.createPreviewGraphics();
     this.setupInputHandlers();
@@ -428,21 +424,33 @@ export class FilamentBuilder extends SystemObject {
    * Create filament blueprints that will gradually consume resources
    */
   private createFilamentSegments(): void {
-    // Transform preview segments to include IDs for network call
-    const segmentsWithIds = this.placementState.previewSegments.map((segment, index) => ({
-      id: `${this.placementState.filamentType}_preview_${Date.now()}_${index}`,
-      from: { q: segment.from.q, r: segment.from.r },
-      to: { q: segment.to.q, r: segment.to.r }
-    }));
+    if (!this.cytoskeletonSystem) {
+      console.error('❌ CytoskeletonSystem not available!');
+      this.worldRefs.showToast('Error: Cytoskeleton system not available');
+      return;
+    }
     
-    // Always use network call - it routes properly whether we're host or client
-    this.net.cytoskeleton.buildFilament(this.placementState.filamentType, segmentsWithIds);
-    console.log(`📤 Requesting ${this.placementState.filamentType} filament placement with ${this.placementState.previewSegments.length} segment(s)`);
-    this.worldRefs.showToast(`Filament placement requested...`);
+    // Create blueprints instead of instant segments
+    let successCount = 0;
     
-    this.worldRefs.showToast(
-      `Started building ${this.placementState.previewSegments.length} ${this.placementState.filamentType} segment(s)`
-    );
+    for (const segment of this.placementState.previewSegments) {
+      const blueprintId = this.cytoskeletonSystem.createFilamentBlueprint(
+        this.placementState.filamentType,
+        segment.from,
+        segment.to
+      );
+      
+      if (blueprintId) {
+        successCount++;
+      }
+    }
+    
+    if (successCount > 0) {
+      console.log(`📤 Created ${successCount} ${this.placementState.filamentType} blueprint(s)`);
+      this.worldRefs.showToast(`Created ${successCount} ${this.placementState.filamentType} blueprint(s)`);
+    } else {
+      this.worldRefs.showToast(`Failed to place filament blueprints`);
+    }
   }
 
   /**

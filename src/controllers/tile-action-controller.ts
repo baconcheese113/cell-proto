@@ -126,26 +126,12 @@ export class TileActionController {
     }
 
     // Check for transcripts heading to this destination
-    const transcripts = this.worldRefs.cargoSystem?.getTranscripts() || [];
-    for (const transcript of transcripts) {
-      if (transcript.destHex && 
-          transcript.destHex.q === destHex.q && 
-          transcript.destHex.r === destHex.r) {
-        console.log(`🚫 Blocking duplicate request: Transcript ${transcript.id} already heading to (${destHex.q}, ${destHex.r})`);
-        return true;
-      }
-    }
-
-    // Check for vesicles heading to this destination
-    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
-    for (const vesicle of vesicles) {
-      if (vesicle.destHex && 
-          vesicle.destHex.q === destHex.q && 
-          vesicle.destHex.r === destHex.r &&
-          (vesicle.state === 'TRANSPORTING' ||
-           vesicle.state === 'INSTALLING' ||
-           vesicle.state === 'QUEUED')) {
-        console.log(`🚫 Blocking duplicate request: Vesicle ${vesicle.id} already targeting (${destHex.q}, ${destHex.r}) with state ${vesicle.state}`);
+    const allCargo = this.worldRefs.cargoSystem?.getAllCargo() || [];
+    for (const cargo of allCargo) {
+      if (cargo.destHex && 
+          cargo.destHex.q === destHex.q && 
+          cargo.destHex.r === destHex.r) {
+        console.log(`🚫 Blocking duplicate request: ${cargo.currentType} ${cargo.id} already heading to (${destHex.q}, ${destHex.r})`);
         return true;
       }
     }

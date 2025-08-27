@@ -119,11 +119,10 @@ export class MembranePortSystem {
       memoryUsage: 0,
       averageLifetime: 0,
       vesiclesByState: {
-        'TRANSPORTING': 0,
-        'QUEUED': 0,
-        'INSTALLING': 0,
-        'DONE': 0,
-        'EXPIRED': 0
+        'BLOCKED': 0,
+        'TRANSFORMING': 0,
+        'MOVING': 0,
+        'QUEUED': 0
       },
       glycosylationCompletionRate: 0,
       membraneInstallationRate: 0,

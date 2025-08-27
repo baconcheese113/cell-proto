@@ -1,4 +1,4 @@
-import type { WorldRefs } from "../core/world-refs";
+import type { Cargo, WorldRefs } from "../core/world-refs";
 import { System } from "./system";
 import type { NetBus } from "../network/net-bus";
 
@@ -9,8 +9,6 @@ import type { NetBus } from "../network/net-bus";
 export class CellOverlays extends System {
   private worldRefs: WorldRefs;
   private overlayGraphics: Phaser.GameObjects.Graphics;
-  private showQueueBadges = true;
-  private cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Store cellRoot container reference
   
   // Milestone 8: Story 8.7 - Dirty tile redraw system
   private dirtyTiles: Set<string> = new Set(); // hex coordinates that need redraw
@@ -18,7 +16,6 @@ export class CellOverlays extends System {
   constructor(scene: Phaser.Scene, bus: NetBus, worldRefs: WorldRefs, parentContainer?: Phaser.GameObjects.Container) {
     super(scene, bus, 'CellOverlays', (deltaSeconds: number) => this.update(deltaSeconds));
     this.worldRefs = worldRefs;
-    this.cellRoot = parentContainer; // HOTFIX H5: Store reference for text creation
     
     // Create graphics object for overlay rendering
     this.overlayGraphics = scene.add.graphics();
@@ -46,184 +43,8 @@ export class CellOverlays extends System {
     // Milestone 9: Render cell motility overlays
     this.renderMotilityOverlays();
     
-    // Milestone 8: Story 8.6 - Render queue badges and incoming indicators
-    if (this.showQueueBadges) {
-      this.renderQueueBadges();
-      this.renderIncomingVesicleIndicators();
-    }
-    
     // Milestone 13: Render transport progress indicators
     this.renderTransportProgress();
-  }
-
-  /**
-   * Milestone 8: Render queue badges at ER and Golgi organelles
-   */
-  private renderQueueBadges(): void {
-    const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
-    
-    for (const organelle of organelles) {
-      if (organelle.type === 'proto-er') {
-        const queueCount = this.getERQueueCount();
-        if (queueCount > 0) {
-          this.renderQueueBadge(organelle.coord, queueCount, 0xff6699); // Pink for ER
-        }
-      } else if (organelle.type === 'golgi') {
-        const queueCount = this.getGolgiQueueCount();
-        if (queueCount > 0) {
-          this.renderQueueBadge(organelle.coord, queueCount, 0xffcc66); // Yellow for Golgi
-        }
-      }
-    }
-  }
-
-  /**
-   * Milestone 8: Render incoming vesicle pips at membrane destinations
-   */
-  private renderIncomingVesicleIndicators(): void {
-    const incomingCounts = new Map<string, number>();
-    
-    // Count incoming vesicles by destination
-    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
-    for (const vesicle of vesicles) {
-      if (vesicle.state === 'TRANSPORTING' || vesicle.state === 'INSTALLING') {
-        const destKey = `${vesicle.destHex.q},${vesicle.destHex.r}`;
-        incomingCounts.set(destKey, (incomingCounts.get(destKey) || 0) + 1);
-      }
-    }
-    
-    // Render pips for each destination with incoming vesicles
-    for (const [destKey, count] of incomingCounts) {
-      const [qStr, rStr] = destKey.split(',');
-      const coord = { q: parseInt(qStr), r: parseInt(rStr) };
-      this.renderIncomingPips(coord, count);
-    }
-  }
-
-  /**
-   * Render a queue badge at an organelle
-   */
-  private renderQueueBadge(coord: { q: number; r: number }, count: number, color: number): void {
-    const worldPos = this.worldRefs.hexGrid.hexToWorld(coord);
-    const badgeRadius = 8;
-    const offsetX = 15; // Offset from organelle center
-    const offsetY = -15;
-    
-    // Badge background
-    this.overlayGraphics.fillStyle(color, 0.8);
-    this.overlayGraphics.fillCircle(worldPos.x + offsetX, worldPos.y + offsetY, badgeRadius);
-    
-    // Badge border
-    this.overlayGraphics.lineStyle(2, 0xffffff, 1.0);
-    this.overlayGraphics.strokeCircle(worldPos.x + offsetX, worldPos.y + offsetY, badgeRadius);
-    
-    // Queue count text
-    const text = this.scene.add.text(
-      worldPos.x + offsetX, 
-      worldPos.y + offsetY, 
-      count.toString(), 
-      {
-        fontSize: '12px',
-        fontFamily: 'Arial',
-        color: '#ffffff',
-        stroke: '#000000',
-        strokeThickness: 1
-      }
-    );
-    text.setOrigin(0.5, 0.5);
-    text.setDepth(11);
-    
-    // HOTFIX H5: Add text to cellRoot if available
-    if (this.cellRoot) {
-      this.cellRoot.add(text);
-    }
-    
-    // Store text for cleanup
-    this.scene.time.delayedCall(1000, () => text.destroy());
-  }
-
-  /**
-   * Render incoming vesicle pips at membrane destination
-   */
-  private renderIncomingPips(coord: { q: number; r: number }, count: number): void {
-    const worldPos = this.worldRefs.hexGrid.hexToWorld(coord);
-    const pipRadius = 3;
-    
-    for (let i = 0; i < Math.min(count, 5); i++) { // Max 5 pips to avoid clutter
-      const angle = (i / 5) * Math.PI * 2;
-      const pipX = worldPos.x + Math.cos(angle) * 12;
-      const pipY = worldPos.y + Math.sin(angle) * 12;
-      
-      // Pip background
-      this.overlayGraphics.fillStyle(0x9966ff, 0.9); // Purple for incoming
-      this.overlayGraphics.fillCircle(pipX, pipY, pipRadius);
-      
-      // Pip border
-      this.overlayGraphics.lineStyle(1, 0xffffff, 1.0);
-      this.overlayGraphics.strokeCircle(pipX, pipY, pipRadius);
-    }
-    
-    // If more than 5, show "+N" indicator
-    if (count > 5) {
-      const text = this.scene.add.text(
-        worldPos.x, 
-        worldPos.y + 20, 
-        `+${count - 5}`, 
-        {
-          fontSize: '10px',
-          fontFamily: 'Arial',
-          color: '#9966ff',
-          stroke: '#ffffff',
-          strokeThickness: 1
-        }
-      );
-      text.setOrigin(0.5, 0.5);
-      text.setDepth(11);
-      
-      // HOTFIX H5: Add text to cellRoot if available
-      if (this.cellRoot) {
-        this.cellRoot.add(text);
-      }
-      
-      // Store text for cleanup
-      this.scene.time.delayedCall(1000, () => text.destroy());
-    }
-  }
-
-  /**
-   * Get number of vesicles queued at ER
-   */
-  private getERQueueCount(): number {
-    let count = 0;
-    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
-    for (const vesicle of vesicles) {
-      if (vesicle.state === 'QUEUED') {
-        count++;
-      }
-    }
-    return count;
-  }
-
-  /**
-   * Get number of vesicles queued at Golgi
-   */
-  private getGolgiQueueCount(): number {
-    let count = 0;
-    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
-    for (const vesicle of vesicles) {
-      if (vesicle.state === 'QUEUED') {
-        count++;
-      }
-    }
-    return count;
-  }
-
-  /**
-   * Toggle queue badge visibility
-   */
-  public toggleQueueBadges(): void {
-    this.showQueueBadges = !this.showQueueBadges;
-    console.log(`Queue badges: ${this.showQueueBadges ? 'ON' : 'OFF'}`);
   }
 
   /**
@@ -328,28 +149,25 @@ export class CellOverlays extends System {
    * Milestone 13: Render progress indicators for vesicles in transit and processing
    */
   private renderTransportProgress(): void {
-    const vesicles = this.worldRefs.cargoSystem?.getVesicles() || [];
+    const allCargo = this.worldRefs.cargoSystem.getAllCargo();
     
-    for (const vesicle of vesicles) {
-      // Render rail transit progress
-      if (vesicle.railState?.status === 'moving' && vesicle.railState.transitProgress !== undefined) {
-        this.renderRailTransitProgress(vesicle);
+    for (const cargo of allCargo) {
+      // Render segment transit progress only if cargo is moving on a segment
+      if (cargo.segmentState?.transitProgress !== undefined && cargo.state === 'MOVING') {
+        this.renderSegmentTransitProgress(cargo);
       }
       
-      // Render processing progress for vesicles with active timers
-      if (vesicle.processingTimer > 0 && 
-          (vesicle.state === 'QUEUED' || vesicle.state === 'INSTALLING')) {
-        this.renderProcessingProgress(vesicle);
-      }
+      // Always render unified progress indicators for all cargo states
+      this.renderUnifiedCargoProgress(cargo);
     }
   }
 
   /**
-   * Render progress bar for vesicle moving along rail
+   * Render progress bar for cargo moving along segment
    */
-  private renderRailTransitProgress(vesicle: any): void {
-    const progress = vesicle.railState.transitProgress || 0;
-    const worldPos = vesicle.worldPos;
+  private renderSegmentTransitProgress(cargo: any): void {
+    const progress = cargo.segmentState.transitProgress || 0;
+    const worldPos = cargo.worldPos;
     
     // Progress bar background
     this.overlayGraphics.fillStyle(0x000000, 0.6);
@@ -365,39 +183,119 @@ export class CellOverlays extends System {
   }
 
   /**
-   * Render processing progress for vesicles at organelles
+   * Render unified progress indicators for all cargo states
    */
-  private renderProcessingProgress(vesicle: any): void {
-    let totalTime = 0;
-    let iconColor = 0xffffff;
+  private renderUnifiedCargoProgress(cargo: Cargo): void {
+    const worldPos = cargo.worldPos;
+    if (!worldPos) return; // Skip if no world position
     
-    // Determine total processing time based on state
-    if (vesicle.state === 'QUEUED') {
-      totalTime = 3.5; // Max Golgi processing time
-      iconColor = 0x9d4edd; // Purple for Golgi
-    } else if (vesicle.state === 'INSTALLING') {
-      totalTime = 3.0; // Max installation time
-      iconColor = 0x06ffa5; // Green for membrane
+    let showIndicator = false;
+    let progress = 0;
+    let iconColor = 0xffffff;
+    let indicatorType: 'circle' | 'pulse' | 'static' = 'static';
+    let cargoShape: 'circle' | 'square' | 'diamond' = 'circle';
+    
+    // Determine cargo type visual appearance
+    switch (cargo.currentType) {
+      case 'transcript':
+        cargoShape = 'square';
+        break;
+      case 'polypeptide':
+        cargoShape = 'diamond';
+        break;
+      case 'vesicle':
+        cargoShape = 'circle';
+        break;
+      default:
+        cargoShape = 'circle';
     }
     
-    const progress = Math.max(0, 1.0 - (vesicle.processingTimer / totalTime));
-    const worldPos = vesicle.worldPos;
+    // Determine state-based color and behavior
+    switch (cargo.state) {
+      case 'BLOCKED':
+        showIndicator = true;
+        iconColor = 0xff4444; // Red for blocked
+        indicatorType = 'pulse';
+        break;
+        
+      case 'TRANSFORMING':
+        if (cargo.processingTimer > 0) {
+          showIndicator = true;
+          // Get the actual processing time from the current stage
+          const currentStage = cargo.itinerary?.stages[cargo.itinerary.stageIndex];
+          const totalTime = currentStage?.processMs || 2000; // Fallback to 2000ms
+          const elapsedTime = totalTime - cargo.processingTimer;
+          progress = Math.max(0, Math.min(1.0, elapsedTime / totalTime));
+          iconColor = 0x9d4edd; // Purple for transformation
+          indicatorType = 'circle';
+        }
+        break;
+        
+      case 'MOVING':
+        if (cargo.segmentState?.transitProgress !== undefined) {
+          // Segment movement progress is handled by renderSegmentTransitProgress
+          // Don't show duplicate indicators
+          return;
+        } else {
+          showIndicator = true;
+          iconColor = 0x06ffa5; // Green for moving
+          indicatorType = 'pulse';
+        }
+        break;
+        
+      case 'QUEUED':
+        showIndicator = true;
+        iconColor = 0xffaa00; // Orange for queued
+        indicatorType = 'static';
+        break;
+    }
     
-    // Processing indicator background (circle)
+    if (!showIndicator) return;
+    
+    // Indicator background (circle)
     this.overlayGraphics.fillStyle(0x000000, 0.6);
     this.overlayGraphics.fillCircle(worldPos.x, worldPos.y - 20, 8);
     
-    // Processing progress (pie chart style)
-    if (progress > 0) {
+    if (indicatorType === 'circle' && progress > 0) {
+      // Circular progress indicator (pie chart style)
       this.overlayGraphics.fillStyle(iconColor, 0.8);
       this.overlayGraphics.beginPath();
       this.overlayGraphics.moveTo(worldPos.x, worldPos.y - 20);
       this.overlayGraphics.arc(worldPos.x, worldPos.y - 20, 6, -Math.PI / 2, -Math.PI / 2 + (progress * 2 * Math.PI));
       this.overlayGraphics.closePath();
       this.overlayGraphics.fillPath();
+    } else {
+      // Render cargo type-specific shape
+      const alpha = indicatorType === 'pulse' ? 
+        (0.4 + 0.4 * Math.sin((Date.now() % 1000 / 1000) * Math.PI * 2)) : 
+        0.8;
+      
+      this.overlayGraphics.fillStyle(iconColor, alpha);
+      
+      switch (cargoShape) {
+        case 'square':
+          // Square for transcripts
+          this.overlayGraphics.fillRect(worldPos.x - 4, worldPos.y - 24, 8, 8);
+          break;
+        case 'diamond':
+          // Diamond for polypeptides
+          this.overlayGraphics.beginPath();
+          this.overlayGraphics.moveTo(worldPos.x, worldPos.y - 26);
+          this.overlayGraphics.lineTo(worldPos.x + 4, worldPos.y - 20);
+          this.overlayGraphics.lineTo(worldPos.x, worldPos.y - 14);
+          this.overlayGraphics.lineTo(worldPos.x - 4, worldPos.y - 20);
+          this.overlayGraphics.closePath();
+          this.overlayGraphics.fillPath();
+          break;
+        case 'circle':
+        default:
+          // Circle for vesicles
+          this.overlayGraphics.fillCircle(worldPos.x, worldPos.y - 20, 6);
+          break;
+      }
     }
     
-    // Processing indicator border
+    // Indicator border
     this.overlayGraphics.lineStyle(1, 0xffffff, 0.8);
     this.overlayGraphics.strokeCircle(worldPos.x, worldPos.y - 20, 8);
   }

@@ -6,6 +6,18 @@ import type { NetBus } from "../network/net-bus";
 import { RunOnServer } from "../network/decorators";
 import type { Organelle } from "@/organelles/organelle-system";
 
+// Cargo transformation configuration
+const ORGANELLE_TRANSFORMATIONS: Record<OrganelleType, { from: CargoType; to: CargoType } | null> = {
+  'nucleus': null,
+  'ribosome-hub': null,
+  'proto-er': { from: 'transcript', to: 'polypeptide' },
+  'golgi': { from: 'polypeptide', to: 'vesicle' },
+  'peroxisome': null,
+  'membrane-port': null,
+  'transporter': null,
+  'receptor': null
+};
+
 // Unified routing result for efficient cargo routing
 interface RouteResult {
   success: boolean;
@@ -29,7 +41,9 @@ export class CargoSystem extends NetComponent {
   private cargoState = this.stateChannel<CargoState>('cargo.map', { cargo: {} });
   private nextCargoId = 1;
   private blockedCargo = new Set<string>(); // Retry queue for blocked cargo
+  private cargoFailureTimes = new Map<string, number>(); // Track when cargo last failed routing
   private graphics?: Phaser.GameObjects.Graphics; // Cargo rendering graphics
+  private static readonly RETRY_COOLDOWN_MS = 5000; // Wait 5 seconds before retrying failed cargo
 
   constructor(scene: Phaser.Scene, netBus: NetBus, worldRefs: WorldRefs) {
     super(netBus);
@@ -76,9 +90,8 @@ export class CargoSystem extends NetComponent {
       ttlSecondsRemaining: 120,
       localDecayRate: 1.0,
       carriedBy: undefined,
-      state: 'TRANSPORTING',
+      state: 'QUEUED',
       glycosylationState: 'none',
-      movementState: 'idle',
       currentStageDestination: undefined,
       reservedSeatId: undefined,
       targetOrganelleId: undefined,
@@ -113,16 +126,19 @@ export class CargoSystem extends NetComponent {
     return Object.values(this.cargoState.cargo);
   }
 
+  /**
+   * Called when cytoskeleton graph topology changes - force immediate retry of blocked cargo
+   */
+  public onGraphTopologyChanged(): void {
+    // Clear all failure times to allow immediate retry
+    this.cargoFailureTimes.clear();
+    
+    // Force immediate retry of all blocked cargo
+    this.retryBlockedCargo();
+  }
+
   getCargo(cargoId: string): Cargo | undefined {
     return this.cargoState.cargo[cargoId];
-  }
-
-  getTranscripts(): Cargo[] {
-    return Object.values(this.cargoState.cargo).filter((cargo: Cargo) => cargo.currentType === 'transcript');
-  }
-
-  getVesicles(): Cargo[] {
-    return Object.values(this.cargoState.cargo).filter((cargo: Cargo) => cargo.currentType === 'vesicle');
   }
 
   createTranscript(proteinId: ProteinId, atHex?: HexCoord): Cargo {
@@ -246,7 +262,7 @@ export class CargoSystem extends NetComponent {
       
       // Set destination and seat information for the transcript
       transcript.destHex = order.destHex;
-      transcript.state = 'TRANSPORTING';
+      transcript.state = 'QUEUED';
       transcript.reservedSeatId = seatId; // Store seat ID for cleanup when transcript moves/expires
       transcript.targetOrganelleId = nucleusOrganelle.id;
       
@@ -516,12 +532,15 @@ export class CargoSystem extends NetComponent {
     // Update cargo movement via CytoskeletonGraph
     this.updateCargoMovement();
     
+    // Update processing timers for TRANSFORMING cargo
+    this.updateProcessingTimers();
+    
     // Retry blocked cargo
     this.retryBlockedCargo();
     
     // Check for idle cargo that should be routing
     for (const cargo of Object.values(this.cargoState.cargo)) {
-      if (cargo.movementState === 'idle' && !cargo.carriedBy && cargo.itinerary) {
+      if (cargo.state === 'QUEUED' && !cargo.carriedBy && cargo.itinerary) {
         this.tryStartAutoRouting(cargo);
       }
     }
@@ -547,7 +566,7 @@ export class CargoSystem extends NetComponent {
       return false;
     }
 
-    // Validate destination matches the seat position
+    // Validate destination matches the seat position for all organelles (including transporters)
     if (cargo.currentStageDestination!.q !== seatPosition.q || cargo.currentStageDestination!.r !== seatPosition.r) {
       console.log(`🚫 CargoSystem: Destination mismatch for cargo ${cargo.id}: destination (${cargo.currentStageDestination!.q},${cargo.currentStageDestination!.r}) vs seat (${seatPosition.q},${seatPosition.r})`);
       return false;
@@ -558,19 +577,35 @@ export class CargoSystem extends NetComponent {
   }
 
   @RunOnServer()
+  private updateProcessingTimers(): void {
+    const deltaMs = 1000; // Called every 1000ms from updateAutoRouting
+    
+    for (const cargo of Object.values(this.cargoState.cargo)) {
+      if (cargo.state === 'TRANSFORMING' && cargo.processingTimer > 0) {
+        cargo.processingTimer -= deltaMs;
+        
+        // Ensure timer doesn't go negative
+        if (cargo.processingTimer <= 0) {
+          cargo.processingTimer = 0;
+        }
+      }
+    }
+  }
+
+  @RunOnServer()
   private updateCargoMovement(): void {
     if (!this.worldRefs.cytoskeletonSystem) return;
     
     const graph = this.worldRefs.cytoskeletonSystem.graph;
     
     for (const cargo of Object.values(this.cargoState.cargo)) {
-      if (cargo.movementState === 'moving' && cargo.railState && !cargo.carriedBy) {
+      if (cargo.state === 'MOVING' && cargo.segmentState && !cargo.carriedBy) {
         
         // Re-evaluate if destination is still valid before each movement step
         if (!this.validateCurrentDestination(cargo)) {
           console.log(`🔄 CargoSystem: Destination no longer valid for cargo ${cargo.id}, rerouting`);
-          cargo.movementState = 'blocked';
-          cargo.railState = undefined;
+          cargo.state = 'BLOCKED';
+          cargo.segmentState = undefined;
           this.blockedCargo.add(cargo.id);
           continue;
         }
@@ -599,12 +634,25 @@ export class CargoSystem extends NetComponent {
   private tryStartAutoRouting(cargo: Cargo): void {
     if (!cargo.itinerary || cargo.carriedBy) return;
     
+    // Check if this cargo recently failed and is in cooldown
+    const lastFailureTime = this.cargoFailureTimes.get(cargo.id);
+    const now = Date.now();
+    if (lastFailureTime && (now - lastFailureTime) < CargoSystem.RETRY_COOLDOWN_MS) {
+      // Silently skip retry during cooldown
+      return;
+    }
+    
     console.log(`🚛 CargoSystem: tryStartAutoRouting for cargo ${cargo.id}, current stage: ${cargo.itinerary.stageIndex}/${cargo.itinerary.stages.length-1}`);
     console.log(`🚛 Stages: ${cargo.itinerary.stages.map((s, i) => `${i}: ${s.kind}`).join(', ')}`);
     
     const destination = this.determineNextStageDestination(cargo);
     if (!destination) {
-      console.log(`🚫 CargoSystem: No destination found for cargo ${cargo.id}`);
+      console.log(`🚫 CargoSystem: No destination found for cargo ${cargo.id} - setting state to BLOCKED`);
+      cargo.state = 'BLOCKED'; // Set cargo state to blocked when pathfinding fails
+      cargo.targetOrganelleId = undefined; // Clear stale target when routing fails
+      cargo.currentStageDestination = undefined; // Clear stale destination
+      this.blockedCargo.add(cargo.id); // Add to retry queue
+      this.cargoFailureTimes.set(cargo.id, now); // Record failure time
       return;
     }
     
@@ -613,19 +661,20 @@ export class CargoSystem extends NetComponent {
     // Check if cargo is already at the destination (same organelle processing)
     if (this.isCargoAtPosition(cargo, destination)) {
       console.log(`🎯 CargoSystem: Cargo ${cargo.id} already at destination (${destination.q}, ${destination.r}), proceeding directly to stage arrival`);
-      cargo.movementState = 'arrived';
       this.handleStageArrival(cargo);
       return;
     }
     
-    cargo.movementState = 'routing';
-    
+    // Cargo will be set to MOVING or BLOCKED by attemptMovement
     if (this.attemptMovement(cargo)) {
-      cargo.movementState = 'moving';
+      cargo.state = 'MOVING';
+      // Clear failure time on successful movement
+      this.cargoFailureTimes.delete(cargo.id);
       console.log(`🚛 CargoSystem: Started movement for cargo ${cargo.id} to (${destination.q}, ${destination.r})`);
     } else {
-      cargo.movementState = 'blocked';
+      cargo.state = 'BLOCKED'; // Update UI state to reflect blocked status
       this.blockedCargo.add(cargo.id);
+      this.cargoFailureTimes.set(cargo.id, Date.now()); // Record failure time
       console.log(`🚫 CargoSystem: Cargo ${cargo.id} blocked, added to retry queue`);
     }
   }
@@ -641,16 +690,13 @@ export class CargoSystem extends NetComponent {
     console.log(`🎯 Full itinerary:`, cargo.itinerary.stages.map((stage, i) => `${i}: ${stage.kind}`));
     console.log(`🎯 About to call findBestRouteToOrganelleType with organelleType: "${currentStage.kind}"`);
     
-    // Handle membrane transporter directly 
-    if (currentStage.kind === 'transporter' && currentStage.targetHex) {
-      return currentStage.targetHex;
-    }
-    
     // Check if cargo is already in the target organelle type - if so, skip routing
-    if (cargo.atHex && cargo.targetOrganelleId) {
-      const currentOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId);
+    if (cargo.atHex) {
+      const currentOrganelle = this.worldRefs.organelleSystem.getOrganelleAtTile(cargo.atHex);
       if (currentOrganelle && currentOrganelle.type === currentStage.kind) {
         console.log(`🎯 CargoSystem: Cargo ${cargo.id} already in target organelle ${currentOrganelle.type} (${currentOrganelle.id}), staying put`);
+        // Update targetOrganelleId to match current location since we're staying
+        cargo.targetOrganelleId = currentOrganelle.id;
         return cargo.atHex; // Stay at current position, no routing needed
       }
     }
@@ -692,6 +738,7 @@ export class CargoSystem extends NetComponent {
       const targetOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId);
       
       if (currentOrganelle && targetOrganelle && 
+          currentOrganelle.id !== targetOrganelle.id && // Prevent same-organelle "teleport"
           this.worldRefs.organelleSystem.areOrganellesAdjacent(currentOrganelle, targetOrganelle)) {
         // Direct teleport for adjacent organelles
         console.log(`🚀 CargoSystem: Direct teleport for cargo ${cargo.id} from ${currentOrganelle.type} to ${targetOrganelle.type} at (${seatPosition.q}, ${seatPosition.r})`);
@@ -715,13 +762,15 @@ export class CargoSystem extends NetComponent {
     const pathResult = graph.findPath(cargo.atHex!, seatPosition, cargo.currentType);
     if (!pathResult.success) {
       console.log(`🚫 CargoSystem: No path found for cargo ${cargo.id}: ${pathResult.reason}`);
+      cargo.state = 'BLOCKED'; // Set blocked state when pathfinding fails
+      this.blockedCargo.add(cargo.id); // Add to retry queue
+      this.cargoFailureTimes.set(cargo.id, Date.now()); // Record failure time
       return false;
     }
     
     // Start movement via CytoskeletonGraph
-    cargo.railState = {
+    cargo.segmentState = {
       nodeId: pathResult.path[0],
-      status: 'queued',
       plannedPath: pathResult.path,
       pathIndex: 0
     };
@@ -732,18 +781,39 @@ export class CargoSystem extends NetComponent {
   @RunOnServer()
   private retryBlockedCargo(): void {
     const toRetry = Array.from(this.blockedCargo);
+    const now = Date.now();
     
     for (const cargoId of toRetry) {
       const cargo = this.cargoState.cargo[cargoId];
       if (!cargo || cargo.carriedBy) {
         this.blockedCargo.delete(cargoId);
+        this.cargoFailureTimes.delete(cargoId);
         continue;
       }
       
-      if (cargo.movementState === 'blocked' && this.attemptMovement(cargo)) {
-        cargo.movementState = 'moving';
+      // Check if cargo is still in cooldown
+      const lastFailureTime = this.cargoFailureTimes.get(cargoId);
+      if (lastFailureTime && (now - lastFailureTime) < CargoSystem.RETRY_COOLDOWN_MS) {
+        continue; // Skip retry during cooldown
+      }
+      
+      if (cargo.state === 'BLOCKED') {
+        // Try to re-route the cargo first to establish a destination
+        this.tryStartAutoRouting(cargo);
+        
+        // If routing succeeded, cargo state should change from BLOCKED
+        if (cargo.state !== 'BLOCKED') {
+          this.blockedCargo.delete(cargoId);
+          this.cargoFailureTimes.delete(cargoId); // Clear failure time on success
+          console.log(`✅ CargoSystem: Unblocked cargo ${cargoId}`);
+        } else {
+          // Update failure time if it failed again
+          this.cargoFailureTimes.set(cargoId, now);
+        }
+      } else {
+        // Cargo is no longer blocked, remove from retry queue
         this.blockedCargo.delete(cargoId);
-        console.log(`✅ CargoSystem: Unblocked cargo ${cargoId}`);
+        this.cargoFailureTimes.delete(cargoId);
       }
     }
   }
@@ -756,8 +826,7 @@ export class CargoSystem extends NetComponent {
     const cargo = this.cargoState.cargo[cargoId];
     if (!cargo) return;
     
-    cargo.movementState = 'arrived';
-    cargo.railState = undefined;
+    cargo.segmentState = undefined;
     this.setCargoPosition(cargo, arrivedAt);
     
     console.log(`🎯 CargoSystem: Cargo ${cargoId} arrived at (${arrivedAt.q}, ${arrivedAt.r})`);
@@ -779,21 +848,79 @@ export class CargoSystem extends NetComponent {
     this.positionCargoAtSeat(cargo, `Stage ${cargo.itinerary.stageIndex} arrival`);
     
     // Start processing at current stage
-    cargo.movementState = 'arrived'; // Set to arrived so it won't be routed again while processing
+    cargo.state = 'TRANSFORMING'; // Visual indicator for processing
     cargo.processingTimer = currentStage.processMs;
     
-    // TODO: Implement actual stage processing (transcription, folding, etc.)
-    // For now, just advance to next stage after a delay
+    // Implement actual stage processing with cargo type transformation
     setTimeout(() => {
-      cargo.movementState = 'idle'; // Reset to idle so it can be routed to next stage
+      // Transform cargo type based on organelle configuration
+      const currentOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId!);
+      if (currentOrganelle) {
+        const transformation = ORGANELLE_TRANSFORMATIONS[currentOrganelle.type];
+        if (transformation && cargo.currentType === transformation.from) {
+          cargo.currentType = transformation.to;
+          console.log(`🔄 CargoSystem: Cargo ${cargo.id} transformed from ${transformation.from} to ${transformation.to} at Golgi`);
+        }
+      }
+      
+      cargo.state = 'QUEUED'; // Reset to queued for next routing
+      
+      // Check if there are more stages to process
       if (cargo.itinerary && cargo.itinerary.stageIndex < cargo.itinerary.stages.length - 1) {
         cargo.itinerary.stageIndex++;
         console.log(`⏭️ CargoSystem: Cargo ${cargo.id} completed stage processing, advanced to stage ${cargo.itinerary.stageIndex} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`);
         this.tryStartAutoRouting(cargo);
       } else {
         console.log(`🏁 CargoSystem: Cargo ${cargo.id} completed all stages`);
+        this.performProteinInstallation(cargo);
       }
     }, currentStage.processMs);
+  }
+
+  @RunOnServer()
+  private performProteinInstallation(cargo: Cargo): void {
+    console.log(`🔧 CargoSystem: Installing protein ${cargo.proteinId} from cargo ${cargo.id}`);
+    
+    // Get the target organelle where the protein should be installed
+    const targetOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId!);
+    if (!targetOrganelle) {
+      console.error(`❌ CargoSystem: Target organelle ${cargo.targetOrganelleId} not found for protein installation`);
+      this.removeCargo(cargo.id);
+      return;
+    }
+
+    // Install the protein at the organelle location
+    try {
+      // For transporter organelles, install the protein as a membrane transporter
+      if (targetOrganelle.type === 'transporter') {
+        this.installMembraneProtein(cargo.proteinId, targetOrganelle.coord);
+      } else {
+        console.warn(`🚧 CargoSystem: Protein installation for ${targetOrganelle.type} organelles not yet implemented`);
+      }
+      
+      console.log(`✅ CargoSystem: Successfully installed ${cargo.proteinId} into ${targetOrganelle.type} ${targetOrganelle.id}`);
+    } catch (error) {
+      console.error(`❌ CargoSystem: Failed to install protein ${cargo.proteinId}:`, error);
+    }
+
+    // Clean up the cargo - release seat and remove from system
+    this.releaseSeatReservation(cargo, 'Protein installation completed');
+    this.removeCargo(cargo.id);
+  }
+
+  @RunOnServer()
+  private installMembraneProtein(proteinId: ProteinId, coord: HexCoord): boolean {
+    // Use the membrane exchange system's proper protein installation method
+    // This will populate the installedProteins map and show in tile info
+    const success = this.worldRefs.membraneExchangeSystem.installMembraneProtein(coord, proteinId);
+    
+    if (success) {
+      console.log(`🧬 CargoSystem: Installed ${proteinId} at (${coord.q}, ${coord.r})`);
+    } else {
+      console.error(`❌ CargoSystem: Failed to install ${proteinId} at (${coord.q}, ${coord.r})`);
+    }
+    
+    return success;
   }
 
   destroy() {

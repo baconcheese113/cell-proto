@@ -104,7 +104,6 @@ export class CargoHUD {
     // Get carried cargo for this player
     const carriedCargo = this.cargoSystem.getMyPlayerInventory();
     const showLogs = Math.random() < 0.001; // don't Log more frequently for debugging
-    if(showLogs)console.log(`🎨 CargoHUD.update(): carriedCargo=${carriedCargo.length}, isVisible=${this.isVisible}`);
     
     if (carriedCargo.length > 0) {
       if (!this.isVisible) {

@@ -523,7 +523,7 @@ export class OrganelleSystem extends NetComponent {
       info.push(`Seats: ${seatInfo.occupied}/${seatInfo.capacity}`);
       
       // Check for queued cargo at rim (simplified check)
-      // Note: Full queue implementation would require checking rail system
+      // Note: Full queue implementation would require checking segment system
       const hasQueuedCargo = this.hasQueuedCargoAtRim(organelle);
       if (hasQueuedCargo > 0) {
         info.push(`Queue at rim: ${hasQueuedCargo}`);

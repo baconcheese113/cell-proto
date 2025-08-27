@@ -13,6 +13,7 @@ import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 import { PlayerInventorySystem } from "../player/player-inventory";
 import { BlueprintSystem } from "../construction/blueprint-system";
 import { BlueprintRenderer } from "../construction/blueprint-renderer";
+import { BlueprintProgressUtils } from "../construction/base-blueprint";
 import { BuildPaletteUI, type BuildContext } from "../construction/build-palette-ui";
 import type { OrganelleType } from "../organelles/organelle-registry";
 import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
@@ -53,7 +54,7 @@ import { PlayerSystem } from "../systems/player-system";
 import { EmoteSystem } from "../systems/emote-system";
 import { InstallOrderSystem } from "../systems/install-order-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -94,6 +95,10 @@ export class GameScene extends Phaser.Scene {
   private showMembraneDebug = false;
   private transporterLabels: Phaser.GameObjects.Text[] = [];
   private proteinGlyphs: Phaser.GameObjects.Text[] = [];
+  
+  // Pathfinding debug visualization
+  private pathfindingGraphics!: Phaser.GameObjects.Graphics;
+  private showPathfindingDebug = false; // Enable by default for debugging
   
   // Milestone 6: Membrane exchange system
   private membraneExchangeSystem!: MembraneExchangeSystem;
@@ -311,7 +316,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Initialize network-dependent systems after networking is ready
-    this.initializeBlueprintSystem(); // Now that networking is ready
     this.initializeOrganelleSystem();
 
     // Initialize CargoSystem early and add to worldRefs
@@ -363,12 +367,18 @@ export class GameScene extends Phaser.Scene {
     this.membraneTrampoline = new MembraneTrampoline(this, this.worldRefsInstance);
     
     // Milestone 13: Initialize Cytoskeleton Transport v1
-    this.cytoskeletonSystem = new CytoskeletonSystem(this.net.bus, this.worldRefsInstance);
+    this.cytoskeletonSystem = new CytoskeletonSystem(this, this.net.bus, this.worldRefsInstance);
     this.worldRefsInstance.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
     this.worldRefsInstance.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
     this.cytoskeletonRenderer = new CytoskeletonRenderer(this, this.worldRefsInstance, this.cytoskeletonSystem);
     this.worldRefsInstance.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
-    this.filamentBuilder = new FilamentBuilder(this, this.worldRefsInstance, this.cytoskeletonSystem, this.net);
+    
+    this.net.cytoskeleton = this.cytoskeletonSystem;
+    this.net.bus.registerInstance(this.cytoskeletonSystem);
+    
+    this.initializeBlueprintSystem();
+    
+    this.filamentBuilder = new FilamentBuilder(this, this.worldRefsInstance, this.cytoskeletonSystem);
 
     // Input keys
     this.keys = {
@@ -409,6 +419,7 @@ export class GameScene extends Phaser.Scene {
       N: this.input.keyboard!.addKey("N"), // Toggle infrastructure overlay
       F1: this.input.keyboard!.addKey("F1"), // Build actin filaments
       F2: this.input.keyboard!.addKey("F2"), // Build microtubules
+      F3: this.input.keyboard!.addKey("F3"), // Toggle pathfinding debug
       F9: this.input.keyboard!.addKey("F9"), // Toggle network HUD
       F10: this.input.keyboard!.addKey("F10"), // Toggle room UI
       F11: this.input.keyboard!.addKey("F11"), // Simulate packet loss
@@ -521,6 +532,11 @@ export class GameScene extends Phaser.Scene {
       this.toggleMembraneDebug();
     }
 
+    // Handle pathfinding debug toggle
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F3)) {
+      this.togglePathfindingDebug();
+    }
+
     // Handle heatmap controls - Task 5
     if (Phaser.Input.Keyboard.JustDown(this.keys.H)) {
       this.heatmapSystem.toggle();
@@ -551,10 +567,6 @@ export class GameScene extends Phaser.Scene {
       // System status debug - show consolidated system info
       this.printSystemStatus();
     }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.U)) {
-      // Milestone 8: Toggle queue badges
-      this.cellOverlays.toggleQueueBadges();
-    }
     
     // MILESTONE 9 FIX 4: Debug ATP injection for testing dash
     if (Phaser.Input.Keyboard.JustDown(this.keys.K)) {
@@ -572,18 +584,6 @@ export class GameScene extends Phaser.Scene {
       this.cytoskeletonRenderer.toggleInfrastructureOverlay();
       const state = this.cytoskeletonRenderer.isInfrastructureOverlayEnabled() ? 'ON' : 'OFF';
       this.showToast(`Infrastructure overlay: ${state}`);
-    }
-
-    // MILESTONE 13 TESTING: Cytoskeleton integration debugging
-    if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
-      // Debug key: Log cytoskeleton and vesicle stats
-      let railVesicles = 0;
-      const vesicles = this.cargoSystem?.getVesicles() || [];
-      for (const vesicle of vesicles) {
-        if (vesicle.railState) railVesicles++;
-      }
-      
-      this.showToast(`Vesicles: ${vesicles.length} total, ${railVesicles} on rails`);
     }
 
     // MILESTONE 13: Filament building
@@ -677,12 +677,10 @@ export class GameScene extends Phaser.Scene {
     // Use modular tile action controller for input handling
     this.tileActionController.handleInput(this.keys, this.currentTileRef);
     
-    // NOTE: Consolidated systems (CargoSystem, CellTransport, CellOverlays) 
-    // are now automatically updated by Phaser's lifecycle via SystemObject
+    // NOTE: Consolidated systems (CargoSystem, CellTransport, CellOverlays, BlueprintSystem) 
+    // are now automatically updated by Phaser's lifecycle via System base class
     
     // Manual updates for systems not yet consolidated:
-    // Update blueprint construction - Milestone 5
-    this.blueprintSystem.processConstruction(this.game.loop.delta);
     
     // Update heatmap - Task 5
     this.heatmapSystem.update();
@@ -915,6 +913,18 @@ export class GameScene extends Phaser.Scene {
     
     // Milestone 6: Initialize membrane debug graphics
     this.initializeMembraneGraphics();
+    
+    // Initialize pathfinding debug graphics
+    this.initializePathfindingGraphics();
+  }
+
+  private initializePathfindingGraphics(): void {
+    this.pathfindingGraphics = this.add.graphics();
+    this.pathfindingGraphics.setDepth(5.0); // Above everything for visibility
+    this.pathfindingGraphics.setVisible(this.showPathfindingDebug);
+    
+    // Add to cellRoot
+    this.cellRoot.add(this.pathfindingGraphics);
   }
 
   private initializeMembraneGraphics(): void {
@@ -1187,6 +1197,18 @@ export class GameScene extends Phaser.Scene {
     console.log(`Membrane debug ${this.showMembraneDebug ? 'shown' : 'hidden'}`);
   }
 
+  private togglePathfindingDebug(): void {
+    this.showPathfindingDebug = !this.showPathfindingDebug;
+    if (this.pathfindingGraphics) {
+      this.pathfindingGraphics.setVisible(this.showPathfindingDebug);
+      if (!this.showPathfindingDebug) {
+        this.clearPathfindingDebugPaths();
+      }
+    }
+    console.log(`Pathfinding debug ${this.showPathfindingDebug ? 'shown' : 'hidden'}`);
+    this.showToast(`Pathfinding debug ${this.showPathfindingDebug ? 'ON' : 'OFF'} (F3 to toggle)`);
+  }
+
   // Hex Interaction System
   private initializeHexInteraction(): void {
     this.hexInteractionGraphics = this.add.graphics();
@@ -1396,19 +1418,11 @@ export class GameScene extends Phaser.Scene {
           // Calculate real-time TTL like CargoHUD does
           const elapsedSeconds = (Date.now() - cargo.createdAt) / 1000;
           const remainingTTL = Math.max(0, cargo.ttlSecondsInitial - elapsedSeconds);
-          if (cargo.currentType === 'transcript') {
-            const stageInfo = cargo.itinerary 
-              ? `${cargo.itinerary.stageIndex + 1}/${cargo.itinerary.stages.length} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`
-              : 'stage info unavailable';
-            info.push(`  📝 Transcript ${cargo.proteinId} - Stage ${stageInfo}`);
-            info.push(`    TTL: ${remainingTTL.toFixed(1)}s, State: ${cargo.state}`);
-          } else {
-            const stageInfo = cargo.itinerary 
-              ? `${cargo.itinerary.stageIndex + 1}/${cargo.itinerary.stages.length} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`
-              : 'stage info unavailable';
-            info.push(`  🧬 Vesicle ${cargo.proteinId} - Stage ${stageInfo}`);
-            info.push(`    TTL: ${remainingTTL.toFixed(1)}s, State: ${cargo.state}`);
-          }
+          const stageInfo = cargo.itinerary 
+            ? `${cargo.itinerary.stageIndex + 1}/${cargo.itinerary.stages.length} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`
+            : 'stage info unavailable';
+          info.push(`  📝 ${cargo.currentType} ${cargo.proteinId} - Stage ${stageInfo}`);
+          info.push(`    TTL: ${remainingTTL.toFixed(1)}s, State: ${cargo.state}`);
         }
         info.push(''); // Add spacing
       }
@@ -1421,9 +1435,10 @@ export class GameScene extends Phaser.Scene {
         const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
         info.push(`🔨 Blueprint: ${recipe?.label}`);
         
-        // Show progress using original blueprint format
-        const totalPercent = Math.round((blueprint.totalProgress || 0) * 100);
-        const status = (blueprint.totalProgress || 0) >= 1 ? '✅' : '⏳';
+        // Show progress using shared progress utilities
+        const progressRatio = BlueprintProgressUtils.calculateOverallProgress(blueprint);
+        const totalPercent = Math.round(progressRatio * 100);
+        const status = BlueprintProgressUtils.isComplete(blueprint) ? '✅' : '⏳';
         info.push(`  ${status} Progress: ${totalPercent}%`);
         
         // Show detailed progress per species
@@ -1435,6 +1450,55 @@ export class GameScene extends Phaser.Scene {
         }
         
         info.push(`Press X to cancel (50% refund)`);
+        info.push(''); // Add spacing
+      }
+      
+      // Milestone 13: Check for cytoskeleton blueprints at this tile
+      const cytoskeletonBlueprints = this.cytoskeletonSystem.getActiveBlueprints().filter(bp => 
+        (bp.fromHex.q === tile.coord.q && bp.fromHex.r === tile.coord.r) ||
+        (bp.toHex.q === tile.coord.q && bp.toHex.r === tile.coord.r)
+      );
+      
+      if (cytoskeletonBlueprints.length > 0) {
+        for (const blueprint of cytoskeletonBlueprints) {
+          const icon = blueprint.type === 'actin' ? '🕸️' : '🧬';
+          info.push(`${icon} ${blueprint.type} blueprint`);
+          
+          // Use shared progress utilities for consistency
+          const progressRatio = BlueprintProgressUtils.calculateOverallProgress(blueprint);
+          const totalPercent = Math.round(progressRatio * 100);
+          const status = BlueprintProgressUtils.isComplete(blueprint) ? '✅' : '⏳';
+          info.push(`  ${status} Progress: ${totalPercent}%`);
+          
+          // Show detailed progress per species using shared format
+          const aaCurrentProgress = blueprint.progress['AA'] || 0;
+          const aaRequiredAmount = blueprint.required['AA'];
+          const aaPercent = Math.round((aaCurrentProgress / aaRequiredAmount) * 100);
+          const aaStatus = aaCurrentProgress >= aaRequiredAmount ? '✅' : '⏳';
+          info.push(`  ${aaStatus} AA: ${aaCurrentProgress.toFixed(1)}/${aaRequiredAmount} (${aaPercent}%)`);
+          
+          const proteinCurrentProgress = blueprint.progress['PROTEIN'] || 0;
+          const proteinRequiredAmount = blueprint.required['PROTEIN'];
+          const proteinPercent = Math.round((proteinCurrentProgress / proteinRequiredAmount) * 100);
+          const proteinStatus = proteinCurrentProgress >= proteinRequiredAmount ? '✅' : '⏳';
+          info.push(`  ${proteinStatus} PROTEIN: ${proteinCurrentProgress.toFixed(1)}/${proteinRequiredAmount} (${proteinPercent}%)`);
+          
+          info.push(`  From: (${blueprint.fromHex.q},${blueprint.fromHex.r}) To: (${blueprint.toHex.q},${blueprint.toHex.r})`);
+        }
+        info.push(''); // Add spacing
+      }
+      
+      // Milestone 13: Check for existing cytoskeleton segments at this tile
+      const segments = this.cytoskeletonSystem.getSegmentsAtTile(tile.coord);
+      if (segments.length > 0) {
+        info.push(`🔗 Cytoskeleton segments:`);
+        for (const segment of segments) {
+          const icon = segment.type === 'actin' ? '🕸️' : '🧬';
+          
+          info.push(`  ${icon} ${segment.type} (${segment.id})`);
+          info.push(`    From: (${segment.fromHex.q},${segment.fromHex.r}) To: (${segment.toHex.q},${segment.toHex.r})`);
+          info.push(`    Network: ${segment.networkId}`);
+        }
         info.push(''); // Add spacing
       }
       
@@ -1488,17 +1552,70 @@ export class GameScene extends Phaser.Scene {
         info.push(''); // Add spacing
       }
       
-      // Milestone 13: Show cytoskeleton segments at this tile
-      const cytoskeletonSegments = this.cytoskeletonSystem.getSegmentsAtTile(tile.coord);
-      if (cytoskeletonSegments.length > 0) {
-        info.push(`🚂 Cytoskeleton Rails:`);
-        for (const segment of cytoskeletonSegments) {
-          const utilization = Math.round(segment.utilization * 100);
-          const utilizationIcon = utilization > 70 ? '🔴' : utilization > 30 ? '🟡' : '🟢';
-          info.push(`  ${segment.type} - ${utilizationIcon} ${utilization}% utilization`);
-          info.push(`    Capacity: ${segment.capacity}/tick, Speed: ${segment.speed}x`);
+      // Pathfinding Debug: Show paths from player position to selected tile
+      if (this.playerActor && this.cytoskeletonSystem.graph && this.showPathfindingDebug) {
+        const playerTile = this.playerActor.getCurrentHex();
+        const playerWorldPos = this.playerActor.getWorldPosition();
+        const playerHexCoord = this.playerActor.getHexCoord();
+        
+        // Also test direct conversion for comparison
+        const worldToHexDirect = this.hexGrid.worldToHex(playerWorldPos.x, playerWorldPos.y);
+        
+        info.push(`👤 Player Debug:`);
+        info.push(`  World: (${playerWorldPos.x.toFixed(1)}, ${playerWorldPos.y.toFixed(1)})`);
+        info.push(`  Hex: ${playerHexCoord ? `(${playerHexCoord.q}, ${playerHexCoord.r})` : 'null'}`);
+        info.push(`  Direct: (${worldToHexDirect.q}, ${worldToHexDirect.r})`);
+        info.push(`  Tile: ${playerTile ? `(${playerTile.coord.q}, ${playerTile.coord.r})` : 'null'}`);
+        
+        if (playerTile && (playerTile.coord.q !== tile.coord.q || playerTile.coord.r !== tile.coord.r)) {
+          const debugResult = this.cytoskeletonSystem.graph.debugPathfinding(
+            playerTile.coord, 
+            tile.coord, 
+            'vesicle' // Default to vesicle for debugging
+          );
+          
+          info.push(`🗺️ Pathfinding Debug (Player → Selected):`);
+          info.push(`  From: (${playerTile.coord.q}, ${playerTile.coord.r}) → To: (${tile.coord.q}, ${tile.coord.r})`);
+          
+          if (debugResult.issues.length > 0) {
+            info.push(`  ❌ Issues: ${debugResult.issues.join(', ')}`);
+          }
+          
+          info.push(`  📊 Graph: ${debugResult.graphInfo.totalNodes} nodes, ${debugResult.graphInfo.totalEdges} edges`);
+          info.push(`  🏁 From nodes: ${debugResult.fromNodes.length > 0 ? debugResult.fromNodes.slice(0, 3).join(', ') : 'none'}`);
+          info.push(`  🎯 To nodes: ${debugResult.toNodes.length > 0 ? debugResult.toNodes.slice(0, 3).join(', ') : 'none'}`);
+          
+          // Show only the best path
+          const topPaths = debugResult.paths.slice(0, 1); // Only take the best path
+          if (topPaths.length > 0) {
+            info.push(`  🛤️ Best path:`);
+            
+            const path = topPaths[0];
+            if (path.success) {
+              info.push(`    ✅ Cost ${path.cost.toFixed(1)}`);
+              info.push(`       ${path.startNode} → ${path.endNode}`);
+              info.push(`       Path: ${path.path.slice(0, 4).join(' → ')}${path.path.length > 4 ? '...' : ''}`);
+            } else {
+              info.push(`    ❌ ${path.reason || 'Unknown'}`);
+              info.push(`       ${path.startNode} → ${path.endNode}`);
+            }
+            
+            // Render the top 3 paths visually
+            this.renderPathfindingDebugPaths(topPaths);
+          } else {
+            info.push(`  🛤️ No paths found`);
+            // Clear any existing path visualizations
+            this.clearPathfindingDebugPaths();
+          }
+          
+          info.push(''); // Add spacing
+        } else {
+          // Clear path visualizations when not debugging
+          this.clearPathfindingDebugPaths();
         }
-        info.push(''); // Add spacing
+      } else {
+        // Clear path visualizations when cytoskeleton system not available
+        this.clearPathfindingDebugPaths();
       }
       
       info.push(`Species Concentrations:`);
@@ -1515,6 +1632,7 @@ export class GameScene extends Phaser.Scene {
       this.tileInfoPanel.setVisible(true);
     } else {
       this.tileInfoPanel.setVisible(false);
+      this.clearPathfindingDebugPaths(); // Clear paths when no tile selected
     }
   }
 
@@ -1534,6 +1652,7 @@ export class GameScene extends Phaser.Scene {
       "P - Toggle passive effects",
       "T - Pause/show conservation",
       "M - Toggle membrane debug",
+      "F3 - Toggle pathfinding debug",
       "F - Instant construction",
       "Click tile to inspect",
       "C - Clear selected tile"
@@ -1605,7 +1724,7 @@ export class GameScene extends Phaser.Scene {
   
   private initializeOrganelleSystem(): void {
     this.organelleSystem = new OrganelleSystem(this.net.bus, this.hexGrid);
-    this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize, this.cellRoot);
+    this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize, this.cellRoot, this.worldRefsInstance);
     console.log('Organelle renderer initialized');
     this.organelleSelection = new OrganelleSelectionSystem(this, this.organelleSystem, this.hexSize);
     
@@ -1634,13 +1753,16 @@ export class GameScene extends Phaser.Scene {
   // Blueprint System - Milestone 5
   
   private initializeBlueprintSystem(): void {
+    console.log(`Cytoskeleton system before blueprint init:`, this.cytoskeletonSystem);
     // Initialize blueprint system with reference to organelle occupied tiles and membrane exchange system
     this.blueprintSystem = new BlueprintSystem(
+      this,
       this.net.bus,
       this.hexGrid, 
       () => this.organelleSystem.getOccupiedTiles(),
+      this.membraneExchangeSystem,
+      this.cytoskeletonSystem,
       (organelleType: OrganelleType, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord),
-      this.membraneExchangeSystem
     );
     
     // Initialize blueprint renderer (now that blueprintSystem exists)
@@ -1699,9 +1821,9 @@ export class GameScene extends Phaser.Scene {
     const carriedInventory = this.cargoSystem.getMyPlayerInventory();
     const carriedCount = carriedInventory.length;
     const carriedType = carriedInventory[0]?.currentType || 'none';
-    const totalTranscripts = this.cargoSystem?.getTranscripts().length || 0;
+    const totalCargo = this.cargoSystem?.getAllCargo().length || 0;
     const pendingOrders = this.net.installOrders.getOrderCount();
-    const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalTranscripts} transcripts total | Orders: ${pendingOrders} pending`;
+    const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalCargo} transcripts total | Orders: ${pendingOrders} pending`;
     
     // Milestone 10: Updated control hints for motility modes
     // Milestone 7: Added transcript controls
@@ -1838,7 +1960,7 @@ export class GameScene extends Phaser.Scene {
     const cytoskeleton   = this.cytoskeletonSystem; // Use existing system
     const emotes         = new EmoteSystem(bus, this, players, this.cellRoot);
 
-    for (const c of [players, this.cargoSystem, species, installOrders, emotes].filter(c => c)) bus.registerInstance(c);
+    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes].filter(c => c)) bus.registerInstance(c);
 
     // Host initializes self in player roster
     if (bus.isHost) {
@@ -2350,9 +2472,9 @@ export class GameScene extends Phaser.Scene {
     }
     
     // CargoSystem metrics
-    const transcriptCount = this.cargoSystem?.getTranscripts().length || 0;
+    const totalCargo = this.cargoSystem?.getAllCargo().length || 0;
     const orderCount = this.net.installOrders.getOrderCount();
-    console.log(`🔬 CargoSystem: ${transcriptCount} transcripts, ${orderCount} pending orders`);
+    console.log(`🔬 CargoSystem: ${totalCargo} cargo, ${orderCount} pending orders`);
     
     // CellTransport metrics  
     const organelleCount = this.organelleSystem.getAllOrganelles().length;
@@ -2373,6 +2495,246 @@ export class GameScene extends Phaser.Scene {
     console.log(`🏗️ Architecture: SystemObject lifecycle active, manual updates eliminated`);
     
     this.showToast("System status logged to console (F12)");
+  }
+
+  // Pathfinding debug visualization methods
+  private renderPathfindingDebugPaths(paths: Array<{
+    success: boolean;
+    path: string[];
+    cost: number;
+    reason?: string;
+    startNode: string;
+    endNode: string;
+  }>): void {
+    if (!this.pathfindingGraphics || !this.cytoskeletonSystem) return;
+    
+    this.clearPathfindingDebugPaths();
+    
+    // Render only the best path (simplified visualization)
+    const pathStyles = [
+      { 
+        color: 0x00ff00, 
+        alpha: 1.0, 
+        lineWidth: 6, 
+        offset: { x: 0, y: 0 }, 
+        glowColor: 0x88ff88,
+        name: 'Best Route'
+      } // Single green path for best route
+    ];
+    
+    // Only render the first/best path
+    if (paths.length > 0) {
+      const path = paths[0];
+      const style = pathStyles[0];
+      
+      if (path.success && path.path.length > 1) {
+        this.renderSinglePath(path.path, style, 1, path.startNode, path.endNode);
+      }
+    }
+  }
+
+  private renderSinglePath(path: string[], style: {
+    color: number;
+    alpha: number;
+    lineWidth: number;
+    offset: { x: number; y: number };
+    glowColor: number;
+    name: string;
+  }, pathNumber: number, startNodeId: string, endNodeId: string): void {
+    if (!this.pathfindingGraphics || !this.cytoskeletonSystem) return;
+    
+    // Handle organelle-to-organelle movement (path 0 case)
+    if (path.length === 2 && startNodeId.includes('organelle_') && endNodeId.includes('organelle_')) {
+      this.renderOrganelleToOrganelleMovement(startNodeId, endNodeId, style, pathNumber);
+      return;
+    }
+    
+    // Get node positions from the graph
+    const nodePositions: { x: number; y: number }[] = [];
+    
+    for (const nodeId of path) {
+      const nodeInfo = this.cytoskeletonSystem.graph.debugNode(nodeId);
+      if (nodeInfo.exists && nodeInfo.node) {
+        const worldPos = this.hexGrid.hexToWorld(nodeInfo.node.hex);
+        // Apply offset to separate overlapping paths
+        nodePositions.push({ 
+          x: worldPos.x + style.offset.x, 
+          y: worldPos.y + style.offset.y 
+        });
+      }
+    }
+    
+    if (nodePositions.length < 2) return;
+    
+    // Draw glow effect first (underneath main line)
+    this.pathfindingGraphics.lineStyle(style.lineWidth + 4, style.glowColor, style.alpha * 0.3);
+    this.pathfindingGraphics.beginPath();
+    this.pathfindingGraphics.moveTo(nodePositions[0].x, nodePositions[0].y);
+    for (let i = 1; i < nodePositions.length; i++) {
+      this.pathfindingGraphics.lineTo(nodePositions[i].x, nodePositions[i].y);
+    }
+    this.pathfindingGraphics.strokePath();
+    
+    // Draw the main path line
+    this.pathfindingGraphics.lineStyle(style.lineWidth, style.color, style.alpha);
+    this.pathfindingGraphics.beginPath();
+    this.pathfindingGraphics.moveTo(nodePositions[0].x, nodePositions[0].y);
+    
+    // Draw path segments
+    for (let i = 1; i < nodePositions.length; i++) {
+      this.pathfindingGraphics.lineTo(nodePositions[i].x, nodePositions[i].y);
+    }
+    this.pathfindingGraphics.strokePath();
+    
+    // Add path number labels at start and end with style name
+    this.addPathLabel(nodePositions[0], `${pathNumber}`, style.color, `${style.name} Start`);
+    if (nodePositions.length > 1) {
+      this.addPathLabel(nodePositions[nodePositions.length - 1], `${pathNumber}`, style.color, `${style.name} End`);
+    }
+    
+    // Add waypoint markers
+    for (let i = 1; i < nodePositions.length - 1; i++) {
+      this.pathfindingGraphics.fillStyle(style.color, style.alpha * 0.8);
+      this.pathfindingGraphics.fillCircle(nodePositions[i].x, nodePositions[i].y, 4);
+      
+      // Add a white border to waypoint
+      this.pathfindingGraphics.lineStyle(1, 0xffffff, 0.8);
+      this.pathfindingGraphics.strokeCircle(nodePositions[i].x, nodePositions[i].y, 4);
+    }
+  }
+
+  private renderOrganelleToOrganelleMovement(startNodeId: string, endNodeId: string, style: {
+    color: number;
+    alpha: number;
+    lineWidth: number;
+    offset: { x: number; y: number };
+    glowColor: number;
+    name: string;
+  }, pathNumber: number): void {
+    if (!this.pathfindingGraphics || !this.cytoskeletonSystem) return;
+    
+    // Get start and end organelle positions
+    const startNodeInfo = this.cytoskeletonSystem.graph.debugNode(startNodeId);
+    const endNodeInfo = this.cytoskeletonSystem.graph.debugNode(endNodeId);
+    
+    if (!startNodeInfo.exists || !endNodeInfo.exists || !startNodeInfo.node || !endNodeInfo.node) {
+      return;
+    }
+    
+    const startWorldPos = this.hexGrid.hexToWorld(startNodeInfo.node.hex);
+    const endWorldPos = this.hexGrid.hexToWorld(endNodeInfo.node.hex);
+    
+    // Apply offsets
+    const startPos = { 
+      x: startWorldPos.x + style.offset.x, 
+      y: startWorldPos.y + style.offset.y 
+    };
+    const endPos = { 
+      x: endWorldPos.x + style.offset.x, 
+      y: endWorldPos.y + style.offset.y 
+    };
+    
+    // Draw teleport arc (curved line to indicate special movement)
+    this.drawTeleportArc(startPos, endPos, style);
+    
+    // Add special labels for organelle-to-organelle movement
+    this.addPathLabel(startPos, `${pathNumber}`, style.color, `${style.name} Teleport Start`);
+    this.addPathLabel(endPos, `${pathNumber}`, style.color, `${style.name} Teleport End`);
+  }
+
+  private drawTeleportArc(startPos: { x: number; y: number }, endPos: { x: number; y: number }, style: {
+    color: number;
+    alpha: number;
+    lineWidth: number;
+    glowColor: number;
+  }): void {
+    if (!this.pathfindingGraphics) return;
+    
+    // Calculate control point for curved arc
+    const midX = (startPos.x + endPos.x) / 2;
+    const midY = (startPos.y + endPos.y) / 2;
+    const distance = Math.sqrt((endPos.x - startPos.x) ** 2 + (endPos.y - startPos.y) ** 2);
+    const arcHeight = Math.min(distance * 0.3, 50); // Arc height based on distance
+    
+    // Control point is perpendicular to the line between start and end
+    const controlX = midX;
+    const controlY = midY - arcHeight;
+    
+    // Draw glow effect using Bezier curve
+    this.pathfindingGraphics.lineStyle(style.lineWidth + 4, style.glowColor, style.alpha * 0.3);
+    const glowCurve = new Phaser.Curves.QuadraticBezier(
+      new Phaser.Math.Vector2(startPos.x, startPos.y),
+      new Phaser.Math.Vector2(controlX, controlY),
+      new Phaser.Math.Vector2(endPos.x, endPos.y)
+    );
+    glowCurve.draw(this.pathfindingGraphics, 32);
+    
+    // Draw main arc with dashed pattern for teleport using line segments
+    this.pathfindingGraphics.lineStyle(style.lineWidth, style.color, style.alpha);
+    
+    // Create dashed effect by drawing multiple small segments along the curve
+    const segments = 20;
+    for (let i = 0; i < segments; i++) {
+      if (i % 2 === 0) { // Only draw every other segment for dash effect
+        const t1 = i / segments;
+        const t2 = Math.min((i + 0.5) / segments, 1); // Half-length segments for dash effect
+        
+        // Calculate points using quadratic Bezier formula
+        const x1 = (1 - t1) * (1 - t1) * startPos.x + 2 * (1 - t1) * t1 * controlX + t1 * t1 * endPos.x;
+        const y1 = (1 - t1) * (1 - t1) * startPos.y + 2 * (1 - t1) * t1 * controlY + t1 * t1 * endPos.y;
+        const x2 = (1 - t2) * (1 - t2) * startPos.x + 2 * (1 - t2) * t2 * controlX + t2 * t2 * endPos.x;
+        const y2 = (1 - t2) * (1 - t2) * startPos.y + 2 * (1 - t2) * t2 * controlY + t2 * t2 * endPos.y;
+        
+        this.pathfindingGraphics.beginPath();
+        this.pathfindingGraphics.moveTo(x1, y1);
+        this.pathfindingGraphics.lineTo(x2, y2);
+        this.pathfindingGraphics.strokePath();
+      }
+    }
+  }
+
+  private addPathLabel(position: { x: number; y: number }, text: string, color: number, description?: string): void {
+    // Convert color to CSS hex string
+    const colorStr = `#${color.toString(16).padStart(6, '0')}`;
+    
+    // Create label text with optional description
+    const labelText = description ? `${text}\n${description}` : text;
+    
+    const label = this.add.text(position.x, position.y - 10, labelText, {
+      fontSize: description ? '12px' : '14px',
+      color: colorStr,
+      backgroundColor: '#000000',
+      padding: { x: 4, y: 2 },
+      align: 'center'
+    });
+    
+    label.setOrigin(0.5, 1);
+    label.setDepth(5.1); // Above the path lines
+    
+    // Add label to cellRoot to position it relative to the cell
+    this.cellRoot.add(label);
+    
+    // Store the label so we can clean it up later
+    if (!this.pathLabels) {
+      this.pathLabels = [];
+    }
+    this.pathLabels.push(label);
+  }
+
+  private pathLabels: Phaser.GameObjects.Text[] = [];
+
+  private clearPathfindingDebugPaths(): void {
+    if (this.pathfindingGraphics) {
+      this.pathfindingGraphics.clear();
+    }
+    
+    // Clean up path labels
+    if (this.pathLabels) {
+      for (const label of this.pathLabels) {
+        label.destroy();
+      }
+      this.pathLabels = [];
+    }
   }
 
 }

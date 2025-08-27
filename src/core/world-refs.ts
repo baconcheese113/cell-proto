@@ -31,10 +31,10 @@ import type { InstallOrderSystem } from "@/systems/install-order-system";
 
 // Milestone 7: Orders & Transcripts data types
 export type ProteinId = 'GLUT' | 'AA_TRANSPORTER' | 'NT_TRANSPORTER' | 'ROS_EXPORTER' | 'SECRETION_PUMP' | 'GROWTH_FACTOR_RECEPTOR';
-export type CargoType = 'vesicle' | 'transcript';
+export type CargoType = 'vesicle' | 'transcript' | 'polypeptide';
 // Simplified cargo state system - user's vision: combine simple state with destination knowledge
 export type GlycosylationState = 'none' | 'partial' | 'complete';
-export type CargoState = 'TRANSPORTING' | 'QUEUED' | 'INSTALLING' | 'DONE' | 'EXPIRED';
+export type CargoState = 'BLOCKED' | 'TRANSFORMING' | 'MOVING' | 'QUEUED';
 
 // Milestone 13: Cargo itinerary system for persistent route planning
 // Using OrganelleType directly instead of separate CargoStageKind
@@ -82,11 +82,9 @@ export interface Cargo {
   localDecayRate: number;  // Client-side decay multiplier
   carriedBy?: string; // Player ID who is carrying this cargo, null if on ground
   isThrown?: boolean; // true if currently being thrown
-  state: CargoState; // Simplified: TRANSPORTING, QUEUED, INSTALLING, DONE, EXPIRED  
+  state: CargoState; // Unified states: BLOCKED (no path), TRANSFORMING (processing), MOVING (en route), QUEUED (waiting)  
   glycosylationState: 'none' | 'partial' | 'complete'; // glycosylation level (affects membrane integration)
-  
-  // Auto-routing movement state
-  movementState: 'idle' | 'routing' | 'moving' | 'blocked' | 'arrived';
+
   currentStageDestination?: { q: number; r: number }; // Where cargo is trying to go for current stage
   
   // ER/Golgi seat reservation tracking
@@ -97,12 +95,11 @@ export interface Cargo {
   itinerary?: CargoItinerary;
   routeCache?: { q: number; r: number }[]; // cached pathfinding route
   processingTimer: number; // timestamp when processing at current stage began
-  // Milestone 13: Rail state for cytoskeleton transport
-  railState?: {
+  // Milestone 13: Segment state for cytoskeleton transport
+  segmentState?: {
     nodeId: string;        // Current node
     nextNodeId?: string;   // Next node in path
     edgeId?: string;       // Current edge (if moving)
-    status: 'queued' | 'moving' | 'stranded';
     plannedPath: string[]; // Node IDs from start to finish
     pathIndex: number;     // Current position in planned path
     
@@ -168,7 +165,7 @@ export interface WorldRefs {
   // Milestone 13: Cytoskeleton transport system
   cytoskeletonSystem: CytoskeletonSystem;
   
-  // Graph for real rail transport
+  // Graph for real segment transport
   cytoskeletonGraph: CytoskeletonGraph; // CytoskeletonGraph - will be initialized by cytoskeleton system
   
   // Milestone 7: Orders & Install Management
