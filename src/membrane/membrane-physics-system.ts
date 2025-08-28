@@ -139,7 +139,7 @@ export class MembranePhysicsSystem extends SystemObject {
     // Use hardcoded configuration optimized for this game
     this.config = {
       nodeCount: 144,         // Increased for smoother curves
-      radius: 216,
+      radius: 206,
       surfaceTension: 0.072,
       elasticModulus: 1e6,
       bendingModulus: 20e-18,
@@ -685,7 +685,7 @@ export class MembranePhysicsSystem extends SystemObject {
     }
     
     // Create a realistic cell membrane appearance using improved spline rendering
-    this.membraneGraphics.lineStyle(4, 0x4a90e2, 0.8); // Blue membrane with transparency
+    this.membraneGraphics.lineStyle(12, 0x4a90e2, 0.8); // Blue membrane with transparency
     
     // Add spline curve through all nodes with better interpolation
     const splinePoints: Phaser.Math.Vector2[] = [];

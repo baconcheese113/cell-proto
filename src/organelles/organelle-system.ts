@@ -33,9 +33,9 @@ export interface OrganelleConfig {
   priority: number;
 }
 
-// Simple seat info for vesicle capacity tracking
+// Simple seat info for cargo capacity tracking
 interface SeatInfo {
-  vesicleId: string;
+  cargoId: string;
   reservedAt: number;
   expectedArrival?: number;
   position: HexCoord; // Specific hex coordinate within organelle footprint
@@ -53,7 +53,7 @@ export interface Organelle {
   
   // Milestone 13: Seat-based capacity management
   seats: Record<string, SeatInfo>; // seatId -> seat info
-  capacity: number; // Max concurrent vesicles (defaults to 1)
+  capacity: number; // Max concurrent cargos (defaults to 1)
 }
 
 export class OrganelleSystem extends NetComponent {
@@ -669,20 +669,20 @@ export class OrganelleSystem extends NetComponent {
   }
 
   /**
-   * Reserve a seat in an organelle for an incoming vesicle
+   * Reserve a seat in an organelle for an incoming cargo
    * @param organelleId The organelle to reserve a seat in
-   * @param vesicleId The vesicle that needs the seat
+   * @param cargoId The cargo that needs the seat
    * @param expectedArrival Optional expected arrival time
    * @returns seat ID if successful, null if organelle is full
    */
-  public reserveSeat(organelleId: string, vesicleId: string, expectedArrival?: number): string | null {
+  public reserveSeat(organelleId: string, cargoId: string, expectedArrival?: number): string | null {
     const organelle = this.organelles[organelleId];
     if (!organelle) {
       console.warn(`Cannot reserve seat: organelle ${organelleId} not found`);
       return null;
     }
 
-    console.log(`🔍 SEAT DEBUG: Attempting to reserve seat in ${organelleId} for vesicle ${vesicleId}`);
+    console.log(`🔍 SEAT DEBUG: Attempting to reserve seat in ${organelleId} for cargo ${cargoId}`);
     
     const currentSeatsCount = Object.keys(organelle.seats).length;
     console.log(`🔍 SEAT DEBUG: Current seats: ${currentSeatsCount}, Capacity: ${organelle.capacity}`);
@@ -740,7 +740,7 @@ export class OrganelleSystem extends NetComponent {
     const seatId = `seat_${organelleId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     const seat: SeatInfo = {
-      vesicleId,
+      cargoId,
       reservedAt: Date.now(),
       expectedArrival,
       position: availablePosition
@@ -749,7 +749,7 @@ export class OrganelleSystem extends NetComponent {
     // Store seat in record
     organelle.seats[seatId] = seat;
     
-    console.log(`🎫 Reserved seat ${seatId} for vesicle ${vesicleId} in organelle ${organelleId} at position (${availablePosition.q},${availablePosition.r})`);
+    console.log(`🎫 Reserved seat ${seatId} for cargo ${cargoId} in organelle ${organelleId} at position (${availablePosition.q},${availablePosition.r})`);
     
     // Emit seat reserved event
     this.emitSeatEvent('seatReserved', organelleId, seatId);

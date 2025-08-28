@@ -219,16 +219,13 @@ export class ThrowInputController {
    */
   private isCarryingSomething(): boolean {
     const playerInventory = this.cargoSystem.getMyPlayerInventory();
-    console.log(`🔍 ThrowController.isCarryingSomething(): isCarrying=${!!playerInventory}, localId=${this.net.bus.localId}, inventory.length=${playerInventory.length}`);
-    return !!playerInventory;
+    return playerInventory.length > 0;
   }
 
   /**
    * Execute throw using unified cargo and throw systems
    */
   private executeNetworkAwareThrow(): boolean {
-    console.log(`🎯 Executing throw via ThrowSystem`);
-    
     // Calculate charge level
     const holdTime = this.scene.time.now - this.aimStartTime;
     const chargeLevel = Math.min(holdTime / this.config.chargeTime, 1.0);
@@ -243,7 +240,10 @@ export class ThrowInputController {
     // Get the first cargo item from player inventory
     const playerInventory = this.cargoSystem.getMyPlayerInventory();
     if (playerInventory.length === 0) {
-      console.warn('🎯 No cargo to throw');
+      console.warn('🎯 No cargo to throw - resetting aiming state');
+      // Reset aiming state on both client and server
+      this.throwSystem.cancelAiming();
+      this.aimStartTime = 0;
       return false;
     }
     
@@ -275,12 +275,9 @@ export class ThrowInputController {
       velocity
     );
     
-    console.log(`🎯 ThrowSystem throwCargo result: ${success}`);
-    
     // MULTIPLAYER FIX: Reset client-side aiming state regardless of server result
     // This ensures clients can throw multiple times even though throwCargo() only runs on server
     this.throwSystem.cancelAiming();
-    console.log(`🎯 Client-side: Reset ThrowSystem aiming state after throw attempt`);
     
     return success;
   }
@@ -371,15 +368,12 @@ export class ThrowInputController {
    * Execute the throw
    */
   private executeThrow(): void {
-    console.log("🎯 ExecuteThrow called, isAiming:", this.isAiming);
     if (!this.isAiming) return;
     
     const holdTime = this.scene.time.now - this.aimStartTime;
-    console.log("🎯 Hold time:", holdTime, "ms");
     
     // Require minimum hold time to prevent accidental immediate throws
     if (holdTime < 50) { // 50ms minimum hold time
-      console.log("🎯 Too quick, ignoring");
       return;
     }
     
@@ -392,13 +386,10 @@ export class ThrowInputController {
     }
     
     // Execute throw in throw system
-    console.log(`🎯 Executing throw`);
     const success = this.executeNetworkAwareThrow();
-    console.log(`🎯 Throw execution result: ${success}`);
     
     // Reset state
     this.isAiming = false;
-    console.log(`🎯 Aiming reset: isAiming=${this.isAiming}`);
     
     // Reset cargo indicator position
     const player = this.playerActor;

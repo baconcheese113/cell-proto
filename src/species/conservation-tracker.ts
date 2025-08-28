@@ -85,7 +85,7 @@ export class ConservationTracker {
 
     const report = this.getSummaryReport();
     this.panel.setText(report.join('\n'));
-    this.panel.setVisible(true);
+    this.panel.setVisible(false);
     
     this.lastUpdateTime = currentTime;
   }

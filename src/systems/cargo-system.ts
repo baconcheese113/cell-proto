@@ -187,6 +187,96 @@ export class CargoSystem extends System {
   }
 
   /**
+   * Check if a hex position is occupied by another cargo or has a reserved seat
+   */
+  private isHexOccupiedByCargo(position: HexCoord, excludeCargoId?: string): boolean {
+    // Check for actual cargo at position
+    const cargoOccupied = Object.values(this.cargoState.cargo).some(cargo => {
+      if (excludeCargoId && cargo.id === excludeCargoId) return false;
+      if (cargo.carriedBy) return false; // Carried cargo doesn't occupy tiles
+      if (!cargo.atHex) return false;
+      return cargo.atHex.q === position.q && cargo.atHex.r === position.r;
+    });
+    
+    if (cargoOccupied) return true;
+    
+    // Check for reserved seats at this position
+    const organelleSystem = this.worldRefs.organelleSystem;
+    if (organelleSystem) {
+      const organelleAtPos = organelleSystem.getOrganelleAtTile(position);
+      if (organelleAtPos) {
+        // Check if any seats at this position are reserved
+        const seatInfo = organelleSystem.getSeatInfo(organelleAtPos.id);
+        if (seatInfo) {
+          for (const seat of seatInfo.seats) {
+            if (seat.position.q === position.q && seat.position.r === position.r) {
+              // This position has a reserved seat - check if it's for excluded cargo
+              if (excludeCargoId && seat.cargoId === excludeCargoId) {
+                return false; // This cargo has reserved this seat
+              }
+              return true; // Seat is reserved for another cargo
+            }
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Find a safe position for cargo placement, avoiding collisions with other cargo
+   */
+  private findSafeCargoPosition(preferredPos: HexCoord, cargoId: string): HexCoord {
+    // First check if preferred position is available
+    if (!this.isHexOccupiedByCargo(preferredPos, cargoId)) {
+      return preferredPos;
+    }
+
+    // Look for organelle seats first (priority placement)
+    const organelleSystem = this.worldRefs.organelleSystem;
+    if (organelleSystem) {
+      const organelleAtPos = organelleSystem.getOrganelleAtTile(preferredPos);
+      if (organelleAtPos) {
+        // Try to find an empty seat in the organelle
+        const seatInfo = organelleSystem.getSeatInfo(organelleAtPos.id);
+        if (seatInfo && seatInfo.capacity > seatInfo.occupied) {
+          // There are available seats, check individual seat positions
+          for (const seat of seatInfo.seats) {
+            if (!this.isHexOccupiedByCargo(seat.position, cargoId)) {
+              return seat.position;
+            }
+          }
+        }
+      }
+    }
+
+    // Fall back to adjacent hexes in spiral pattern
+    const directions = [
+      { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
+      { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }
+    ];
+
+    for (let radius = 1; radius <= 3; radius++) {
+      for (let i = 0; i < 6; i++) {
+        const dir = directions[i];
+        const candidate = {
+          q: preferredPos.q + dir.q * radius,
+          r: preferredPos.r + dir.r * radius
+        };
+        
+        if (!this.isHexOccupiedByCargo(candidate, cargoId)) {
+          return candidate;
+        }
+      }
+    }
+
+    // If all else fails, use the preferred position anyway (shouldn't happen normally)
+    console.warn(`🚫 CargoSystem: Could not find safe position for cargo ${cargoId}, using preferred position anyway`);
+    return preferredPos;
+  }
+
+  /**
    * Consolidated seat management helper
    */
   private getSeatPositionForCargo(cargo: Cargo): HexCoord | null {
@@ -266,9 +356,9 @@ export class CargoSystem extends System {
     
     for (const order of orders) {
       
-      // Reserve a seat in the nucleus for the transcript
-      const transcriptId = `transcript_${this.nextCargoId}`;
-      const seatId = this.worldRefs.organelleSystem.reserveSeat(nucleusOrganelle.id, transcriptId);
+      // First reserve a seat to prevent conflicts
+      const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+      const seatId = this.worldRefs.organelleSystem.reserveSeat(nucleusOrganelle.id, tempId);
       if (!seatId) {
         console.warn(`🔬 CargoSystem: Failed to reserve seat in nucleus ${nucleusOrganelle.id} for order ${order.id}`);
         continue;
@@ -278,25 +368,42 @@ export class CargoSystem extends System {
       const seatPosition = this.worldRefs.organelleSystem.getSeatPosition(nucleusOrganelle.id, seatId);
       if (!seatPosition) {
         console.warn(`🔬 CargoSystem: Failed to get seat position for ${seatId} in nucleus ${nucleusOrganelle.id}`);
-        // Release the seat we just reserved
         this.worldRefs.organelleSystem.releaseSeat(nucleusOrganelle.id, seatId);
         continue;
       }
       
       // Create transcript at the reserved seat position
-      console.log(`🔬 CargoSystem: Creating transcript for ${order.proteinId} at nucleus seat (${seatPosition.q}, ${seatPosition.r})`);
+      console.log(`🔬 CargoSystem: Creating transcript for ${order.proteinId} at reserved seat (${seatPosition.q}, ${seatPosition.r})`);
       const transcript = this.createTranscript(order.proteinId, seatPosition);
+      
+      // Transfer seat reservation to the actual cargo ID
+      this.worldRefs.organelleSystem.releaseSeat(nucleusOrganelle.id, seatId);
+      const finalSeatId = this.worldRefs.organelleSystem.reserveSeat(nucleusOrganelle.id, transcript.id);
+      if (!finalSeatId) {
+        console.warn(`🔬 CargoSystem: Failed to transfer seat reservation to cargo ${transcript.id}`);
+        this.removeCargo(transcript.id);
+        continue;
+      }
+      
+      console.log(`🔬 CargoSystem: Positioned transcript ${transcript.id} at nucleus seat (${seatPosition.q}, ${seatPosition.r})`);
       
       // Set destination and seat information for the transcript
       transcript.destHex = order.destHex;
-      transcript.state = 'QUEUED';
-      transcript.reservedSeatId = seatId; // Store seat ID for cleanup when transcript moves/expires
+      transcript.state = 'TRANSFORMING'; // Start processing immediately since it's spawned in nucleus
+      transcript.reservedSeatId = finalSeatId;
       transcript.targetOrganelleId = nucleusOrganelle.id;
       
-      // Use itinerary from the install order
+      // Use itinerary from the install order and start processing for current stage
       transcript.itinerary = order.itinerary;
       
-      console.log(`✅ CargoSystem: Created transcript ${transcript.id} for order ${order.id} with seat ${seatId} and ${transcript.itinerary?.stages.length || 0} stages`);
+      // Start nucleus processing
+      const currentStage = transcript.itinerary.stages[0]; // Stage 0 = nucleus
+      if (currentStage && currentStage.processMs) {
+        transcript.processingTimer = currentStage.processMs;
+        console.log(`🎬 CargoSystem: Starting ${currentStage.processMs}ms processing for transcript ${transcript.id} in nucleus`);
+      }
+      
+      console.log(`✅ CargoSystem: Created transcript ${transcript.id} for order ${order.id} with seat ${finalSeatId} and ${transcript.itinerary?.stages.length || 0} stages`);
       
       // Remove processed order
       this.worldRefs.installOrderSystem.removeProcessedOrder(order.id);
@@ -308,15 +415,11 @@ export class CargoSystem extends System {
    */
   @RunOnServer()
   private findBestRouteToOrganelleType(cargo: Cargo, organelleType: OrganelleType): RouteResult {
-    console.log(`🎯 findBestRouteToOrganelleType: cargo ${cargo.id} trying to route to ${organelleType}`);
-
     const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
     const graph = this.worldRefs.cytoskeletonSystem.graph;
     
     // Filter organelles by type
     const candidateOrganelles = organelles.filter(org => org.type === organelleType);
-
-    console.log(`🎯 Found ${candidateOrganelles.length} organelles of type ${organelleType}`);
 
     if (candidateOrganelles.length === 0) {
       return { success: false, reason: `No ${organelleType} organelles found` };
@@ -325,23 +428,24 @@ export class CargoSystem extends System {
 
     // Simple teleport-based routing: cargo can teleport to any adjacent organelle with seats
     if (!atHex) {
-      console.log(`🔍 Cargo ${cargo.id} has no position (carried), skipping routing`);
       return { success: false, reason: 'Cargo has no position' };
     }
 
     const currentOrganelle = this.worldRefs.organelleSystem.getOrganelleAtTile(atHex);
     if (currentOrganelle) {
-      console.log(`🔍 Cargo ${cargo.id} in organelle ${currentOrganelle.type}, checking ${candidateOrganelles.length} candidates`);
       for (const candidate of candidateOrganelles) {
         if (this.worldRefs.organelleSystem.areOrganellesAdjacent(currentOrganelle, candidate)) {
-          // Check seat availability
+          // Step 1: Check if path exists to organelle
+          // (For adjacent organelles, path always exists)
+          
+          // Step 2: Check seat availability in target organelle
           const hasSeats = this.worldRefs.organelleSystem.hasAvailableSeats(candidate.id);
           if (hasSeats) {
-            // Release any existing seat before reserving new one (transactional)
-            this.releaseSeatReservation(cargo, `Routing to adjacent organelle ${candidate.type}`);
+            // Step 3: Try to reserve new seat first
             const seatId = this.worldRefs.organelleSystem.reserveSeat(candidate.id, cargo.id);
             if (seatId) {
-              console.log(`🚀 Simple teleport routing: ${cargo.id} from ${currentOrganelle.type} to ${candidate.type}`);
+              // Successfully reserved new seat, now release old seat
+              this.releaseSeatReservation(cargo, `Routing to adjacent organelle ${candidate.type}`);
               return {
                 success: true,
                 organelle: candidate,
@@ -383,9 +487,11 @@ export class CargoSystem extends System {
     // Try to reserve seat in the best available organelle
     for (const result of organelleResults) {
       if (result.hasSeats && result.pathResult.success) {
-        this.releaseSeatReservation(cargo, `Routing to organelle ${result.organelle.type} via cytoskeleton`);
+        // Try to reserve new seat first
         const seatId = this.worldRefs.organelleSystem.reserveSeat(result.organelle.id, cargo.id);
         if (seatId) {
+          // Successfully reserved new seat, now release old seat
+          this.releaseSeatReservation(cargo, `Routing to organelle ${result.organelle.type} via cytoskeleton`);
           return {
             success: true,
             organelle: result.organelle,
@@ -429,6 +535,14 @@ export class CargoSystem extends System {
       const remainingTtl = cargo.ttlSecondsInitial - elapsedSeconds;
       
       if (remainingTtl <= 0) {
+        // Don't expire cargo that's currently being processed
+        if (cargo.state === 'TRANSFORMING' && cargo.processingTimer && cargo.processingTimer > 0) {
+          console.log(`⏰ CargoSystem: Cargo ${cargoId} expired but still processing, extending TTL`);
+          // Extend TTL by processing time
+          cargo.ttlSecondsRemaining = Math.max(5, cargo.processingTimer / 1000);
+          continue;
+        }
+        
         console.log(`⏰ CargoSystem: Cargo ${cargoId} expired, cleaning up`);
         
         // Release any reserved seat
@@ -467,14 +581,7 @@ export class CargoSystem extends System {
   }
 
   getMyPlayerInventory(): Cargo[] {
-    const inventory = this.getPlayerInventory(this._netBus.localId);
-    const showLogs = Math.random() < 0.001; // don't Log more frequently for debugging
-    if (showLogs)
-      console.log(`🎯 Debug getMyPlayerInventory: localId=${this._netBus.localId}, inventory.length=${inventory.length}`);
-    if (inventory.length > 0 && showLogs) {
-      console.log(`🎯 Debug inventory cargo: ${inventory.map(c => `${c.id}(carriedBy=${c.carriedBy})`).join(', ')}`);
-    }
-    return inventory;
+    return this.getPlayerInventory(this._netBus.localId);
   }
 
   /**
@@ -512,8 +619,15 @@ export class CargoSystem extends System {
     // Find carried cargo and drop it
     for (const cargo of Object.values(this.cargoState.cargo)) {
       if (cargo.carriedBy === playerId) {
+        // Find a safe position to avoid cargo collisions
+        const safePosition = this.findSafeCargoPosition(hex, cargo.id);
+        
         cargo.carriedBy = undefined;
-        this.setCargoPosition(cargo, hex);
+        this.setCargoPosition(cargo, safePosition);
+        
+        if (safePosition.q !== hex.q || safePosition.r !== hex.r) {
+          console.log(`🎯 Cargo ${cargo.id} dropped at safe position (${safePosition.q}, ${safePosition.r}) instead of (${hex.q}, ${hex.r}) to avoid collision`);
+        }
         
         // Attempt auto-routing when cargo is dropped
         this.tryStartAutoRouting(cargo);
@@ -537,8 +651,6 @@ export class CargoSystem extends System {
       return false;
     }
     
-    console.log(`🎯 Debug startCargoTransit: cargoId=${cargoId}, playerId=${playerId}, cargo.carriedBy=${cargo.carriedBy}`);
-    
     // If playerId is provided, validate that the player is actually carrying this cargo
     if (playerId) {
       if (cargo.carriedBy !== playerId) {
@@ -549,8 +661,6 @@ export class CargoSystem extends System {
         if (!cargoInInventory) {
           console.warn(`🎯 Player ${playerId} is not carrying cargo ${cargoId} (cargo.carriedBy=${cargo.carriedBy}, not found in inventory)`);
           return false;
-        } else {
-          console.log(`🎯 Found cargo ${cargoId} in player ${playerId} inventory despite carriedBy mismatch`);
         }
       }
     }
@@ -558,7 +668,6 @@ export class CargoSystem extends System {
     // Clear carried state and mark as thrown
     cargo.carriedBy = undefined;
     cargo.isThrown = true;
-    console.log(`🎯 Started cargo transit: ${cargoId} is now thrown and no longer carried`);
     return true;
   }
 
@@ -570,9 +679,15 @@ export class CargoSystem extends System {
       return false;
     }
     
+    // Find a safe position to avoid cargo collisions
+    const safePosition = this.findSafeCargoPosition(landingPos, cargoId);
+    
     cargo.isThrown = false;
-    this.setCargoPosition(cargo, landingPos);
-    console.log(`🎯 Ended cargo transit: ${cargoId} landed at (${landingPos.q}, ${landingPos.r})`);
+    this.setCargoPosition(cargo, safePosition);
+    
+    if (safePosition.q !== landingPos.q || safePosition.r !== landingPos.r) {
+      console.log(`🎯 Cargo ${cargoId} redirected from (${landingPos.q}, ${landingPos.r}) to safe position (${safePosition.q}, ${safePosition.r}) to avoid collision`);
+    }
     
     // Attempt auto-routing when cargo lands
     this.tryStartAutoRouting(cargo);
@@ -592,9 +707,30 @@ export class CargoSystem extends System {
       // For regular cargo, skip if no valid hex position
       if (!cargo.isThrown && !cargo.atHex) continue;
 
-      const color = cargo.currentType === 'vesicle' ? 0x00ff00 : 0x0066cc;
+      // Different colors for different cargo types
+      let color: number;
+      let size: number = 6;
+      
+      switch (cargo.currentType) {
+        case 'transcript':
+          color = 0x8888ff; // Light blue for transcripts
+          size = 4;
+          break;
+        case 'polypeptide':
+          color = 0xff8888; // Light red for polypeptides
+          size = 5;
+          break;
+        case 'vesicle':
+          color = 0x00ff00; // Green for vesicles
+          size = 6;
+          break;
+        default:
+          color = 0x0066cc; // Default blue
+          size = 6;
+      }
+      
       this.graphics.fillStyle(color, 0.8);
-      this.graphics.fillCircle(cargo.worldPos.x, cargo.worldPos.y, 6);
+      this.graphics.fillCircle(cargo.worldPos.x, cargo.worldPos.y, size);
     }
   }
 
@@ -608,6 +744,9 @@ export class CargoSystem extends System {
     
     // Update processing timers for TRANSFORMING cargo
     this.updateProcessingTimers();
+    
+    // Clean up phantom seat reservations
+    // this.cleanupPhantomSeatReservations();
     
     // Retry blocked cargo
     this.retryBlockedCargo();
@@ -658,9 +797,11 @@ export class CargoSystem extends System {
       if (cargo.state === 'TRANSFORMING' && cargo.processingTimer > 0) {
         cargo.processingTimer -= deltaMs;
         
-        // Ensure timer doesn't go negative
+        // When processing completes, transition back to routing state
         if (cargo.processingTimer <= 0) {
           cargo.processingTimer = 0;
+          cargo.state = 'QUEUED'; // Ready to route to next stage
+          console.log(`✅ CargoSystem: ${cargo.currentType} ${cargo.id} completed processing, ready for next stage`);
         }
       }
     }
@@ -716,26 +857,29 @@ export class CargoSystem extends System {
       return;
     }
     
-    console.log(`🚛 CargoSystem: tryStartAutoRouting for cargo ${cargo.id}, current stage: ${cargo.itinerary.stageIndex}/${cargo.itinerary.stages.length-1}`);
-    console.log(`🚛 Stages: ${cargo.itinerary.stages.map((s, i) => `${i}: ${s.kind}`).join(', ')}`);
-    
     const destination = this.determineNextStageDestination(cargo);
     if (!destination) {
       console.log(`🚫 CargoSystem: No destination found for cargo ${cargo.id} - setting state to BLOCKED`);
+      
+      // Release any current seat reservation before marking as blocked
+      // this.releaseSeatReservation(cargo, 'No destination found - blocking cargo');
+      
       cargo.state = 'BLOCKED'; // Set cargo state to blocked when pathfinding fails
-      cargo.targetOrganelleId = undefined; // Clear stale target when routing fails
       cargo.currentStageDestination = undefined; // Clear stale destination
       this.blockedCargo.add(cargo.id); // Add to retry queue
       this.cargoFailureTimes.set(cargo.id, now); // Record failure time
       return;
     }
     
+    // Set the destination for this cargo before attempting movement
     cargo.currentStageDestination = destination;
     
-    // Check if cargo is already at the destination (same organelle processing)
-    if (this.isCargoAtPosition(cargo, destination)) {
-      console.log(`🎯 CargoSystem: Cargo ${cargo.id} already at destination (${destination.q}, ${destination.r}), proceeding directly to stage arrival`);
-      this.handleStageArrival(cargo);
+    // Validation: Check if cargo is trying to move to its current position
+    if (cargo.atHex && cargo.atHex.q === destination.q && cargo.atHex.r === destination.r) {
+      console.warn(`⚠️ CargoSystem: Cargo ${cargo.id} trying to move to current position (${destination.q}, ${destination.r}) - this suggests a logic error`);
+      // Don't attempt movement in this case
+      cargo.state = 'BLOCKED';
+      this.blockedCargo.add(cargo.id);
       return;
     }
     
@@ -757,41 +901,50 @@ export class CargoSystem extends System {
   private determineNextStageDestination(cargo: Cargo): { q: number; r: number } | null {
     if (!cargo.itinerary) return null;
     
-    const currentStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
+    let currentStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
     if (!currentStage) return null; // No more stages
     
-    console.log(`🎯 determineNextStageDestination: cargo ${cargo.id} stage ${cargo.itinerary.stageIndex}/${cargo.itinerary.stages.length-1} -> ${currentStage.kind}`);
-    console.log(`🎯 Full itinerary:`, cargo.itinerary.stages.map((stage, i) => `${i}: ${stage.kind}`));
-    console.log(`🎯 About to call findBestRouteToOrganelleType with organelleType: "${currentStage.kind}"`);
+    console.log(`🎯 CargoSystem: Determining destination for ${cargo.currentType} ${cargo.id} at stage ${cargo.itinerary.stageIndex} (${currentStage.kind}) currently at ${cargo.atHex ? `(${cargo.atHex.q},${cargo.atHex.r})` : 'no location'}`);
     
-    // Check if cargo is already in the target organelle type - if so, skip routing
-    if (cargo.atHex) {
+    // Check if we need to advance to the next stage
+    // Only advance if cargo has completed processing in the current stage
+    if (cargo.atHex && cargo.processingTimer <= 0) {
       const currentOrganelle = this.worldRefs.organelleSystem.getOrganelleAtTile(cargo.atHex);
       if (currentOrganelle && currentOrganelle.type === currentStage.kind) {
-        console.log(`🎯 CargoSystem: Cargo ${cargo.id} already in target organelle ${currentOrganelle.type} (${currentOrganelle.id}), staying put`);
-        // Update targetOrganelleId to match current location since we're staying
-        cargo.targetOrganelleId = currentOrganelle.id;
-        return cargo.atHex; // Stay at current position, no routing needed
+        // We're in the right organelle and processing is complete, advance to next stage
+        cargo.itinerary.stageIndex++;
+        const nextStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
+        if (!nextStage) {
+          console.log(`🏁 CargoSystem: ${cargo.currentType} ${cargo.id} completed all stages`);
+          return null; // Completed all stages
+        }
+        console.log(`➡️ CargoSystem: Advancing ${cargo.currentType} ${cargo.id} from stage ${cargo.itinerary.stageIndex-1} (${currentStage.kind}) to stage ${cargo.itinerary.stageIndex} (${nextStage.kind})`);
+        // Update currentStage to the new stage for routing
+        currentStage = nextStage;
       }
     }
     
     // For organelle stages, use unified routing to find best available organelle
     const routeResult = this.findBestRouteToOrganelleType(cargo, currentStage.kind);
-    if (routeResult.success && routeResult.organelle) {
+    if (routeResult.success && routeResult.organelle && routeResult.seatId) {
       // Store the seat reservation info for this cargo
-      if (routeResult.seatId) {
-        cargo.reservedSeatId = routeResult.seatId;
-        cargo.targetOrganelleId = routeResult.organelle.id;
-      }
+      cargo.reservedSeatId = routeResult.seatId;
+      cargo.targetOrganelleId = routeResult.organelle.id;
       
-      // Return the seat position, not the organelle center
-      if (this.validateCargoForMovement(cargo)) {
-        const seatPosition = this.getSeatPositionForCargo(cargo);
-        if (seatPosition) {
-          return seatPosition;
+      // Get the actual seat position - this should always work since we just reserved it
+      const seatPosition = this.getSeatPositionForCargo(cargo);
+      if (seatPosition) {
+        // Validate destination is different from current position
+        if (cargo.atHex && seatPosition.q === cargo.atHex.q && seatPosition.r === cargo.atHex.r) {
+          console.warn(`🚫 CargoSystem: ${cargo.currentType} ${cargo.id} destination (${seatPosition.q},${seatPosition.r}) same as current position! Stage: ${cargo.itinerary?.stageIndex}/${cargo.itinerary?.stages.length}, Current stage: ${currentStage.kind}`);
+          return null;
         }
+        console.log(`✅ CargoSystem: ${cargo.currentType} ${cargo.id} routing to ${currentStage.kind} at (${seatPosition.q},${seatPosition.r})`);
+        return seatPosition;
       }
       
+      // Fallback to organelle center if seat position lookup fails (shouldn't happen)
+      console.warn(`🚫 CargoSystem: Could not get seat position for cargo ${cargo.id} with seat ${cargo.reservedSeatId}, using organelle center`);
       return routeResult.organelle.coord;
     }
     
@@ -814,10 +967,8 @@ export class CargoSystem extends System {
       if (currentOrganelle && targetOrganelle && 
           currentOrganelle.id !== targetOrganelle.id && // Prevent same-organelle "teleport"
           this.worldRefs.organelleSystem.areOrganellesAdjacent(currentOrganelle, targetOrganelle)) {
-        // Direct teleport for adjacent organelles
-        console.log(`🚀 CargoSystem: Direct teleport for cargo ${cargo.id} from ${currentOrganelle.type} to ${targetOrganelle.type} at (${seatPosition.q}, ${seatPosition.r})`);
         
-        // Move cargo directly to the seat position
+        // Direct teleport for adjacent organelles - cargo has already reserved the seat
         this.setCargoPosition(cargo, seatPosition);
         
         // Immediately trigger arrival
@@ -836,6 +987,10 @@ export class CargoSystem extends System {
     const pathResult = graph.findPath(cargo.atHex!, seatPosition, cargo.currentType);
     if (!pathResult.success) {
       console.log(`🚫 CargoSystem: No path found for cargo ${cargo.id}: ${pathResult.reason}`);
+      
+      // Release seat reservation since we can't reach it
+      // this.releaseSeatReservation(cargo, `No path found: ${pathResult.reason}`);
+      
       cargo.state = 'BLOCKED'; // Set blocked state when pathfinding fails
       this.blockedCargo.add(cargo.id); // Add to retry queue
       this.cargoFailureTimes.set(cargo.id, Date.now()); // Record failure time
@@ -900,6 +1055,15 @@ export class CargoSystem extends System {
     const cargo = this.cargoState.cargo[cargoId];
     if (!cargo) return;
     
+    // Check if the arrival position is blocked by another cargo or reserved seat
+    if (this.isHexOccupiedByCargo(arrivedAt, cargoId)) {
+      console.log(`🚫 CargoSystem: Cargo ${cargoId} blocked at arrival position (${arrivedAt.q}, ${arrivedAt.r}) - position occupied`);
+      cargo.state = 'BLOCKED';
+      this.blockedCargo.add(cargoId);
+      this.cargoFailureTimes.set(cargoId, Date.now());
+      return;
+    }
+    
     cargo.segmentState = undefined;
     this.setCargoPosition(cargo, arrivedAt);
     
@@ -943,6 +1107,10 @@ export class CargoSystem extends System {
       if (cargo.itinerary && cargo.itinerary.stageIndex < cargo.itinerary.stages.length - 1) {
         cargo.itinerary.stageIndex++;
         console.log(`⏭️ CargoSystem: Cargo ${cargo.id} completed stage processing, advanced to stage ${cargo.itinerary.stageIndex} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`);
+        
+        // Release current seat since cargo is moving to next stage
+        // this.releaseSeatReservation(cargo, `Completed stage ${cargo.itinerary.stageIndex - 1}, moving to next stage`);
+        
         this.tryStartAutoRouting(cargo);
       } else {
         console.log(`🏁 CargoSystem: Cargo ${cargo.id} completed all stages`);
@@ -955,10 +1123,20 @@ export class CargoSystem extends System {
   private performProteinInstallation(cargo: Cargo): void {
     console.log(`🔧 CargoSystem: Installing protein ${cargo.proteinId} from cargo ${cargo.id}`);
     
-    // Get the target organelle where the protein should be installed
-    const targetOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId!);
+    // Try to get the target organelle from the stored ID first
+    let targetOrganelle = cargo.targetOrganelleId ? 
+      this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId) : null;
+    
+    // If targetOrganelleId is missing or invalid, try to find organelle at cargo's current position
+    if (!targetOrganelle && cargo.atHex) {
+      targetOrganelle = this.worldRefs.organelleSystem.getOrganelleAtTile(cargo.atHex);
+      if (targetOrganelle) {
+        console.log(`🔧 CargoSystem: Found target organelle ${targetOrganelle.id} at cargo position (${cargo.atHex.q}, ${cargo.atHex.r})`);
+      }
+    }
+    
     if (!targetOrganelle) {
-      console.error(`❌ CargoSystem: Target organelle ${cargo.targetOrganelleId} not found for protein installation`);
+      console.error(`❌ CargoSystem: No target organelle found for protein installation (targetOrganelleId=${cargo.targetOrganelleId}, atHex=${cargo.atHex?.q},${cargo.atHex?.r})`);
       this.removeCargo(cargo.id);
       return;
     }
@@ -967,7 +1145,12 @@ export class CargoSystem extends System {
     try {
       // For transporter organelles, install the protein as a membrane transporter
       if (targetOrganelle.type === 'transporter') {
-        this.installMembraneProtein(cargo.proteinId, targetOrganelle.coord);
+        const installSuccess = this.findAndInstallMembraneProtein(cargo.proteinId, targetOrganelle);
+        if (!installSuccess) {
+          console.error(`❌ CargoSystem: Could not find available membrane position for ${cargo.proteinId} near ${targetOrganelle.id}`);
+          this.removeCargo(cargo.id);
+          return;
+        }
       } else {
         console.warn(`🚧 CargoSystem: Protein installation for ${targetOrganelle.type} organelles not yet implemented`);
       }
@@ -978,8 +1161,46 @@ export class CargoSystem extends System {
     }
 
     // Clean up the cargo - release seat and remove from system
-    this.releaseSeatReservation(cargo, 'Protein installation completed');
+    // this.releaseSeatReservation(cargo, 'Protein installation completed');
     this.removeCargo(cargo.id);
+  }
+
+  @RunOnServer()
+  private findAndInstallMembraneProtein(proteinId: ProteinId, organelle: any): boolean {
+    // Get all membrane coordinates around the organelle footprint
+    const membraneCoords: HexCoord[] = [];
+    
+    // For single-tile organelles, check the organelle position itself
+    if (this.worldRefs.hexGrid.isMembraneCoord(organelle.coord)) {
+      membraneCoords.push(organelle.coord);
+    }
+    
+    // Also check adjacent membrane coordinates
+    const directions = [
+      { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
+      { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }
+    ];
+    
+    for (const dir of directions) {
+      const adjacentCoord = {
+        q: organelle.coord.q + dir.q,
+        r: organelle.coord.r + dir.r
+      };
+      
+      if (this.worldRefs.hexGrid.isMembraneCoord(adjacentCoord)) {
+        membraneCoords.push(adjacentCoord);
+      }
+    }
+    
+    // Try to install at each membrane coordinate until one succeeds
+    for (const coord of membraneCoords) {
+      if (this.installMembraneProtein(proteinId, coord)) {
+        console.log(`🧬 CargoSystem: Successfully installed ${proteinId} at membrane position (${coord.q}, ${coord.r}) near ${organelle.id}`);
+        return true;
+      }
+    }
+    
+    return false;
   }
 
   @RunOnServer()
