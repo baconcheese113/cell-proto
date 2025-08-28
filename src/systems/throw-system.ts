@@ -105,13 +105,19 @@ export class ThrowSystem extends System {
     targetPos: HexCoord, 
     velocity: number = 5.0
   ): boolean {
+    console.log(`🎯 Debug throwCargo: playerId=${playerId}, cargoId=${cargoId}, cargoSystem=${!!this.cargoSystem}`);
+    
     if (!this.cargoSystem) {
       console.warn('🎯 CargoSystem not available for throw');
       return false;
     }
     
-    // Start cargo transit in cargo system
-    if (!this.cargoSystem.startCargoTransit(cargoId)) {
+    // Start cargo transit in cargo system with player validation
+    console.log(`🎯 About to call startCargoTransit with cargoId=${cargoId}, playerId=${playerId}`);
+    const transitResult = this.cargoSystem.startCargoTransit(cargoId, playerId);
+    console.log(`🎯 startCargoTransit result: ${transitResult}`);
+    
+    if (!transitResult) {
       console.warn(`🎯 Failed to start transit for cargo ${cargoId}`);
       return false;
     }
@@ -151,6 +157,13 @@ export class ThrowSystem extends System {
     });
     
     console.log(`🎯 Player ${playerId} threw cargo ${cargoId} from ${startPos.q},${startPos.r} to ${targetPos.q},${targetPos.r}`);
+    
+    // Reset aiming state after successful throw
+    this.isAiming = false;
+    this.aimTarget = null;
+    this.chargeLevel = 0;
+    console.log('🎯 ThrowSystem: Reset aiming state after successful throw');
+    
     return true;
   }
   
@@ -213,6 +226,13 @@ export class ThrowSystem extends System {
         (projectile.targetPos.q - projectile.startPos.q) * progress;
       projectile.currentPos.r = projectile.startPos.r + 
         (projectile.targetPos.r - projectile.startPos.r) * progress;
+      
+      // Update cargo worldPos for rendering during flight
+      const cargo = this.cargoSystem.getCargo(projectile.cargoId);
+      if (cargo && cargo.isThrown) {
+        // Convert hex position to world position for rendering
+        cargo.worldPos = this.cargoSystem['worldRefs'].hexGrid.hexToWorld(projectile.currentPos);
+      }
       
       // Check if landed
       if (progress >= 1.0) {
@@ -357,14 +377,17 @@ export class ThrowSystem extends System {
    * Start aiming mode for a player
    */
   public startAiming(initialTarget: Phaser.Math.Vector2): boolean {
+    console.log(`🎯 ThrowSystem.startAiming called: currentlyAiming=${this.isAiming}`);
+    
     if (this.isAiming) {
+      console.log('🎯 ThrowSystem: Already aiming, returning false');
       return false; // Already aiming
     }
     
     this.isAiming = true;
     this.aimTarget = initialTarget.clone();
     this.chargeLevel = 0;
-    console.log('🎯 Started aiming mode');
+    console.log('🎯 Started aiming mode in ThrowSystem');
     return true;
   }
   

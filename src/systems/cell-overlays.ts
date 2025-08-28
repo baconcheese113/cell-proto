@@ -152,6 +152,11 @@ export class CellOverlays extends System {
     const allCargo = this.worldRefs.cargoSystem.getAllCargo();
     
     for (const cargo of allCargo) {
+      // Skip all UI rendering for cargo that is carried by a player
+      if (cargo.carriedBy) {
+        continue; // Don't show any progress indicators for carried cargo
+      }
+      
       // Render segment transit progress only if cargo is moving on a segment
       if (cargo.segmentState?.transitProgress !== undefined && cargo.state === 'MOVING') {
         this.renderSegmentTransitProgress(cargo);
@@ -188,6 +193,11 @@ export class CellOverlays extends System {
   private renderUnifiedCargoProgress(cargo: Cargo): void {
     const worldPos = cargo.worldPos;
     if (!worldPos) return; // Skip if no world position
+    
+    // Skip UI rendering for cargo that is carried by a player
+    if (cargo.carriedBy) {
+      return; // Don't show progress indicators for carried cargo
+    }
     
     let showIndicator = false;
     let progress = 0;

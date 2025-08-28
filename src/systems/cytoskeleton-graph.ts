@@ -206,17 +206,11 @@ export class CytoskeletonGraph {
   }
 
   private addOrganelleAccessPoints(): void {
-    console.log(`🏢 addOrganelleAccessPoints() called - processing organelle access points...`);
 
     // Get all organelles and create access nodes for them
     const organelles = this.worldRefs.organelleSystem.getAllOrganelles();
-    console.log(`🔍 Found ${organelles.length} organelles to process for access points`);
 
     for (const organelle of organelles) {
-      // Only log occasionally for performance
-      if (Math.random() < 0.3) {
-        console.log(`🏢 Processing ${organelle.type} at (${organelle.coord.q},${organelle.coord.r})`);
-      }
 
       // Create an organelle access node at the organelle's location
       const organelleNodeId = `organelle_${organelle.id}`;
@@ -235,12 +229,9 @@ export class CytoskeletonGraph {
 
       // Find all filament nodes within reasonable distance (up to 2 hexes)
       const accessibleNodes: string[] = [];
-      const segmentNodes = Array.from(this.nodes.entries()).filter(([_, node]) => node.type === 'segment');
-      console.log(`🧵 Found ${segmentNodes.length} segment nodes to check against organelle ${organelle.type} at (${organelle.coord.q},${organelle.coord.r})`);
 
       for (const [nodeId, node] of this.nodes) {
         if (node.type === 'segment') {
-          console.log(`🧵 Checking segment node ${nodeId} at (${node.hex.q},${node.hex.r}) against organelle ${organelle.type}`);
           
           // Get all tiles in the organelle's footprint
           const footprintTiles = getFootprintTiles(
@@ -249,7 +240,6 @@ export class CytoskeletonGraph {
             organelle.coord.r
           );
 
-          console.log(`🏢 Processing organelle ${organelle.type} at (${organelle.coord.q},${organelle.coord.r}) with footprint tiles:`, footprintTiles.map(t => `(${t.q},${t.r})`).join(', '));
 
           // Check if the cytoskeleton node is adjacent to ANY part of the organelle's footprint
           let isAdjacent = false;
@@ -261,20 +251,15 @@ export class CytoskeletonGraph {
               Math.abs(node.hex.r - footprintTile.r)
             );
 
-            console.log(`🔍 Debug: Checking node ${nodeId} at (${node.hex.q},${node.hex.r}) vs footprint tile (${footprintTile.q},${footprintTile.r}), distance: ${distance}`);
-
             // Node is accessible if it's immediately adjacent to any footprint tile (distance = 1)
             if (distance <= 1) {
               isAdjacent = true;
-              console.log(`✅ Node ${nodeId} is adjacent to footprint tile (${footprintTile.q},${footprintTile.r})`);
               break;
             }
           }
 
           if (isAdjacent) {
             accessibleNodes.push(nodeId);
-            console.log(`🔗 Found accessible node ${nodeId} at (${node.hex.q},${node.hex.r}), adjacent to organelle ${organelle.type} footprint`);
-
             // Create bidirectional access edge between organelle and filament node
             const accessEdgeId = `access_${organelle.id}_${nodeId}`;
             const accessEdge: GraphEdge = {
@@ -294,11 +279,6 @@ export class CytoskeletonGraph {
         }
       }
 
-      if (accessibleNodes.length > 0) {
-        console.log(`🏢 Created organelle node ${organelleNodeId} with ${accessibleNodes.length} access connections`);
-      } else {
-        console.log(`🚫 Organelle ${organelle.type} at (${organelle.coord.q},${organelle.coord.r}) has no accessible filament nodes`);
-      }
     }
 
     // Create direct edges between adjacent organelles

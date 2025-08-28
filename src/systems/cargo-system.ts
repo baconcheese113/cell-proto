@@ -1,7 +1,7 @@
 import type { WorldRefs, Cargo, CargoType, ProteinId } from "../core/world-refs";
 import type { OrganelleType } from "../organelles/organelle-registry";
 import type { HexCoord } from "../hex/hex-grid";
-import { NetComponent } from "../network/net-entity";
+import { System } from "./system";
 import type { NetBus } from "../network/net-bus";
 import { RunOnServer } from "../network/decorators";
 import type { Organelle } from "@/organelles/organelle-system";
@@ -36,7 +36,7 @@ type CargoState = {
 /**
  * Unified cargo management system with install order processing
  */
-export class CargoSystem extends NetComponent {
+export class CargoSystem extends System {
   private worldRefs: WorldRefs;
   private cargoState = this.stateChannel<CargoState>('cargo.map', { cargo: {} });
   private nextCargoId = 1;
@@ -46,24 +46,51 @@ export class CargoSystem extends NetComponent {
   private static readonly RETRY_COOLDOWN_MS = 5000; // Wait 5 seconds before retrying failed cargo
 
   constructor(scene: Phaser.Scene, netBus: NetBus, worldRefs: WorldRefs) {
-    super(netBus);
+    super(scene, netBus, "CargoSystem", (deltaSeconds: number) => this.update(deltaSeconds));
     this.worldRefs = worldRefs;
     
-    // Start update loop for install order processing on server
+    // Initialize rendering graphics
+    this.initializeGraphics();
+    
+    console.log('� CargoSystem initialized');
+  }
+
+  private accumulatedTime = 0;
+  private processTime = 0;
+  private cleanupTime = 0;
+  private readonly UPDATE_INTERVAL = 1.0; // Update auto-routing every second
+  private readonly PROCESS_INTERVAL = 0.5; // Process install orders every 500ms
+  private readonly CLEANUP_INTERVAL = 2.0; // Cleanup expired cargo every 2 seconds
+
+  /**
+   * Main update method called by System base class
+   */
+  override update(deltaSeconds: number): void {
+    this.accumulatedTime += deltaSeconds;
+    this.processTime += deltaSeconds;
+    this.cleanupTime += deltaSeconds;
+    
+    // Only run cargo updates on server
     if (this._netBus.isHost) {
-      console.log('🔬 CargoSystem: Starting install order processing on server');
-      // Process install orders every 500ms
-      setInterval(() => this.processInstallOrders(), 500);
+      if (this.processTime >= this.PROCESS_INTERVAL) {
+        this.processTime = 0;
+        this.processInstallOrders();
+      }
       
-      // Clean up expired cargo every 2 seconds
-      setInterval(() => this.cleanupExpiredCargo(), 2000);
+      if (this.cleanupTime >= this.CLEANUP_INTERVAL) {
+        this.cleanupTime = 0;
+        this.cleanupExpiredCargo();
+      }
       
-      // Auto-routing update every 1 second
-      setInterval(() => this.updateAutoRouting(), 1000);
+      if (this.accumulatedTime >= this.UPDATE_INTERVAL) {
+        this.accumulatedTime = 0;
+        this.updateAutoRouting();
+      }
     }
-    
-    
-    this.graphics = scene.add.graphics();
+  }
+
+  private initializeGraphics(): void {
+    this.graphics = this.scene.add.graphics();
     this.graphics.setDepth(2.5); // Above organelles so cargo is visible
     this.graphics.setVisible(true);
     
@@ -440,7 +467,14 @@ export class CargoSystem extends NetComponent {
   }
 
   getMyPlayerInventory(): Cargo[] {
-    return this.getPlayerInventory(this._netBus.localId);
+    const inventory = this.getPlayerInventory(this._netBus.localId);
+    const showLogs = Math.random() < 0.001; // don't Log more frequently for debugging
+    if (showLogs)
+      console.log(`🎯 Debug getMyPlayerInventory: localId=${this._netBus.localId}, inventory.length=${inventory.length}`);
+    if (inventory.length > 0 && showLogs) {
+      console.log(`🎯 Debug inventory cargo: ${inventory.map(c => `${c.id}(carriedBy=${c.carriedBy})`).join(', ')}`);
+    }
+    return inventory;
   }
 
   /**
@@ -452,18 +486,24 @@ export class CargoSystem extends NetComponent {
 
   @RunOnServer()
   pickup(hex: HexCoord, playerId: string): boolean {
+    console.log(`🎯 Debug pickup: hex=(${hex.q},${hex.r}), playerId=${playerId}`);
+    
     // Find cargo at hex that has a valid position (not carried)
     for (const cargo of Object.values(this.cargoState.cargo)) {
       if (this.isCargoAtPosition(cargo, hex)) {
+        console.log(`🎯 Debug pickup: Found cargo ${cargo.id} at hex, carriedBy=${cargo.carriedBy}`);
+        
         // Release any reserved seat when cargo is picked up
         this.releaseSeatReservation(cargo, `Picked up by player ${playerId}`);
         
         cargo.carriedBy = playerId;
         // Clear hex position when picked up - carried cargo doesn't have a meaningful hex location
         this.setCargoPosition(cargo, undefined);
+        console.log(`🎯 Debug pickup: Successfully picked up cargo ${cargo.id} by player ${playerId}`);
         return true;
       }
     }
+    console.log(`🎯 Debug pickup: No cargo found at hex (${hex.q},${hex.r})`);
     return false;
   }
 
@@ -489,23 +529,54 @@ export class CargoSystem extends NetComponent {
     return false;
   }
 
-  startCargoTransit(cargoId: string): boolean {
+  @RunOnServer()
+  startCargoTransit(cargoId: string, playerId?: string): boolean {
     const cargo = this.cargoState.cargo[cargoId];
-    if (cargo) {
-      cargo.isThrown = true;
-      return true;
+    if (!cargo) {
+      console.warn(`🎯 Cargo ${cargoId} not found for transit`);
+      return false;
     }
-    return false;
+    
+    console.log(`🎯 Debug startCargoTransit: cargoId=${cargoId}, playerId=${playerId}, cargo.carriedBy=${cargo.carriedBy}`);
+    
+    // If playerId is provided, validate that the player is actually carrying this cargo
+    if (playerId) {
+      if (cargo.carriedBy !== playerId) {
+        // Try to find cargo in player's inventory as fallback
+        const playerInventory = this.getPlayerInventory(playerId);
+        const cargoInInventory = playerInventory.find(c => c.id === cargoId);
+        
+        if (!cargoInInventory) {
+          console.warn(`🎯 Player ${playerId} is not carrying cargo ${cargoId} (cargo.carriedBy=${cargo.carriedBy}, not found in inventory)`);
+          return false;
+        } else {
+          console.log(`🎯 Found cargo ${cargoId} in player ${playerId} inventory despite carriedBy mismatch`);
+        }
+      }
+    }
+    
+    // Clear carried state and mark as thrown
+    cargo.carriedBy = undefined;
+    cargo.isThrown = true;
+    console.log(`🎯 Started cargo transit: ${cargoId} is now thrown and no longer carried`);
+    return true;
   }
 
+  @RunOnServer()
   endCargoTransit(cargoId: string, landingPos: HexCoord): boolean {
     const cargo = this.cargoState.cargo[cargoId];
-    if (cargo) {
-      cargo.isThrown = false;
-      this.setCargoPosition(cargo, landingPos);
-      return true;
+    if (!cargo) {
+      console.warn(`🎯 Cargo ${cargoId} not found for landing`);
+      return false;
     }
-    return false;
+    
+    cargo.isThrown = false;
+    this.setCargoPosition(cargo, landingPos);
+    console.log(`🎯 Ended cargo transit: ${cargoId} landed at (${landingPos.q}, ${landingPos.r})`);
+    
+    // Attempt auto-routing when cargo lands
+    this.tryStartAutoRouting(cargo);
+    return true;
   }
 
   renderCargo(): void {
@@ -514,9 +585,12 @@ export class CargoSystem extends NetComponent {
     this.graphics.clear();
     
     for (const cargo of Object.values(this.cargoState.cargo)) {
-      // Skip cargo that is carried by a player or has no position
-      if (cargo.carriedBy && !cargo.isNetworkControlled) continue;
-      if (!cargo.atHex) continue; // Skip cargo without valid position
+      // Skip cargo that is carried by a player (but not thrown cargo)
+      if (cargo.carriedBy && !cargo.isNetworkControlled && !cargo.isThrown) continue;
+      
+      // For thrown cargo, render at worldPos even if atHex is undefined
+      // For regular cargo, skip if no valid hex position
+      if (!cargo.isThrown && !cargo.atHex) continue;
 
       const color = cargo.currentType === 'vesicle' ? 0x00ff00 : 0x0066cc;
       this.graphics.fillStyle(color, 0.8);
@@ -923,7 +997,7 @@ export class CargoSystem extends NetComponent {
     return success;
   }
 
-  destroy() {
+  override destroy() {
     this.cargoState.cargo = {};
     
     // Clean up graphics

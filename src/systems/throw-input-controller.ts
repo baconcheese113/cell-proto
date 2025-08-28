@@ -79,11 +79,15 @@ export class ThrowInputController {
       });
       
       this.scene.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        console.log(`🎯 Pointer up detected: isAiming=${this.isAiming}, button=${pointer.button}`);
+        
         // Check if we were aiming (right button was down) and now releasing
         if (this.isAiming) {
           console.log("🎯 Right mouse up detected (while aiming)");
           pointer.event.preventDefault(); // Prevent browser context menu  
           this.executeThrow();
+        } else {
+          console.log("🎯 Right mouse up detected (but not aiming)");
         }
       });
     }
@@ -175,8 +179,10 @@ export class ThrowInputController {
     
     // Hold-to-aim mode for gamepad
     if (throwButtonPressed && !this.isAiming) {
+      console.log("🎯 Gamepad throw button pressed");
       this.startAiming();
     } else if (!throwButtonPressed && this.isAiming) {
+      console.log("🎯 Gamepad throw button released");
       this.executeThrow();
     }
     
@@ -250,11 +256,8 @@ export class ThrowInputController {
       return false;
     }
     
-    // For now, convert world position to approximate hex (this is a simplified conversion)
-    // TODO: Implement proper world-to-hex coordinate conversion
-    const aimX = aimTarget.x;
-    const aimY = aimTarget.y;
-    const targetHex = { q: Math.round(aimX / 32), r: Math.round(aimY / 32) }; // Approximate conversion
+    // Use proper world-to-hex coordinate conversion
+    const targetHex = this.worldRefs.hexGrid.worldToHex(aimTarget.x, aimTarget.y);
     
     // Calculate velocity based on charge level (higher charge = faster projectile)
     const baseVelocity = 3.0;
@@ -274,6 +277,11 @@ export class ThrowInputController {
     
     console.log(`🎯 ThrowSystem throwCargo result: ${success}`);
     
+    // MULTIPLAYER FIX: Reset client-side aiming state regardless of server result
+    // This ensures clients can throw multiple times even though throwCargo() only runs on server
+    this.throwSystem.cancelAiming();
+    console.log(`🎯 Client-side: Reset ThrowSystem aiming state after throw attempt`);
+    
     return success;
   }
 
@@ -281,7 +289,13 @@ export class ThrowInputController {
    * Start the aiming process
    */
   private startAiming(): void {
-    console.log("🎯 StartAiming called");
+    console.log(`🎯 StartAiming called: currently isAiming=${this.isAiming}`);
+    
+    // If already aiming, don't start again
+    if (this.isAiming) {
+      console.log("🎯 Already aiming, ignoring duplicate startAiming call");
+      return;
+    }
     
     // Check if player can throw (multiplayer-aware)
     if (!this.isCarryingSomething()) {
@@ -302,6 +316,7 @@ export class ThrowInputController {
     
     this.isAiming = true;
     this.aimStartTime = this.scene.time.now;
+    console.log(`🎯 Aiming started: isAiming=${this.isAiming}, aimStartTime=${this.aimStartTime}`);
     
     // Get initial aim position
     let initialTarget: Phaser.Math.Vector2;
@@ -383,6 +398,7 @@ export class ThrowInputController {
     
     // Reset state
     this.isAiming = false;
+    console.log(`🎯 Aiming reset: isAiming=${this.isAiming}`);
     
     // Reset cargo indicator position
     const player = this.playerActor;
