@@ -102,14 +102,14 @@ export class WebRTCTransport implements NetworkTransport {
   
   constructor(opts: {
     roomId: string;
-    signalingUrl?: string;
+    signalingUrl: string;
     iceServers?: RTCIceServer[];
   }) {
     this.localId = 'peer-1'; // crypto.randomUUID();
     this.isHost = false; // Will be set during room join/create
     this.roomId = opts.roomId;
     
-    const signalingUrl = opts.signalingUrl || "ws://localhost:8080";
+    const signalingUrl = opts.signalingUrl;
     const iceServers = opts.iceServers || [{ urls: "stun:stun.l.google.com:19302" }];
     
     this.pc = new RTCPeerConnection({ iceServers });
@@ -328,9 +328,17 @@ export class WebRTCTransport implements NetworkTransport {
  * Helper to create a WebRTC transport with Quick Join flow
  */
 export async function createQuickJoinWebRTC(roomId = "CELL01"): Promise<NetworkTransport> {
+  // Auto-detect signaling URL: use local if on localhost, otherwise production
+  const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const signalingUrl = isLocalhost 
+    ? "ws://localhost:8080" 
+    : "wss://cellproto-signaling.baconcheese113.workers.dev/ws";
+
+  console.log(`🌐 Using signaling server: ${signalingUrl}`);
+    
   const transport = new WebRTCTransport({ 
     roomId, 
-    signalingUrl: "ws://localhost:8080" 
+    signalingUrl
   });
   await transport.ready; // Ensure data channel is open
   return transport;
