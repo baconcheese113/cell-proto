@@ -5,9 +5,11 @@
  * For now, assumes constant external availability for a few species.
  */
 
-import type { HexGrid, HexCoord } from "../hex/hex-grid";
+import type { HexGrid, HexCoord, HexTile } from "../hex/hex-grid";
 import type { SpeciesId } from "../species/species-registry";
 import { MEMBRANE_PROTEIN_REGISTRY, type MembraneProtein, type TransporterProtein, type ReceptorProtein } from "./membrane-protein-registry";
+import { System } from "../systems/system";
+import type { NetBus } from "../network/net-bus";
 
 export interface MembraneTransporter {
   id: string;
@@ -32,13 +34,13 @@ export interface MembraneExchangeStats {
   totalExports: Partial<Record<SpeciesId, number>>; // species ID -> total exported
 }
 
-export class MembraneExchangeSystem {
+export class MembraneExchangeSystem extends System {
   private hexGrid: HexGrid;
   private membraneTransporters: Map<string, MembraneTransporter[]> = new Map(); // tile key -> transporters
   private stats: MembraneExchangeStats;
   
-  // Milestone 6: Installed membrane proteins
-  private installedProteins: Map<string, InstalledMembraneProtein> = new Map(); // tile key -> installed protein
+  // Milestone 6: Installed membrane proteins - using StateChannel for networking
+  private proteinState = this.stateChannel<{ installed: Record<string, InstalledMembraneProtein> }>('proteins', { installed: {} });
   
   // External concentrations (constant for now)
   private externalConcentrations: Partial<Record<SpeciesId, number>> = {
@@ -53,7 +55,9 @@ export class MembraneExchangeSystem {
     'LIGAND_GROWTH': 1.0 // Always present for now
   };
 
-  constructor(hexGrid: HexGrid) {
+  constructor(scene: Phaser.Scene, netBus: NetBus, hexGrid: HexGrid) {
+    super(scene, netBus, 'MembraneExchangeSystem', (deltaSeconds: number) => this.processExchange(deltaSeconds * 1000), { address: 'MembraneExchangeSystem' });
+    
     this.hexGrid = hexGrid;
     this.stats = {
       totalImports: {},
@@ -143,8 +147,8 @@ export class MembraneExchangeSystem {
       }
     }
 
-    // Process new membrane proteins (Milestone 6)
-    for (const [tileKey, installedProtein] of this.installedProteins) {
+    // Process new membrane proteins (Milestone 6) - using StateChannel
+    for (const [tileKey, installedProtein] of Object.entries(this.proteinState.installed)) {
       if (!installedProtein.isActive) continue;
 
       const [qStr, rStr] = tileKey.split(',');
@@ -164,7 +168,7 @@ export class MembraneExchangeSystem {
     }
   }
 
-  private applyTransporterFlux(tile: any, transporter: MembraneTransporter, deltaSeconds: number): void {
+  private applyTransporterFlux(tile: HexTile, transporter: MembraneTransporter, deltaSeconds: number): void {
     const { speciesId, fluxRate } = transporter;
     const fluxAmount = fluxRate * deltaSeconds;
     
@@ -199,7 +203,7 @@ export class MembraneExchangeSystem {
    * Milestone 8: Include glycosylation-based throughput multiplier
    */
   private applyTransporterProtein(
-    tile: any, 
+    tile: HexTile, 
     protein: TransporterProtein, 
     deltaSeconds: number, 
     installedProtein: InstalledMembraneProtein
@@ -239,7 +243,7 @@ export class MembraneExchangeSystem {
    * Milestone 6: Apply receptor protein effect (Task 5)
    */
   private applyReceptorProtein(
-    tile: any, 
+    tile: HexTile, 
     protein: ReceptorProtein, 
     deltaSeconds: number, 
     installedProtein: InstalledMembraneProtein
@@ -299,6 +303,7 @@ export class MembraneExchangeSystem {
 
   /**
    * Milestone 6: Install membrane protein (Task 7)
+   * Note: This method is called server-side only. Networking is handled by the calling system.
    */
   public installMembraneProtein(coord: HexCoord, proteinId: string): boolean {
     return this.installMembraneProteinWithGlycosylation(coord, proteinId, 'complete');
@@ -306,6 +311,7 @@ export class MembraneExchangeSystem {
 
   /**
    * Milestone 8: Install membrane protein with glycosylation status (Story 8.5)
+   * Note: This method is called server-side only. Networking is handled by the calling system.
    */
   public installMembraneProteinWithGlycosylation(
     coord: HexCoord, 
@@ -320,7 +326,7 @@ export class MembraneExchangeSystem {
     const tileKey = `${coord.q},${coord.r}`;
     
     // Task 2: Check if tile already has a protein installed
-    if (this.installedProteins.has(tileKey)) {
+    if (this.proteinState.installed[tileKey]) {
       console.warn(`Cannot install protein at (${coord.q}, ${coord.r}): membrane tile already occupied`);
       return false;
     }
@@ -335,13 +341,13 @@ export class MembraneExchangeSystem {
     const throughputMultiplier = glycosylationStatus === 'complete' ? 1.0 : 0.5;
 
     const instanceId = `${proteinId}-${Date.now()}`;
-    this.installedProteins.set(tileKey, {
+    this.proteinState.installed[tileKey] = {
       proteinId,
       instanceId,
       isActive: true,
       glycosylationStatus,
       throughputMultiplier
-    });
+    };
 
     console.log(`Installed ${protein.label} at (${coord.q}, ${coord.r}) with ${glycosylationStatus} glycosylation (${Math.round(throughputMultiplier * 100)}% throughput)`);
     return true;
@@ -352,7 +358,7 @@ export class MembraneExchangeSystem {
    */
   public uninstallMembraneProtein(coord: HexCoord): boolean {
     const tileKey = `${coord.q},${coord.r}`;
-    const installed = this.installedProteins.get(tileKey);
+    const installed = this.proteinState.installed[tileKey];
     
     if (!installed) {
       console.warn(`No protein installed at (${coord.q}, ${coord.r})`);
@@ -360,7 +366,7 @@ export class MembraneExchangeSystem {
     }
 
     const protein = MEMBRANE_PROTEIN_REGISTRY.getProtein(installed.proteinId);
-    this.installedProteins.delete(tileKey);
+    delete this.proteinState.installed[tileKey];
     
     console.log(`Uninstalled ${protein?.label || 'unknown protein'} from (${coord.q}, ${coord.r})`);
     return true;
@@ -371,7 +377,7 @@ export class MembraneExchangeSystem {
    */
   public getInstalledProtein(coord: HexCoord): MembraneProtein | null {
     const tileKey = `${coord.q},${coord.r}`;
-    const installed = this.installedProteins.get(tileKey);
+    const installed = this.proteinState.installed[tileKey];
     
     if (!installed) return null;
     
@@ -384,7 +390,7 @@ export class MembraneExchangeSystem {
    */
   public hasInstalledProtein(coord: HexCoord): boolean {
     const tileKey = `${coord.q},${coord.r}`;
-    return this.installedProteins.has(tileKey);
+    return !!this.proteinState.installed[tileKey];
   }
 
   // Milestone 6 Task 8: Future-proofing hooks

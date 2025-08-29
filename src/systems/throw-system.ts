@@ -1,815 +1,423 @@
 /**
- * Milestone 12 - Throw & Membrane Interactions v1
- * 
- * Handles throwing mechanics for transcripts and vesicles with:
- * - One carry slot that preserves TTL
- * - Hold-to-aim with arc preview
- * - Parabolic flight simulation
- * - Magnet capture to correct targets
- * - Membrane trampoline effects
- * 
- * Integration points:
- * - Uses existing TTL system from transcripts/vesicles
- * - Respects proximity requirements from tile-action-controller
- * - Integrates with existing FSMs via correct handoff events
+ * ThrowSystem - Projectile throwing with multiplayer support
+ * Replaces ThrowSystem with unified cargo types and networking
  */
 
-import type { WorldRefs, Transcript, Vesicle } from "../core/world-refs";
-import type { HexCoord } from "../hex/hex-grid";
-import { SystemObject } from "./system-object";
+import type { HexCoord } from '../hex/hex-grid';
+import { System } from './system';
+import { RunOnServer, Multicast } from '../network/decorators';
+import type { CargoSystem } from './cargo-system';
+import type { NetBus } from '@/network/net-bus';
 
-// Story 12.2: Throw input & aim configuration
-interface ThrowConfig {
-  // Aiming
-  aimHoldThreshold: number; // ms to hold before showing preview
-  maxThrowDistance: number; // maximum throw range in pixels
-  minThrowSpeed: number; // minimum throw speed
-  maxThrowSpeed: number; // maximum throw speed
-  
-  // Physics
-  gravity: number; // downward acceleration for arc
-  groundHeight: number; // cytosol "floor" level
-  
-  // Performance
-  maxActiveProjectiles: number; // performance budget
-  
-  // Speed gate
-  maxPlayerSpeedForThrow: number; // can't throw while dashing fast
-}
-
-// Story 12.3: Thrown cargo state
-export interface ThrownCargo {
+/**
+ * Projectile data for tracking thrown cargo
+ */
+interface Projectile {
+  /** Unique identifier */
   id: string;
-  type: 'transcript' | 'vesicle';
-  cargoId: string; // ID of the original transcript/vesicle
   
-  // Physics state
-  position: Phaser.Math.Vector2;
-  velocity: Phaser.Math.Vector2;
-  startPosition: Phaser.Math.Vector2; // Where the throw started from
-  ttlMs: number; // inherited from original cargo
+  /** Cargo being thrown */
+  cargoId: string;
   
-  // Original cargo data (preserved)
-  originalCargo: Transcript | Vesicle;
+  /** Start position */
+  startPos: HexCoord;
   
-  // Simulation
-  onGround: boolean;
-  bounceCount: number;
-}
-
-// Story 12.4: Magnet capture rules
-interface MagnetRule {
-  targetType: 'ER' | 'Golgi' | 'membrane';
-  cargoType: 'transcript' | 'vesicle';
-  cargoFilter?: (cargo: Transcript | Vesicle) => boolean;
-  radius: number; // capture radius in pixels
-  destFilter?: (hex: HexCoord) => boolean; // for membrane destination matching
-}
-
-// Story 12.2 & 12.7: Aiming state
-interface AimState {
-  isAiming: boolean;
+  /** Target position */
+  targetPos: HexCoord;
+  
+  /** Current position (interpolated) */
+  currentPos: { q: number; r: number };
+  
+  /** Throw velocity/power */
+  velocity: number;
+  
+  /** Time when throw started */
   startTime: number;
-  targetPosition: Phaser.Math.Vector2;
-  power: number; // 0.0 to 1.0
-  chargeLevel: number; // 0.0 to 1.0 charge level from hold time
-  showPreview: boolean;
+  
+  /** Expected flight duration */
+  duration: number;
+  
+  /** Player who threw it */
+  playerId: string;
 }
 
-export class ThrowSystem extends SystemObject {
-  private config: ThrowConfig;
-  private thrownCargos: Map<string, ThrownCargo> = new Map();
-  private nextThrownId = 1;
-  private isHost: boolean;
+/**
+ * Network events for throw system
+ */
+interface ThrowStartEvent {
+  projectileId: string;
+  cargoId: string;
+  playerId: string;
+  startPos: HexCoord;
+  targetPos: HexCoord;
+  velocity: number;
+  timestamp: number;
+}
+
+interface ThrowLandEvent {
+  projectileId: string;
+  cargoId: string;
+  playerId: string;
+  landingPos: HexCoord;
+  timestamp: number;
+}
+
+/**
+ * Networked projectile throwing system
+ */
+export class ThrowSystem extends System {
+  public override readonly systemName = 'ThrowSystem';
   
-  // Story 12.2: Aiming state
-  private aimState: AimState = {
-    isAiming: false,
-    startTime: 0,
-    targetPosition: new Phaser.Math.Vector2(),
-    power: 0,
-    chargeLevel: 0,
-    showPreview: false
-  };
+  // State channels for network replication
+  protected stateChannels = {
+    projectiles: 'broadcast'
+  } as const;
   
-  // Story 12.4: Magnet capture rules
-  private magnetRules: MagnetRule[] = [
-    {
-      targetType: 'ER',
-      cargoType: 'transcript',
-      radius: 40,
-      cargoFilter: (_cargo) => true // All transcripts can go to ER
-    },
-    {
-      targetType: 'Golgi',
-      cargoType: 'vesicle',
-      radius: 35,
-      cargoFilter: (cargo) => {
-        const vesicle = cargo as Vesicle;
-        return vesicle.glyco === 'partial'; // Only partially glycosylated vesicles
-      }
-    },
-    {
-      targetType: 'membrane',
-      cargoType: 'vesicle',
-      radius: 30,
-      cargoFilter: (cargo) => {
-        const vesicle = cargo as Vesicle;
-        return vesicle.glyco === 'complete'; // Only completed vesicles
-      },
-      destFilter: (_hex) => {
-        // Only capture at correct destination hex
-        // Will be implemented in Story 12.4
-        return true; // TODO: Check vesicle.destHex matches hex
-      }
-    }
-  ];
+  // Internal state
+  private projectiles = new Map<string, Projectile>();
+  private nextProjectileId = 0;
   
-  // Story 12.7: VFX objects
-  private aimPreviewGraphics?: Phaser.GameObjects.Graphics;
-  private cargoGraphics?: Phaser.GameObjects.Graphics;
+  // Aiming state for ThrowInputController
+  private isAiming = false;
+  private aimTarget: Phaser.Math.Vector2 | null = null;
+  private chargeLevel = 0; // 0.0 to 1.0
   
-  constructor(
-    scene: Phaser.Scene,
-    private worldRefs: WorldRefs,
-    private unifiedCargoSystem: any, // Will be properly typed when UnifiedCargoSystem is imported
-    isHost: boolean = true, // Default to true for standalone mode
-    config: Partial<ThrowConfig> = {}
-  ) {
-    super(scene, "ThrowSystem", (deltaSeconds: number) => this.update(deltaSeconds));
-    
-    this.isHost = isHost;
-    
-    // Default configuration
-    this.config = {
-      aimHoldThreshold: 200, // ms
-      maxThrowDistance: 500, // pixels - increased for better multiplayer throwing
-      minThrowSpeed: 100,
-      maxThrowSpeed: 400,
-      gravity: 300, // pixels/sec²
-      groundHeight: 0, // cytosol level
-      maxActiveProjectiles: 20,
-      maxPlayerSpeedForThrow: 150, // can't throw while dashing fast
-      ...config
-    };
-    
-    this.initializeGraphics();
-  }
-  
-  private initializeGraphics(): void {
-    // Story 12.7: Create graphics objects for VFX
-    this.aimPreviewGraphics = this.scene.add.graphics();
-    this.aimPreviewGraphics.setDepth(5);
-    this.worldRefs.cellRoot.add(this.aimPreviewGraphics);
-    
-    this.cargoGraphics = this.scene.add.graphics();
-    this.cargoGraphics.setDepth(4);
-    this.worldRefs.cellRoot.add(this.cargoGraphics);
-  }
-  
-  override update(deltaSeconds: number): void {
-    // Only run throw physics on the host; clients receive positions via network
-    if (this.isHost) {
-      this.updateThrownCargos(deltaSeconds);
-    }
-    this.renderVFX();
+  constructor(bus: NetBus, scene: Phaser.Scene, private cargoSystem: CargoSystem) {
+    super(scene, bus, 'ThrowSystem', (deltaSeconds: number) => this.update(deltaSeconds));
+    console.log('🎯 ThrowSystem initialized');
   }
   
   /**
-   * Story 12.1: Check if player has a carried item
+   * Update projectiles each frame
    */
-  public hasCarriedItem(): boolean {
-    return this.unifiedCargoSystem.isCarrying();
+  public override update(deltaSeconds: number): void {
+    this.updateProjectiles(deltaSeconds);
   }
   
   /**
-   * Story 12.1: Get currently carried item (unified interface)
+   * Throw cargo from one hex to another
    */
-  public getCarriedItem(): { type: 'transcript' | 'vesicle'; item: Transcript | Vesicle } | null {
-    const carriedCargo = this.unifiedCargoSystem.getCarriedCargo();
-    if (carriedCargo) {
-      return {
-        type: carriedCargo.type,
-        item: carriedCargo.item
-      };
-    }
-    return null;
-  }  /**
-   * Story 12.2: Start aiming (called on input down)
-   */
-  public startAiming(targetPosition: Phaser.Math.Vector2): boolean {
-    // Story 12.9: Proximity & safety rules
-    if (!this.hasCarriedItem()) {
-      this.worldRefs.showToast("Not carrying anything to throw");
+  @RunOnServer()
+  public throwCargo(
+    playerId: string, 
+    cargoId: string, 
+    startPos: HexCoord, 
+    targetPos: HexCoord, 
+    velocity: number = 5.0
+  ): boolean {
+    console.log(`🎯 Debug throwCargo: playerId=${playerId}, cargoId=${cargoId}, cargoSystem=${!!this.cargoSystem}`);
+    
+    if (!this.cargoSystem) {
+      console.warn('🎯 CargoSystem not available for throw');
       return false;
     }
     
-    // Story 12.2: Speed gate - can't throw while moving too fast
-    const playerBody = this.getPlayerPhysicsBody();
-    if (playerBody && playerBody.velocity.length() > this.config.maxPlayerSpeedForThrow) {
-      this.worldRefs.showToast("Moving too fast to throw accurately");
+    // Start cargo transit in cargo system with player validation
+    console.log(`🎯 About to call startCargoTransit with cargoId=${cargoId}, playerId=${playerId}`);
+    const transitResult = this.cargoSystem.startCargoTransit(cargoId, playerId);
+    console.log(`🎯 startCargoTransit result: ${transitResult}`);
+    
+    if (!transitResult) {
+      console.warn(`🎯 Failed to start transit for cargo ${cargoId}`);
       return false;
     }
     
-    this.aimState = {
-      isAiming: true,
-      startTime: this.scene.time.now,
-      targetPosition: targetPosition.clone(),
-      power: 0,
-      chargeLevel: 0,
-      showPreview: false
+    // Calculate flight duration based on distance and velocity
+    const distance = Math.sqrt(
+      Math.pow(targetPos.q - startPos.q, 2) + 
+      Math.pow(targetPos.r - startPos.r, 2)
+    );
+    const duration = Math.max(0.5, distance / velocity); // Minimum 0.5s flight time
+    
+    // Create projectile
+    const projectileId = this.generateProjectileId();
+    const projectile: Projectile = {
+      id: projectileId,
+      cargoId,
+      startPos,
+      targetPos,
+      currentPos: { q: startPos.q, r: startPos.r },
+      velocity,
+      startTime: Date.now(),
+      duration: duration * 1000, // Convert to milliseconds
+      playerId
     };
+    
+    this.projectiles.set(projectileId, projectile);
+    
+    // Broadcast throw start event
+    this.broadcastThrowStart({
+      projectileId,
+      cargoId,
+      playerId,
+      startPos,
+      targetPos,
+      velocity,
+      timestamp: projectile.startTime
+    });
+    
+    console.log(`🎯 Player ${playerId} threw cargo ${cargoId} from ${startPos.q},${startPos.r} to ${targetPos.q},${targetPos.r}`);
+    
+    // Reset aiming state after successful throw
+    this.isAiming = false;
+    this.aimTarget = null;
+    this.chargeLevel = 0;
+    console.log('🎯 ThrowSystem: Reset aiming state after successful throw');
     
     return true;
   }
   
   /**
-   * Story 12.2: Update aim target (called on input move)
+   * Get all active projectiles (for rendering)
+   */
+  public getProjectiles(): Projectile[] {
+    return Array.from(this.projectiles.values());
+  }
+  
+  /**
+   * Get projectile by ID
+   */
+  public getProjectile(projectileId: string): Projectile | null {
+    return this.projectiles.get(projectileId) || null;
+  }
+  
+  /**
+   * Check if cargo is currently being thrown
+   */
+  public isCargoInFlight(cargoId: string): boolean {
+    for (const projectile of this.projectiles.values()) {
+      if (projectile.cargoId === cargoId) {
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  /**
+   * Force land a projectile (emergency stop)
+   */
+  @RunOnServer()
+  public forceProjectileLanding(projectileId: string, landingPos: HexCoord): boolean {
+    const projectile = this.projectiles.get(projectileId);
+    if (!projectile) {
+      console.warn(`🎯 Projectile ${projectileId} not found for force landing`);
+      return false;
+    }
+    
+    return this.landProjectile(projectile, landingPos);
+  }
+  
+  // Private helper methods
+  
+  /**
+   * Update all projectiles
+   */
+  private updateProjectiles(_deltaSeconds: number): void {
+    const now = Date.now();
+    const landedProjectiles: Projectile[] = [];
+    
+    // Update each projectile
+    for (const projectile of this.projectiles.values()) {
+      const elapsed = now - projectile.startTime;
+      const progress = Math.min(1.0, elapsed / projectile.duration);
+      
+      // Interpolate position
+      projectile.currentPos.q = projectile.startPos.q + 
+        (projectile.targetPos.q - projectile.startPos.q) * progress;
+      projectile.currentPos.r = projectile.startPos.r + 
+        (projectile.targetPos.r - projectile.startPos.r) * progress;
+      
+      // Update cargo worldPos for rendering during flight
+      const cargo = this.cargoSystem.getCargo(projectile.cargoId);
+      if (cargo && cargo.isThrown) {
+        // Convert hex position to world position for rendering
+        cargo.worldPos = this.cargoSystem['worldRefs'].hexGrid.hexToWorld(projectile.currentPos);
+      }
+      
+      // Check if landed
+      if (progress >= 1.0) {
+        landedProjectiles.push(projectile);
+      }
+    }
+    
+    // Handle landed projectiles
+    for (const projectile of landedProjectiles) {
+      this.landProjectile(projectile, projectile.targetPos);
+    }
+  }
+  
+  /**
+   * Land a projectile at specified position
+   */
+  private landProjectile(projectile: Projectile, landingPos: HexCoord): boolean {
+    if (!this.cargoSystem) {
+      console.warn('🎯 CargoSystem not available for landing');
+      return false;
+    }
+    
+    // End cargo transit in cargo system
+    if (!this.cargoSystem.endCargoTransit(projectile.cargoId, landingPos)) {
+      console.warn(`🎯 Failed to end transit for cargo ${projectile.cargoId}`);
+      return false;
+    }
+    
+    // Remove projectile
+    this.projectiles.delete(projectile.id);
+    
+    // Broadcast landing event
+    this.broadcastThrowLand({
+      projectileId: projectile.id,
+      cargoId: projectile.cargoId,
+      playerId: projectile.playerId,
+      landingPos,
+      timestamp: Date.now()
+    });
+    
+    console.log(`🎯 Projectile ${projectile.id} landed at ${landingPos.q},${landingPos.r}`);
+    return true;
+  }
+  
+  /**
+   * Generate unique projectile ID
+   */
+  private generateProjectileId(): string {
+    return `projectile_${Date.now()}_${++this.nextProjectileId}`;
+  }
+  
+  /**
+   * Network event broadcasts
+   */
+  
+  @Multicast()
+  private broadcastThrowStart(event: ThrowStartEvent): void {
+    // Clients can use this to start visual effects, sounds, etc.
+    console.log(`🌐 Throw started: ${event.cargoId} by ${event.playerId}`);
+  }
+  
+  @Multicast()
+  private broadcastThrowLand(event: ThrowLandEvent): void {
+    // Clients can use this to show landing effects, sounds, etc.
+    console.log(`🌐 Throw landed: ${event.cargoId} at ${event.landingPos.q},${event.landingPos.r}`);
+  }
+  
+  /**
+   * Get throw system statistics
+   */
+  public getStats(): {
+    activeProjectiles: number;
+    totalThrows: number;
+  } {
+    return {
+      activeProjectiles: this.projectiles.size,
+      totalThrows: this.nextProjectileId
+    };
+  }
+  
+  /**
+   * Clear all projectiles (for cleanup/reset)
+   */
+  @RunOnServer()
+  public clearAllProjectiles(): void {
+    for (const projectile of this.projectiles.values()) {
+      // Return cargo to world at current position
+      const currentHex: HexCoord = {
+        q: Math.round(projectile.currentPos.q),
+        r: Math.round(projectile.currentPos.r)
+      };
+      
+      if (this.cargoSystem) {
+        this.cargoSystem.endCargoTransit(projectile.cargoId, currentHex);
+      }
+    }
+    
+    this.projectiles.clear();
+    console.log('🎯 Cleared all projectiles');
+  }
+  
+  /**
+   * Get system state for serialization
+   */
+  public getState(): { projectiles: Map<string, Projectile> } {
+    return {
+      projectiles: new Map(this.projectiles)
+    };
+  }
+  
+  /**
+   * Set system state from deserialization
+   */
+  public setState(state: { projectiles: Map<string, Projectile> }): void {
+    this.projectiles = new Map(state.projectiles);
+  }
+  
+  // Methods for ThrowInputController integration
+  
+  /**
+   * Update the aiming target position
    */
   public updateAimTarget(targetPosition: Phaser.Math.Vector2): void {
-    if (!this.aimState.isAiming) return;
-    
-    this.aimState.targetPosition.copy(targetPosition);
-    
-    // Calculate power based on distance from player
-    const playerPos = this.getPlayerPosition();
-    const distance = Phaser.Math.Distance.BetweenPoints(playerPos, targetPosition);
-    const clampedDistance = Math.min(distance, this.config.maxThrowDistance);
-    this.aimState.power = clampedDistance / this.config.maxThrowDistance;
-    
-    // Show preview after hold threshold
-    const holdTime = this.scene.time.now - this.aimState.startTime;
-    this.aimState.showPreview = holdTime >= this.config.aimHoldThreshold;
+    this.aimTarget = targetPosition.clone();
   }
   
   /**
-   * Update charge level (called continuously during aiming)
+   * Get current aim target
+   */
+  public getAimTarget(): Phaser.Math.Vector2 | null {
+    return this.aimTarget;
+  }
+  
+  /**
+   * Update the charge level for the throw (0.0 to 1.0)
    */
   public updateChargeLevel(chargeLevel: number): void {
-    if (!this.aimState.isAiming) return;
-    this.aimState.chargeLevel = Math.max(0, Math.min(1, chargeLevel));
+    this.chargeLevel = Math.max(0, Math.min(1, chargeLevel));
   }
   
   /**
-   * Story 12.2: Execute throw (called on input up)
+   * Start aiming mode for a player
    */
-  public executeThrow(): boolean {
-    if (!this.aimState.isAiming) return false;
+  public startAiming(initialTarget: Phaser.Math.Vector2): boolean {
+    console.log(`🎯 ThrowSystem.startAiming called: currentlyAiming=${this.isAiming}`);
     
-    const carriedItem = this.getCarriedItem();
-    if (!carriedItem) return false;
-    
-    // Story 12.3: Create thrown projectile using the original cargo (not a copy)
-    const thrownCargo = this.createThrownCargo(carriedItem);
-    if (!thrownCargo) return false;
-    
-    // Mark the original cargo as thrown and clear carried state
-    carriedItem.item.isCarried = false;
-    carriedItem.item.isThrown = true;
-    
-    // Move from carried arrays to world collections so it gets serialized
-    if (carriedItem.type === 'transcript') {
-      const transcriptIndex = this.worldRefs.carriedTranscripts.findIndex(t => t.id === carriedItem.item.id);
-      if (transcriptIndex !== -1) {
-        this.worldRefs.carriedTranscripts.splice(transcriptIndex, 1);
-        this.worldRefs.transcripts.set(carriedItem.item.id, carriedItem.item as any);
-      }
-    } else if (carriedItem.type === 'vesicle') {
-      const vesicleIndex = this.worldRefs.carriedVesicles.findIndex(v => v.id === carriedItem.item.id);
-      if (vesicleIndex !== -1) {
-        this.worldRefs.carriedVesicles.splice(vesicleIndex, 1);
-        this.worldRefs.vesicles.set(carriedItem.item.id, carriedItem.item as any);
-      }
+    if (this.isAiming) {
+      console.log('🎯 ThrowSystem: Already aiming, returning false');
+      return false; // Already aiming
     }
     
-    // Clear the unified cargo system
-    this.unifiedCargoSystem.clearCarriedCargo();
-    
-    // Reset aim state
-    this.aimState.isAiming = false;
-    this.aimState.showPreview = false;
-    
-    this.worldRefs.showToast(`Threw ${carriedItem.type}`);
+    this.isAiming = true;
+    this.aimTarget = initialTarget.clone();
+    this.chargeLevel = 0;
+    console.log('🎯 Started aiming mode in ThrowSystem');
     return true;
   }
   
   /**
-   * Story 12.2: Cancel aiming
+   * Cancel aiming mode
    */
   public cancelAiming(): void {
-    console.log(`🎯 ThrowSystem: cancelAiming called, current state - isAiming: ${this.aimState.isAiming}, showPreview: ${this.aimState.showPreview}`);
-    this.aimState.isAiming = false;
-    this.aimState.showPreview = false;
-    
-    // Immediately clear the graphics to hide aiming indicators
-    if (this.aimPreviewGraphics) {
-      this.aimPreviewGraphics.clear();
-    }
-    if (this.cargoGraphics) {
-      this.cargoGraphics.clear();
-    }
-    
-    console.log(`🎯 ThrowSystem: Aiming state and graphics cleared`);
+    this.isAiming = false;
+    this.aimTarget = null;
+    this.chargeLevel = 0;
+    console.log('🎯 Cancelled aiming mode');
   }
   
   /**
-   * Story 12.3: Create thrown cargo projectile
+   * Execute the throw based on current aim and charge
    */
-  private createThrownCargo(carriedItem: { type: 'transcript' | 'vesicle'; item: Transcript | Vesicle }): ThrownCargo | null {
-    // Story 12.3: Performance budget check
-    if (this.thrownCargos.size >= this.config.maxActiveProjectiles) {
-      this.worldRefs.showToast("Too many active throws");
-      return null;
-    }
-
-    const playerPos = this.getPlayerPosition();
-
-    // Calculate throw velocity based on charge level
-    const direction = new Phaser.Math.Vector2(
-      this.aimState.targetPosition.x - playerPos.x,
-      this.aimState.targetPosition.y - playerPos.y
-    ).normalize();
-
-    // Use charge level for speed calculation (minimum 20% power even at 0 charge)
-    const effectivePower = Math.max(0.2, this.aimState.chargeLevel);
-    const speed = Phaser.Math.Linear(
-      this.config.minThrowSpeed,
-      this.config.maxThrowSpeed,
-      effectivePower
-    );
-
-    const velocity = direction.scale(speed);
-
-    // Use the original cargo directly (no copy needed)
-    const thrownCargo: ThrownCargo = {
-      id: `thrown_${this.nextThrownId++}`,
-      type: carriedItem.type,
-      cargoId: carriedItem.item.id,
-      position: playerPos.clone(),
-      velocity: velocity,
-      startPosition: playerPos.clone(), // Store where the throw started
-      ttlMs: carriedItem.type === 'transcript' 
-        ? (carriedItem.item as Transcript).ttlSeconds * 1000
-        : (carriedItem.item as Vesicle).ttlMs,
-      originalCargo: carriedItem.item, // Reference original, not copy
-      onGround: false,
-      bounceCount: 0
-    };
-
-    this.thrownCargos.set(thrownCargo.id, thrownCargo);
-    return thrownCargo;
-  }
-
-  /**
-   * Check if a position is outside the hex grid boundaries
-   */
-  private isOutsideGrid(position: Phaser.Math.Vector2): boolean {
-    return !this.worldRefs.hexGrid.getTileAtWorld(position.x, position.y);
-  }
-
-  /**
-   * Check if thrown cargo has reached maximum travel distance
-   */
-  private isMaxDistanceReached(cargo: ThrownCargo): boolean {
-    const travelDistance = Phaser.Math.Distance.BetweenPoints(cargo.startPosition, cargo.position);
-    return travelDistance >= this.config.maxThrowDistance;
-  }
-
-  /**
-   * Story 12.3: Update thrown cargo physics
-   */
-  private updateThrownCargos(deltaSeconds: number): void {
-    for (const [id, cargo] of this.thrownCargos.entries()) {
-      // Update TTL
-      cargo.ttlMs -= deltaSeconds * 1000;
-      
-      if (cargo.ttlMs <= 0) {
-        this.expireThrownCargo(cargo);
-        this.thrownCargos.delete(id);
-        continue;
-      }
-      
-      // Skip physics if on ground
-      if (cargo.onGround) continue;
-      
-      // For top-down cell view: Move in straight line (no gravity)
-      cargo.position.x += cargo.velocity.x * deltaSeconds;
-      cargo.position.y += cargo.velocity.y * deltaSeconds;
-
-      // Update the original cargo's worldPos to match thrown position for network sync
-      cargo.originalCargo.worldPos.copy(cargo.position);
-
-      // Check if cargo has hit hex grid boundaries or traveled far enough
-      if (this.isOutsideGrid(cargo.position) || this.isMaxDistanceReached(cargo)) {
-        // Land at current position
-        cargo.onGround = true;
-        cargo.velocity.set(0, 0);
-        
-        // If outside grid, move back to the nearest valid hex tile
-        let landingPosition = cargo.position.clone();
-        if (this.isOutsideGrid(cargo.position)) {
-          // Find the nearest hex tile that's inside the grid
-          const nearestHex = this.worldRefs.hexGrid.worldToHex(cargo.position.x, cargo.position.y);
-          let validHex = nearestHex;
-          
-          // Search for the nearest valid hex in a spiral pattern
-          for (let radius = 1; radius <= 5; radius++) {
-            let found = false;
-            for (let q = -radius; q <= radius && !found; q++) {
-              for (let r = Math.max(-radius, -q - radius); r <= Math.min(radius, -q + radius) && !found; r++) {
-                const testHex = { q: nearestHex.q + q, r: nearestHex.r + r };
-                if (this.worldRefs.hexGrid.getTile(testHex)) {
-                  validHex = testHex;
-                  found = true;
-                }
-              }
-            }
-            if (found) break;
-          }
-          
-          landingPosition = this.worldRefs.hexGrid.hexToWorld(validHex);
-        } else {
-          // Snap to nearest hex tile within grid
-          const nearestHex = this.worldRefs.hexGrid.worldToHex(cargo.position.x, cargo.position.y);
-          landingPosition = this.worldRefs.hexGrid.hexToWorld(nearestHex);
-        }
-        
-        cargo.position = landingPosition.clone();
-        
-        // Restore cargo to world for pickup
-        this.restoreCargoToWorld(cargo);
-        
-        // Story 12.4: Check for magnet capture when landing
-        this.checkMagnetCapture(cargo);
-        
-        // Remove from thrown cargo collection since it's now restored to world
-        this.thrownCargos.delete(id);
-      } else {
-        // Story 12.4: Check for mid-air magnet capture
-        this.checkMagnetCapture(cargo);
-      }
-    }
-  }
-  
-  /**
-   * Story 12.4: Check if thrown cargo can be captured by nearby targets
-   */
-  private checkMagnetCapture(cargo: ThrownCargo): void {
-    for (const rule of this.magnetRules) {
-      if (rule.cargoType !== cargo.type) continue;
-      if (rule.cargoFilter && !rule.cargoFilter(cargo.originalCargo)) continue;
-      
-      const targets = this.findTargetsOfType(rule.targetType);
-      
-      for (const target of targets) {
-        const distance = Phaser.Math.Distance.BetweenPoints(cargo.position, target.worldPos);
-        
-        if (distance <= rule.radius) {
-          // Additional filtering for membrane destinations
-          if (rule.targetType === 'membrane' && rule.destFilter) {
-            const vesicle = cargo.originalCargo as Vesicle;
-            if (!rule.destFilter(target.coord) || 
-                !this.coordsEqual(vesicle.destHex, target.coord)) {
-              continue; // Wrong membrane destination
-            }
-          }
-          
-          // Check line of sight (simple version - no obstacles for now)
-          if (this.hasLineOfSight(cargo.position, target.worldPos)) {
-            this.captureCargo(cargo, target, rule.targetType);
-            return;
-          }
-        }
-      }
-    }
-  }
-  
-  /**
-   * Story 12.4: Execute cargo capture and handoff to correct system
-   */
-  private captureCargo(cargo: ThrownCargo, target: any, targetType: string): void {
-    // Play capture VFX
-    this.playCaptureVFX(cargo.position);
-    
-    // Restore cargo to original state for handoff
-    const originalCargo = cargo.originalCargo;
-    originalCargo.isCarried = false;
-    originalCargo.atHex = target.coord;
-    originalCargo.worldPos = target.worldPos.clone();
-    
-    // Handoff to appropriate system
-    switch (targetType) {
-      case 'ER':
-        if (cargo.type === 'transcript') {
-          this.worldRefs.transcripts.set(originalCargo.id, originalCargo as Transcript);
-          // The existing ER system will pick this up automatically
-        }
-        break;
-        
-      case 'Golgi':
-        if (cargo.type === 'vesicle') {
-          const vesicle = originalCargo as Vesicle;
-          vesicle.state = 'QUEUED_GOLGI';
-          vesicle.processingTimer = 2.0; // Standard Golgi processing time
-          this.worldRefs.vesicles.set(vesicle.id, vesicle);
-        }
-        break;
-        
-      case 'membrane':
-        if (cargo.type === 'vesicle') {
-          const vesicle = originalCargo as Vesicle;
-          vesicle.state = 'INSTALLING';
-          vesicle.processingTimer = 2.0; // Standard installation time
-          this.worldRefs.vesicles.set(vesicle.id, vesicle);
-        }
-        break;
+  public executeThrow(): boolean {
+    if (!this.isAiming || !this.aimTarget || !this.cargoSystem) {
+      console.warn('🎯 Cannot execute throw: not aiming or missing target/cargo system');
+      return false;
     }
     
-    // Remove thrown cargo
-    this.thrownCargos.delete(cargo.id);
+    // TODO: Get player position and cargo from CargoSystem
+    // For now, this is a placeholder that resets aiming state
+    console.log(`🎯 Executing throw to (${this.aimTarget.x}, ${this.aimTarget.y}) with charge ${this.chargeLevel}`);
     
-    // Feedback
-    this.worldRefs.showToast(`Captured by ${targetType}`);
-  }
-  
-  /**
-   * Story 12.3: Handle cargo expiry with VFX and restore to world
-   */
-  private expireThrownCargo(cargo: ThrownCargo): void {
-    // Story 12.7: Play fizzle VFX
-    this.playExpireVFX(cargo.position);
+    // Reset aiming state
+    this.cancelAiming();
     
-    // Restore cargo to world at landing position
-    this.restoreCargoToWorld(cargo);
-  }
-
-  /**
-   * Restore thrown cargo to the world as pickupable cargo
-   */
-  private restoreCargoToWorld(thrownCargo: ThrownCargo): void {
-    const landingHex = this.worldRefs.hexGrid.worldToHex(thrownCargo.position.x, thrownCargo.position.y);
-    const worldPos = this.worldRefs.hexGrid.hexToWorld(landingHex);
-    
-    // Use the original cargo reference with preserved state
-    const originalCargo = thrownCargo.originalCargo;
-    
-    if (thrownCargo.type === 'transcript') {
-      const transcript = originalCargo as Transcript;
-      
-      // Restore transcript to world position, preserving all original state
-      transcript.isCarried = false;
-      transcript.isThrown = false; // Clear thrown state
-      transcript.atHex = { q: landingHex.q, r: landingHex.r };
-      transcript.worldPos = worldPos.clone();
-      transcript.ttlSeconds = thrownCargo.ttlMs / 1000; // Update TTL from throw
-      // All other state (state, glycosylationState, processingTimer, etc.) preserved from copy
-      
-      // Ensure it's in the world collection
-      this.worldRefs.transcripts.set(transcript.id, transcript);
-      
-      // Remove from carried collection if it was there
-      const carriedIndex = this.worldRefs.carriedTranscripts.findIndex(t => t.id === transcript.id);
-      if (carriedIndex !== -1) {
-        this.worldRefs.carriedTranscripts.splice(carriedIndex, 1);
-      }
-    } else {
-      const vesicle = originalCargo as Vesicle;
-      
-      // Restore vesicle to world position, preserving all original state
-      vesicle.isCarried = false;
-      vesicle.isThrown = false; // Clear thrown state
-      vesicle.atHex = { q: landingHex.q, r: landingHex.r };
-      vesicle.worldPos = worldPos.clone();
-      vesicle.ttlMs = thrownCargo.ttlMs; // Update TTL from throw
-      // All other state (state, glyco, processingTimer, routeCache, etc.) preserved from copy
-      
-      // Ensure it's in the world collection
-      this.worldRefs.vesicles.set(vesicle.id, vesicle);
-      
-      // Remove from carried collection if it was there
-      const carriedIndex = this.worldRefs.carriedVesicles.findIndex(v => v.id === vesicle.id);
-      if (carriedIndex !== -1) {
-        this.worldRefs.carriedVesicles.splice(carriedIndex, 1);
-      }
-    }
-  }
-  
-  /**
-   * Story 12.7: Render aim preview and cargo visuals
-   */
-  private renderVFX(): void {
-    if (!this.aimPreviewGraphics || !this.cargoGraphics) return;
-    
-    this.aimPreviewGraphics.clear();
-    this.cargoGraphics.clear();
-    
-    // Render aim preview
-    if (this.aimState.showPreview && this.aimState.isAiming) {
-      this.renderAimPreview();
-    }
-    
-    // Render thrown cargos
-    this.renderThrownCargos();
-  }
-  
-  /**
-   * Story 12.7: Render aim preview arc
-   */
-  private renderAimPreview(): void {
-    if (!this.aimPreviewGraphics) return;
-    
-    const playerPos = this.getPlayerPosition();
-    const direction = new Phaser.Math.Vector2(
-      this.aimState.targetPosition.x - playerPos.x,
-      this.aimState.targetPosition.y - playerPos.y
-    ).normalize();
-
-    // Use charge level for speed calculation (minimum 20% power even at 0 charge)
-    const effectivePower = Math.max(0.2, this.aimState.chargeLevel);
-    const speed = Phaser.Math.Linear(
-      this.config.minThrowSpeed,
-      this.config.maxThrowSpeed,
-      effectivePower
-    );
-    
-    const velocity = direction.scale(speed);
-    
-    // Calculate arc points with boundary checking
-    const arcPoints: Phaser.Math.Vector2[] = [];
-    const steps = 20;
-    const timeStep = 0.1;
-    
-    for (let i = 0; i <= steps; i++) {
-      const t = i * timeStep;
-      const x = playerPos.x + velocity.x * t;
-      const y = playerPos.y + velocity.y * t; // Straight line for top-down view
-      
-      // Check if we've hit the hex grid boundary
-      if (this.isOutsideGrid(new Phaser.Math.Vector2(x, y))) {
-        break; // Stop preview at boundary
-      }
-      
-      // Check if we've reached max throw distance
-      const travelDistance = Phaser.Math.Distance.BetweenPoints(playerPos, { x, y });
-      if (travelDistance >= this.config.maxThrowDistance) {
-        arcPoints.push(new Phaser.Math.Vector2(x, y));
-        break; // Stop at max distance
-      }
-      
-      arcPoints.push(new Phaser.Math.Vector2(x, y));
-    }
-    
-    // Render arc with charge-based styling
-    if (arcPoints.length > 1) {
-      const carriedItem = this.getCarriedItem();
-      const baseColor = carriedItem?.type === 'transcript' ? 0xff4444 : 0x4444ff;
-      
-      // Vary line thickness and alpha based on charge level
-      const lineWidth = 2 + (this.aimState.chargeLevel * 3); // 2-5px based on charge
-      const alpha = 0.5 + (this.aimState.chargeLevel * 0.4); // 0.5-0.9 alpha based on charge
-      
-      this.aimPreviewGraphics.lineStyle(lineWidth, baseColor, alpha);
-      this.aimPreviewGraphics.beginPath();
-      this.aimPreviewGraphics.moveTo(arcPoints[0].x, arcPoints[0].y);
-      
-      for (let i = 1; i < arcPoints.length; i++) {
-        this.aimPreviewGraphics.lineTo(arcPoints[i].x, arcPoints[i].y);
-      }
-      
-      this.aimPreviewGraphics.strokePath();
-      
-      // Landing marker with charge-based size
-      if (arcPoints.length > 0) {
-        const landingPoint = arcPoints[arcPoints.length - 1];
-        const markerSize = 6 + (this.aimState.chargeLevel * 8); // 6-14px based on charge
-        
-        this.aimPreviewGraphics.lineStyle(0, 0, 0);
-        this.aimPreviewGraphics.fillStyle(baseColor, alpha);
-        this.aimPreviewGraphics.fillCircle(landingPoint.x, landingPoint.y, markerSize);
-      }
-    }
-    
-    // Power indicator at aim position
-    this.aimPreviewGraphics.lineStyle(0, 0, 0);
-    this.aimPreviewGraphics.fillStyle(0xffffff, 0.3 + this.aimState.power * 0.4);
-    const radius = 5 + this.aimState.power * 10;
-    this.aimPreviewGraphics.fillCircle(
-      this.aimState.targetPosition.x, 
-      this.aimState.targetPosition.y, 
-      radius
-    );
-  }
-  
-  /**
-   * Story 12.7: Render thrown cargo objects
-   */
-  private renderThrownCargos(): void {
-    if (!this.cargoGraphics) return;
-    
-    for (const cargo of this.thrownCargos.values()) {
-      const color = cargo.type === 'transcript' ? 0xff4444 : 0x4444ff;
-      const size = cargo.type === 'transcript' ? 6 : 8;
-      
-      // Cargo body
-      this.cargoGraphics.lineStyle(1, color, 0.8);
-      this.cargoGraphics.fillStyle(color, 0.6);
-      this.cargoGraphics.fillCircle(cargo.position.x, cargo.position.y, size);
-      this.cargoGraphics.strokeCircle(cargo.position.x, cargo.position.y, size);
-      
-      // Motion trail if moving
-      if (!cargo.onGround && cargo.velocity.lengthSq() > 0) {
-        const trailLength = Math.min(cargo.velocity.length() * 0.1, 20);
-        const trailDir = cargo.velocity.clone().normalize().scale(-trailLength);
-        
-        this.cargoGraphics.lineStyle(2, color, 0.3);
-        this.cargoGraphics.lineBetween(
-          cargo.position.x, cargo.position.y,
-          cargo.position.x + trailDir.x, cargo.position.y + trailDir.y
-        );
-      }
-    }
-  }
-  
-  // Helper methods
-  private getPlayerPosition(): Phaser.Math.Vector2 {
-    // Assuming player is accessible through scene or worldRefs
-    // This will need to be adapted based on actual player access pattern
-    const player = (this.scene as any).playerActor; // Adjust as needed
-    return player ? player.getWorldPosition() : new Phaser.Math.Vector2(0, 0);
-  }
-  
-  private getPlayerPhysicsBody(): Phaser.Physics.Arcade.Body | null {
-    const player = (this.scene as any).playerActor;
-    return player ? player.getPhysicsBody() : null;
-  }
-  
-  private findTargetsOfType(targetType: string): Array<{ coord: HexCoord; worldPos: Phaser.Math.Vector2 }> {
-    const targets: Array<{ coord: HexCoord; worldPos: Phaser.Math.Vector2 }> = [];
-    
-    // Find organelles of the specified type
-    for (const organelle of this.worldRefs.organelleSystem.getAllOrganelles()) {
-      if (organelle.type === targetType.toLowerCase()) {
-        targets.push({
-          coord: organelle.coord,
-          worldPos: this.worldRefs.hexGrid.hexToWorld(organelle.coord)
-        });
-      }
-    }
-    
-    // For membrane targets, add all membrane tiles
-    if (targetType === 'membrane') {
-      for (const tile of this.worldRefs.hexGrid.getMembraneTiles()) {
-        targets.push({
-          coord: tile.coord,
-          worldPos: tile.worldPos.clone()
-        });
-      }
-    }
-    
-    return targets;
-  }
-  
-  private hasLineOfSight(_from: Phaser.Math.Vector2, _to: Phaser.Math.Vector2): boolean {
-    // Simple LoS check - no obstacles for now
-    // Could be enhanced to check for organelles blocking the path
+    // TODO: Actually execute the throw using existing throwCargo method
     return true;
-  }
-  
-  private coordsEqual(a: HexCoord, b: HexCoord): boolean {
-    return a.q === b.q && a.r === b.r;
-  }
-  
-  private playCaptureVFX(position: Phaser.Math.Vector2): void {
-    // Story 12.7: Capture flash effect
-    const flash = this.scene.add.circle(position.x, position.y, 15, 0xffffff, 0.8);
-    flash.setDepth(6);
-    this.worldRefs.cellRoot.add(flash);
-    
-    this.scene.tweens.add({
-      targets: flash,
-      scaleX: 2,
-      scaleY: 2,
-      alpha: 0,
-      duration: 200,
-      ease: "Power2",
-      onComplete: () => flash.destroy()
-    });
-  }
-  
-  private playExpireVFX(position: Phaser.Math.Vector2): void {
-    // Story 12.7: Fizzle effect for expired cargo
-    const fizzle = this.scene.add.circle(position.x, position.y, 8, 0xffaa44, 0.6);
-    fizzle.setDepth(6);
-    this.worldRefs.cellRoot.add(fizzle);
-    
-    this.scene.tweens.add({
-      targets: fizzle,
-      scaleX: 0.1,
-      scaleY: 0.1,
-      alpha: 0,
-      duration: 300,
-      ease: "Back.easeIn",
-      onComplete: () => fizzle.destroy()
-    });
   }
 }

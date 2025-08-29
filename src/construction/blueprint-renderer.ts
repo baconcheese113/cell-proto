@@ -8,18 +8,22 @@ import Phaser from "phaser";
 import type { Blueprint } from "./blueprint-system";
 import { BlueprintSystem } from "./blueprint-system";
 import { CONSTRUCTION_RECIPES } from "./construction-recipes";
+import { BlueprintProgressUtils } from "./base-blueprint";
+import type { HexCoord, HexGrid } from "../hex/hex-grid";
 
 export class BlueprintRenderer {
   private scene: Phaser.Scene;
   private blueprintSystem: BlueprintSystem;
+  private hexGrid: HexGrid;
   private graphics: Phaser.GameObjects.Graphics;
   private hexSize: number;
-  private textObjects: Map<string, Phaser.GameObjects.Text> = new Map(); // Track text objects
-  private parentContainer?: Phaser.GameObjects.Container; // HOTFIX: Support for cellRoot parenting
+  private textObjects: Map<string, Phaser.GameObjects.Text> = new Map();
+  private parentContainer?: Phaser.GameObjects.Container;
 
-  constructor(scene: Phaser.Scene, blueprintSystem: BlueprintSystem, hexSize: number, parentContainer?: Phaser.GameObjects.Container) {
+  constructor(scene: Phaser.Scene, blueprintSystem: BlueprintSystem, hexGrid: HexGrid, hexSize: number, parentContainer?: Phaser.GameObjects.Container) {
     this.scene = scene;
     this.blueprintSystem = blueprintSystem;
+    this.hexGrid = hexGrid;
     this.hexSize = hexSize;
     this.parentContainer = parentContainer;
     this.graphics = scene.add.graphics();
@@ -38,7 +42,15 @@ export class BlueprintRenderer {
     this.textObjects.forEach(text => text.destroy());
     this.textObjects.clear();
 
-    const blueprints = this.blueprintSystem.getAllBlueprints();
+    // Safety check: ensure blueprint system is available
+    if (!this.blueprintSystem) {
+      console.warn('BlueprintRenderer: blueprintSystem not yet initialized');
+      return;
+    }
+
+    // Get blueprints from the blueprint system
+    const blueprints: Blueprint[] = this.blueprintSystem.getAllBlueprints();
+    
     for (const blueprint of blueprints) {
       this.renderBlueprint(blueprint);
     }
@@ -58,16 +70,15 @@ export class BlueprintRenderer {
     this.renderFootprintOutline(footprintTiles, recipe.color || 0x4a90e2);
     
     // Render progress bar at centroid
-    this.renderProgressBar(blueprint, centroid, recipe);
+    this.renderProgressBar(blueprint, centroid);
   }
 
-  private renderFootprintOutline(footprintTiles: any[], color: number): void {
+  private renderFootprintOutline(footprintTiles: HexCoord[], color: number): void {
     this.graphics.lineStyle(2, color, 0.8);
     
     for (const tileCoord of footprintTiles) {
       // Get tile from hex grid to get world position
-      const hexGrid = (this.scene as any).hexGrid; // Access hex grid from scene
-      const tile = hexGrid?.getTile({ q: tileCoord.q, r: tileCoord.r });
+      const tile = this.hexGrid?.getTile({ q: tileCoord.q, r: tileCoord.r });
       
       if (tile) {
         this.drawDashedHexagon(tile.worldPos.x, tile.worldPos.y, this.hexSize, color);
@@ -135,16 +146,15 @@ export class BlueprintRenderer {
     }
   }
 
-  private calculateCentroid(footprintTiles: any[]): { x: number; y: number } {
+  private calculateCentroid(footprintTiles: HexCoord[]): { x: number; y: number } {
     if (footprintTiles.length === 0) return { x: 0, y: 0 };
 
-    const hexGrid = (this.scene as any).hexGrid;
     let totalX = 0;
     let totalY = 0;
     let validTiles = 0;
 
     for (const tileCoord of footprintTiles) {
-      const tile = hexGrid?.getTile({ q: tileCoord.q, r: tileCoord.r });
+      const tile = this.hexGrid?.getTile({ q: tileCoord.q, r: tileCoord.r });
       if (tile) {
         totalX += tile.worldPos.x;
         totalY += tile.worldPos.y;
@@ -157,9 +167,8 @@ export class BlueprintRenderer {
       : { x: 0, y: 0 };
   }
 
-  private renderProgressBar(blueprint: Blueprint, centroid: { x: number; y: number }, _recipe: any): void {
-    const totalCost = CONSTRUCTION_RECIPES.getTotalCost(blueprint.recipeId);
-    const progress = blueprint.totalProgress / totalCost;
+  private renderProgressBar(blueprint: Blueprint, centroid: { x: number; y: number }): void {
+    const progress = BlueprintProgressUtils.calculateOverallProgress(blueprint);
     
     const barWidth = 40;
     const barHeight = 6;

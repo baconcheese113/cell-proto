@@ -54,6 +54,18 @@ The codebase uses a **revolutionary consolidated system architecture** that elim
 ### **Hexagonal Grid System**
 - **`src/hex/hex-grid.ts`**: Complete hexagonal grid implementation (1,000+ lines) - coordinate conversion, neighbor finding, membrane detection, tile management
 
+### **Networking & Multiplayer Systems (New Architecture)**
+- **`src/network/net-bus.ts`**: Message bus for routing decorated methods to transport layer
+- **`src/network/decorators.ts`**: @RunOnServer and @Multicast decorators for network method routing
+- **`src/network/net-entity.ts`**: Base NetComponent class with stateChannel for automatic state replication
+- **`src/network/transport.ts`**: Transport layer implementations including LoopbackTransport for peer-to-peer communication
+- **`src/network/client-prediction.ts`**: Client-side prediction and lag compensation systems
+- **`src/network/room-ui.ts`**: Multiplayer room management interface
+- **`src/network/schema.ts`**: Network message schemas and type definitions
+- **`src/systems/cargo-system.ts`**: NetComponent for multiplayer cargo operations (pickup, drop, throw) with @RunOnServer methods
+- **`src/systems/construction-system.ts`**: NetComponent for construction and blueprint operations with network state synchronization
+- **`src/systems/species-system.ts`**: NetComponent for species injection operations with multiplayer validation
+
 ### **Consolidated Production Systems (Revolutionary Architecture)**
 - **`src/systems/cell-production.ts`**: Complete secretory pathway (750+ lines) - transcript creation, ER processing, vesicle transport, membrane installation
 - **`src/systems/cell-transport.ts`**: All transport processes - diffusion, membrane exchange, passive effects, conservation tracking

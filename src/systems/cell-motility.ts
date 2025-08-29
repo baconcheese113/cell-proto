@@ -7,7 +7,8 @@
  * - Mesenchymal: adhesion-heavy, protease trails, excels on ECM
  */
 
-import { SystemObject } from './system-object';
+import { System } from './system';
+import type { NetBus } from '../network/net-bus';
 import type { WorldRefs } from '../core/world-refs';
 import { CellSpaceSystem } from '../core/cell-space-system';
 import { MotilityModeRegistry } from './motility-mode-registry';
@@ -121,7 +122,7 @@ export interface MotilityState {
   effectiveTurnRate: number;               // turn rate after all modifiers
 }
 
-export class CellMotility extends SystemObject {
+export class CellMotility extends System {
   private worldRefs: WorldRefs;
   private cellSpace: CellSpaceSystem;
   private motilityState: MotilityState;
@@ -138,8 +139,8 @@ export class CellMotility extends SystemObject {
   // Drive mode control
   private driveMode: boolean = false;
   
-  constructor(scene: Phaser.Scene, worldRefs: WorldRefs, cellSpace: CellSpaceSystem) {
-    super(scene, 'CellMotility', (dt) => this.updateMotility(dt));
+  constructor(scene: Phaser.Scene, bus: NetBus, worldRefs: WorldRefs, cellSpace: CellSpaceSystem) {
+    super(scene, bus, 'CellMotility', (dt: number) => this.updateMotility(dt));
     
     this.worldRefs = worldRefs;
     this.cellSpace = cellSpace;

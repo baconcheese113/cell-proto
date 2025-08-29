@@ -13,6 +13,8 @@ import { CellSpaceSystem } from "../core/cell-space-system";
 import { CellMotility } from "../systems/cell-motility";
 import { PlayerInventorySystem } from "../player/player-inventory";
 import { setHud, addHud } from "../ui/hud";
+import { NetBus } from "../network/net-bus";
+import { LoopbackTransport } from "../network/transport";
 import type { WorldRefs } from "../core/world-refs";
 import { MotilityTelemetry } from "../systems/motility-telemetry";
 
@@ -82,13 +84,17 @@ export class MotilityCourseScene extends Phaser.Scene {
     // Give player plenty of ATP for testing
     this.playerInventory.take('ATP', 1000);
     
+    // Set up minimal networking for CellMotility requirement
+    const transport = new LoopbackTransport({ roomId: "motility-course", isHost: true });
+    const netBus = new NetBus(transport);
+    
     this.worldRefs = {
       playerInventory: this.playerInventory,
       substrateSystem: this.substrateSystem
     } as WorldRefs;
     
     this.cellSpaceSystem = new CellSpaceSystem(-450, 0);
-    this.cellMotility = new CellMotility(this, this.worldRefs, this.cellSpaceSystem);
+    this.cellMotility = new CellMotility(this, netBus, this.worldRefs, this.cellSpaceSystem);
     this.cellMotility.setDriveMode(true);
   }
   
@@ -297,11 +303,10 @@ export class MotilityCourseScene extends Phaser.Scene {
   }
 
   // V2: Add terrain features for mode differentiation
-  private addTerrainFeature(type: any, bounds: any, properties: any, color: number): void {
+  private addTerrainFeature(type: any, bounds: any, _properties: any, color: number): void {
     this.substrateSystem.addTerrainFeature({
       type,
       bounds,
-      properties,
       color,
       alpha: 0.6
     });

@@ -11,8 +11,11 @@
 
 import type { HexCoord } from "../hex/hex-grid";
 import type { WorldRefs } from "../core/world-refs";
-import { SystemObject } from "./system-object";
 import { CytoskeletonGraph } from "./cytoskeleton-graph";
+import { System } from './system';
+import { RunOnServer } from '../network/decorators';
+import type { NetBus } from '../network/net-bus';
+import type { BaseBlueprint } from '../construction/base-blueprint';
 
 // Story 13.2: Filament types with distinct properties
 export type FilamentType = 'actin' | 'microtubule';
@@ -26,16 +29,6 @@ export interface FilamentSegment {
   
   // Network properties
   networkId: string; // Groups connected segments
-  capacity: number;   // Max cargo per tick
-  speed: number;      // Movement speed multiplier
-  
-  // State tracking
-  currentLoad: number; // Current cargo count
-  utilization: number; // 0.0 to 1.0 for visualization
-  
-  // Cost tracking
-  buildCost: { AA: number; PROTEIN: number };
-  upkeepCost: number; // ATP per second
 }
 
 // Story 13.2: Network of connected segments
@@ -50,7 +43,6 @@ export interface FilamentNetwork {
   // Performance stats
   totalCapacity: number;
   totalLoad: number;
-  avgUtilization: number;
 }
 
 // Story 13.3: Organelle upgrade types
@@ -74,10 +66,6 @@ export interface OrganelleUpgrade {
   // State
   inputQueue: string[];   // Cargo IDs waiting to be processed
   outputQueue: string[];  // Cargo IDs ready to be sent
-  
-  // Cost tracking
-  buildCost: { AA: number; PROTEIN: number };
-  upkeepCost: number; // ATP per second
 }
 
 // Story 13.4: Junction between filament and upgrade
@@ -93,54 +81,39 @@ export interface FilamentJunction {
 }
 
 // Milestone 13: Filament blueprint system for gradual construction
-export interface FilamentBlueprint {
-  id: string;
+export interface FilamentBlueprint extends BaseBlueprint {
   type: FilamentType;
   fromHex: HexCoord;
   toHex: HexCoord;
-  
-  // Construction progress
-  progress: {
-    AA: number;
-    PROTEIN: number;
-  };
-  required: {
-    AA: number;
-    PROTEIN: number;
-  };
-  
-  // State
-  isActive: boolean;
-  createdAt: number;
   
   // Construction rate
   buildRatePerTick: number;
 }
 
-// Configuration for different filament types
-interface FilamentConfig {
-  maxChainLength: number;
-  capacity: number;
-  speed: number;
-  buildCost: { AA: number; PROTEIN: number };
-  upkeepCost: number;
-  canStartFromMTOC: boolean;
-  canStartFromExisting: boolean;
-}
+// Story 13.2: Segment state for network replication
+type SegmentState = { 
+  segments: Record<string, FilamentSegment> 
+};
 
-export class CytoskeletonSystem extends SystemObject {
+type BlueprintState = {
+  blueprints: Record<string, FilamentBlueprint>
+};
+
+export class CytoskeletonSystem extends System {
   private worldRefs: WorldRefs;
   
+  // Network state mirrors
+  private segmentsState = this.stateChannel<SegmentState>('segments', { segments: {} });
+  private blueprintState = this.stateChannel<BlueprintState>('filament_blueprints', { blueprints: {} });
+  
   // Core data structures
-  private segments: Map<string, FilamentSegment> = new Map();
   private networks: Map<string, FilamentNetwork> = new Map();
   private upgrades: Map<string, OrganelleUpgrade> = new Map();
   private junctions: Map<string, FilamentJunction> = new Map();
   
-  // Milestone 13: Blueprint system for gradual construction
-  private blueprints: Map<string, FilamentBlueprint> = new Map();
+  // NOTE: Blueprints are stored only in replicated state (this.blueprintState.blueprints)
   
-  // Graph for real rail transport
+  // Graph for segment transport
   public graph: CytoskeletonGraph;
   
   // ID generators
@@ -153,68 +126,35 @@ export class CytoskeletonSystem extends SystemObject {
   // Story 13.6: MTOC location for microtubule seeding
   private mtocHex: HexCoord | null = null;
   
-  // Configuration
-  private readonly FILAMENT_CONFIGS: Record<FilamentType, FilamentConfig> = {
-    actin: {
-      maxChainLength: 8,      // Short, local shuttles
-      capacity: 2,            // Lower capacity
-      speed: 1.0,             // Normal speed
-      buildCost: { AA: .1, PROTEIN: .1 },
-      upkeepCost: 0.1,        // Low ATP cost
-      canStartFromMTOC: false,
-      canStartFromExisting: true
-    },
-    microtubule: {
-      maxChainLength: 20,     // Long highways
-      capacity: 5,            // Higher capacity
-      speed: 1.5,             // Faster transport
-      buildCost: { AA: .1, PROTEIN: .1 },
-      upkeepCost: 0.3,        // Higher ATP cost
-      canStartFromMTOC: true,
-      canStartFromExisting: true
-    }
-  };
-  
   // Upgrade configurations
   private readonly UPGRADE_CONFIGS: Record<UpgradeType, any> = {
     npc_exporter: {
       inputCapacity: 1,
-      outputCapacity: 1,
-      buildCost: { AA: 10, PROTEIN: 5 },
-      upkeepCost: 0.05
+      outputCapacity: 1
     },
     er_exit: {
       inputCapacity: 1,
-      outputCapacity: 1,
-      buildCost: { AA: 12, PROTEIN: 8 },
-      upkeepCost: 0.08
+      outputCapacity: 1
     },
     golgi_tgn: {
       inputCapacity: 2,
-      outputCapacity: 2,
-      buildCost: { AA: 15, PROTEIN: 10 },
-      upkeepCost: 0.1
+      outputCapacity: 2
     },
     exocyst_hotspot: {
       inputCapacity: 1,
-      outputCapacity: 0, // Final destination
-      buildCost: { AA: 8, PROTEIN: 6 },
-      upkeepCost: 0.06
+      outputCapacity: 0 // Final destination
     }
   };
 
-  constructor(scene: Phaser.Scene, worldRefs: WorldRefs) {
-    super(scene, "CytoskeletonSystem", (deltaSeconds: number) => this.update(deltaSeconds));
+  constructor(scene: Phaser.Scene, netBus: NetBus, worldRefs: WorldRefs) {
+    super(scene, netBus, 'CytoskeletonSystem', (deltaSeconds: number) => this.updateCytoskeleton(deltaSeconds), { address: 'CytoskeletonSystem' });
     this.worldRefs = worldRefs;
     
-    // Initialize graph for real rail transport
+    // Initialize graph for real segment transport
     this.graph = new CytoskeletonGraph(worldRefs);
     
     // Story 13.6: Initialize starter cytoskeleton
     this.initializeStarterCytoskeleton();
-    
-    // Milestone 13 Summary: Transport stack consolidated
-    console.log("🚂 Transport Stack: cytoskeleton-graph.ts → adapter → vesicle-system.ts (3 modules)");
     
     // Debug: Show initial graph state
     setTimeout(() => {
@@ -223,16 +163,15 @@ export class CytoskeletonSystem extends SystemObject {
   }
 
   // Public getters for graph system
-  get allSegments(): Map<string, FilamentSegment> {
-    return this.segments;
+  get allSegments(): Record<string, FilamentSegment> {
+    return this.segmentsState.segments;
   }
 
   get allUpgrades(): Map<string, OrganelleUpgrade> {
     return this.upgrades;
   }
 
-  override update(deltaSeconds: number): void {
-    this.updateNetworkUtilization();
+  public updateCytoskeleton(deltaSeconds: number): void {
     this.processUpgradeQueues(deltaSeconds);
     this.updateJunctionActivity();
     
@@ -255,6 +194,26 @@ export class CytoskeletonSystem extends SystemObject {
     this.mtocHex = { q: nucleus.coord.q + 1, r: nucleus.coord.r }; // Adjacent to nucleus
     
     console.log(`MTOC placed at (${this.mtocHex.q}, ${this.mtocHex.r})`);
+    
+    // Add some test resources around the MTOC for cytoskeleton construction
+    const resourceTiles = [
+      { q: this.mtocHex.q, r: this.mtocHex.r },
+      { q: this.mtocHex.q + 1, r: this.mtocHex.r },
+      { q: this.mtocHex.q - 1, r: this.mtocHex.r },
+      { q: this.mtocHex.q, r: this.mtocHex.r + 1 },
+      { q: this.mtocHex.q, r: this.mtocHex.r - 1 },
+    ];
+    
+    for (const coord of resourceTiles) {
+      const tile = this.worldRefs.hexGrid.getTile(coord);
+      if (tile && !tile.isMembrane) {
+        // Add small amounts of AA and PROTEIN for cytoskeleton construction
+        this.worldRefs.hexGrid.addConcentration(coord, 'AA', 2.0);
+        this.worldRefs.hexGrid.addConcentration(coord, 'PROTEIN', 2.0);
+      }
+    }
+    
+    console.log(`Added AA and PROTEIN resources around MTOC for cytoskeleton construction`);
     
     // Create 3-5 short microtubule spokes from MTOC
     this.createStarterMicrotubules();
@@ -342,7 +301,7 @@ export class CytoskeletonSystem extends SystemObject {
   /**
    * Story 13.2: Check if a filament can be placed at this location
    */
-  private isValidFilamentPlacement(hex: HexCoord, _type: FilamentType): boolean {
+  private isValidFilamentPlacement(hex: HexCoord, type: FilamentType): boolean {
     const tile = this.worldRefs.hexGrid.getTile(hex);
     if (!tile) return false;
     
@@ -352,36 +311,89 @@ export class CytoskeletonSystem extends SystemObject {
     // Check if tile is already occupied by an organelle
     if (this.worldRefs.organelleSystem.hasTileOrganelle(hex)) return false;
     
+    // MTOC is always a valid starting point for microtubules
+    if (type === 'microtubule' && this.mtocHex && 
+        this.mtocHex.q === hex.q && this.mtocHex.r === hex.r) {
+      return true;
+    }
+    
     // Check if there's already a filament segment at this location
-    for (const segment of this.segments.values()) {
-      if ((segment.fromHex.q === hex.q && segment.fromHex.r === hex.r) ||
-          (segment.toHex.q === hex.q && segment.toHex.r === hex.r)) {
-        return false; // Overlapping segments not allowed
+    // Allow placement if there's an existing compatible segment (for extending networks)
+    for (const segment of Object.values(this.segmentsState.segments)) {
+      const segmentAtFromHex = (segment.fromHex.q === hex.q && segment.fromHex.r === hex.r);
+      const segmentAtToHex = (segment.toHex.q === hex.q && segment.toHex.r === hex.r);
+      
+      if (segmentAtFromHex || segmentAtToHex) {
+        // If there's a segment of the same type, allow extending from it
+        if (segment.type === type) {
+          return true; // Compatible segment found, allow extension
+        } else {
+          // Different filament type at this location - not allowed
+          return false;
+        }
       }
     }
     
+    // Allow placement on empty tiles
     return true;
   }
   
   /**
-   * Story 13.2: Create a new filament segment (public interface)
+   * Task 4: Validate blueprint placement including conflicts with existing blueprints
    */
-  public createFilamentSegment(type: FilamentType, fromHex: HexCoord, toHex: HexCoord): string | null {
-    return this.createSegment(type, fromHex, toHex);
+  private validateFilamentBlueprintPlacement(type: FilamentType, fromHex: HexCoord, toHex: HexCoord): { isValid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    
+    // Basic placement validation
+    if (!this.isValidFilamentPlacement(fromHex, type)) {
+      errors.push(`Invalid start position (${fromHex.q}, ${fromHex.r}) for ${type}`);
+    }
+    
+    if (!this.isValidFilamentPlacement(toHex, type)) {
+      errors.push(`Invalid end position (${toHex.q}, ${toHex.r}) for ${type}`);
+    }
+    
+    // Check for blueprint conflicts
+    for (const blueprint of Object.values(this.blueprintState.blueprints)) {
+      if (!blueprint.isActive) continue;
+      
+      // Check if this blueprint conflicts with start or end positions
+      const conflictsWithStart = (blueprint.fromHex.q === fromHex.q && blueprint.fromHex.r === fromHex.r) ||
+                                (blueprint.toHex.q === fromHex.q && blueprint.toHex.r === fromHex.r);
+      const conflictsWithEnd = (blueprint.fromHex.q === toHex.q && blueprint.fromHex.r === toHex.r) ||
+                              (blueprint.toHex.q === toHex.q && blueprint.toHex.r === toHex.r);
+      
+      if (conflictsWithStart) {
+        errors.push(`Another ${blueprint.type} blueprint already planned at start position (${fromHex.q}, ${fromHex.r})`);
+      }
+      
+      if (conflictsWithEnd) {
+        errors.push(`Another ${blueprint.type} blueprint already planned at end position (${toHex.q}, ${toHex.r})`);
+      }
+    }
+    
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
   }
-  
+
   /**
-   * Milestone 13: Create a filament blueprint for gradual construction
+   * Milestone 13: Create a filament blueprint for gradual construction (server-authoritative)
    */
+  @RunOnServer()
   public createFilamentBlueprint(type: FilamentType, fromHex: HexCoord, toHex: HexCoord): string | null {
-    // Validate placement (same rules as instant placement)
-    if (!this.isValidFilamentPlacement(fromHex, type) || !this.isValidFilamentPlacement(toHex, type)) {
+    // Use enhanced validation
+    const validation = this.validateFilamentBlueprintPlacement(type, fromHex, toHex);
+    if (!validation.isValid) {
+      console.warn(`Cannot create ${type} blueprint: ${validation.errors.join(', ')}`);
       return null;
     }
     
-    const config = this.FILAMENT_CONFIGS[type];
+    // const config = this.FILAMENT_CONFIGS[type]; // Will be used later for segment creation
     const blueprintId = `${type}_blueprint_${this.nextBlueprintId++}`;
     
+    // Create blueprint directly in replicated state
     const blueprint: FilamentBlueprint = {
       id: blueprintId,
       type,
@@ -392,24 +404,26 @@ export class CytoskeletonSystem extends SystemObject {
         PROTEIN: 0
       },
       required: {
-        AA: config.buildCost.AA,
-        PROTEIN: config.buildCost.PROTEIN
+        AA: 1.0, // Simple default cost
+        PROTEIN: 1.0
       },
       isActive: true,
       createdAt: Date.now(),
       buildRatePerTick: type === 'actin' ? 2.0 : 1.5 // Actin builds faster
     };
     
-    this.blueprints.set(blueprintId, blueprint);
+    this.blueprintState.blueprints[blueprintId] = blueprint;
+    
     console.log(`Created ${type} blueprint: (${fromHex.q},${fromHex.r}) -> (${toHex.q},${toHex.r})`);
     return blueprintId;
   }
   
   /**
-   * Milestone 13: Process blueprint construction over time
+   * Milestone 13: Process blueprint construction over time (server-only)
    */
+  @RunOnServer()
   private processFilamentBlueprints(deltaSeconds: number): void {
-    for (const blueprint of this.blueprints.values()) {
+    for (const blueprint of Object.values(this.blueprintState.blueprints)) {
       if (!blueprint.isActive) continue;
       
       this.processBlueprint(blueprint, deltaSeconds);
@@ -417,15 +431,27 @@ export class CytoskeletonSystem extends SystemObject {
   }
   
   /**
-   * Milestone 13: Process individual blueprint construction
+   * Milestone 13: Process individual blueprint construction (server-only)
    */
+  @RunOnServer()
   private processBlueprint(blueprint: FilamentBlueprint, deltaSeconds: number): void {
     // Calculate how much we can consume this tick
     const maxConsumptionPerTick = blueprint.buildRatePerTick * deltaSeconds;
     
+    // Debug: Log blueprint processing
+    if (Math.random() < 0.01) { // Log occasionally to avoid spam
+      console.log(`🔨 Processing blueprint ${blueprint.id} at (${blueprint.fromHex.q},${blueprint.fromHex.r})`);
+      const tile = this.worldRefs.hexGrid.getTile(blueprint.fromHex);
+      if (tile) {
+        console.log(`  Available concentrations:`, tile.concentrations);
+        console.log(`  Current progress:`, blueprint.progress);
+        console.log(`  Required:`, blueprint.required);
+      }
+    }
+    
     // Try to consume AA first, then PROTEIN
     for (const [speciesId, requiredAmount] of Object.entries(blueprint.required)) {
-      const currentProgress = blueprint.progress[speciesId as keyof typeof blueprint.progress];
+      const currentProgress = blueprint.progress[speciesId] || 0;
       const stillNeeded = requiredAmount - currentProgress;
       
       if (stillNeeded <= 0) continue; // Already satisfied
@@ -441,10 +467,10 @@ export class CytoskeletonSystem extends SystemObject {
         // Consume resources from tile
         this.worldRefs.hexGrid.addConcentration(blueprint.fromHex, speciesId as any, -canConsume);
         
-        // Add to blueprint progress
-        blueprint.progress[speciesId as keyof typeof blueprint.progress] += canConsume;
+        // Update blueprint progress directly in replicated state
+        blueprint.progress[speciesId] = (blueprint.progress[speciesId] || 0) + canConsume;
         
-        // console.log(`Blueprint ${blueprint.id} consumed ${canConsume.toFixed(1)} ${speciesId} (${blueprint.progress[speciesId as keyof typeof blueprint.progress].toFixed(1)}/${requiredAmount})`);
+        console.log(`🔨 Blueprint ${blueprint.id} consumed ${canConsume.toFixed(3)} ${speciesId} (${blueprint.progress[speciesId]!.toFixed(3)}/${requiredAmount})`);
       }
     }
     
@@ -453,11 +479,12 @@ export class CytoskeletonSystem extends SystemObject {
   }
   
   /**
-   * Milestone 13: Check if blueprint is complete and spawn filament
+   * Milestone 13: Check if blueprint is complete and spawn filament (server-only)
    */
+  @RunOnServer()
   private checkBlueprintCompletion(blueprint: FilamentBlueprint): void {
-    const isComplete = blueprint.progress.AA >= blueprint.required.AA && 
-                      blueprint.progress.PROTEIN >= blueprint.required.PROTEIN;
+    const isComplete = blueprint.progress['AA'] >= blueprint.required['AA'] && 
+                      blueprint.progress['PROTEIN'] >= blueprint.required['PROTEIN'];
     
     if (isComplete) {
       // Create the actual filament segment
@@ -468,9 +495,9 @@ export class CytoskeletonSystem extends SystemObject {
         this.worldRefs.showToast(`${blueprint.type} filament completed!`);
       }
       
-      // Remove the blueprint
+      // Remove the blueprint from replicated state only
       blueprint.isActive = false;
-      this.blueprints.delete(blueprint.id);
+      delete this.blueprintState.blueprints[blueprint.id];
     }
   }
   
@@ -478,9 +505,9 @@ export class CytoskeletonSystem extends SystemObject {
    * Milestone 13: Get all active blueprints (for rendering)
    */
   public getActiveBlueprints(): FilamentBlueprint[] {
-    return Array.from(this.blueprints.values()).filter(bp => bp.isActive);
+    return Object.values(this.blueprintState.blueprints).filter(bp => bp.isActive);
   }
-  
+
   /**
    * Story 13.2: Create a new filament segment (internal implementation)
    */
@@ -490,7 +517,6 @@ export class CytoskeletonSystem extends SystemObject {
       return null;
     }
     
-    const config = this.FILAMENT_CONFIGS[type];
     const segmentId = `${type}_segment_${this.nextSegmentId++}`;
     
     const segment: FilamentSegment = {
@@ -499,19 +525,18 @@ export class CytoskeletonSystem extends SystemObject {
       fromHex: { ...fromHex },
       toHex: { ...toHex },
       networkId: '', // Will be assigned when building networks
-      capacity: config.capacity,
-      speed: config.speed,
-      currentLoad: 0,
-      utilization: 0,
-      buildCost: { ...config.buildCost },
-      upkeepCost: config.upkeepCost
     };
     
-    this.segments.set(segmentId, segment);
+    // Store only in replicated state - no dual data structures
+    this.segmentsState.segments[segmentId] = segment;
+    
     this.rebuildNetworks(); // Rebuild network topology
     this.graph.markDirty(); // Mark graph for rebuild
     
-    console.log(`Created ${type} segment: (${fromHex.q},${fromHex.r}) -> (${toHex.q},${toHex.r})`);
+    // Notify cargo system that graph topology has changed
+    this.worldRefs.cargoSystem?.onGraphTopologyChanged();
+    
+    console.log(`Created ${type} segment: (${fromHex.q},${fromHex.r}) -> (${toHex.q},${toHex.r}) in replicated state`);
     return segmentId;
   }
   
@@ -524,7 +549,7 @@ export class CytoskeletonSystem extends SystemObject {
     // Group connected segments into networks
     const visited = new Set<string>();
     
-    for (const segment of this.segments.values()) {
+    for (const segment of Object.values(this.segmentsState.segments)) {
       if (visited.has(segment.id)) continue;
       
       const networkId = `network_${this.nextNetworkId++}`;
@@ -533,8 +558,7 @@ export class CytoskeletonSystem extends SystemObject {
         type: segment.type,
         segments: new Set(),
         totalCapacity: 0,
-        totalLoad: 0,
-        avgUtilization: 0
+        totalLoad: 0
       };
       
       // Find all connected segments of the same type
@@ -542,21 +566,18 @@ export class CytoskeletonSystem extends SystemObject {
       
       // Set network ID for all segments in this network
       for (const segmentId of network.segments) {
-        const seg = this.segments.get(segmentId);
+        const seg = this.segmentsState.segments[segmentId];
         if (seg) {
           seg.networkId = networkId;
-          network.totalCapacity += seg.capacity;
-          network.totalLoad += seg.currentLoad;
+          network.totalCapacity += 1; // Constant capacity per segment
+          // No load tracking for simplified segments
         }
       }
-      
-      network.avgUtilization = network.totalCapacity > 0 ? 
-        network.totalLoad / network.totalCapacity : 0;
       
       this.networks.set(networkId, network);
     }
     
-    console.log(`Networks rebuilt: ${this.networks.size} networks, ${this.segments.size} segments`);
+    console.log(`Networks rebuilt: ${this.networks.size} networks, ${Object.keys(this.segmentsState.segments).length} segments`);
   }
   
   /**
@@ -569,7 +590,7 @@ export class CytoskeletonSystem extends SystemObject {
     network.segments.add(segment.id);
     
     // Find connected segments of the same type
-    for (const otherSegment of this.segments.values()) {
+    for (const otherSegment of Object.values(this.segmentsState.segments)) {
       if (otherSegment.id === segment.id || otherSegment.type !== segment.type) continue;
       if (visited.has(otherSegment.id)) continue;
       
@@ -593,28 +614,6 @@ export class CytoskeletonSystem extends SystemObject {
   }
   
   /**
-   * Update network utilization for visualization
-   */
-  private updateNetworkUtilization(): void {
-    for (const network of this.networks.values()) {
-      let totalCapacity = 0;
-      let totalLoad = 0;
-      
-      for (const segmentId of network.segments) {
-        const segment = this.segments.get(segmentId);
-        if (segment) {
-          totalCapacity += segment.capacity;
-          totalLoad += segment.currentLoad;
-        }
-      }
-      
-      network.totalCapacity = totalCapacity;
-      network.totalLoad = totalLoad;
-      network.avgUtilization = totalCapacity > 0 ? totalLoad / totalCapacity : 0;
-    }
-  }
-  
-  /**
    * Story 13.3: Create an organelle upgrade
    */
   public createUpgrade(type: UpgradeType, organelleHex: HexCoord, rimHex: HexCoord): string | null {
@@ -634,9 +633,7 @@ export class CytoskeletonSystem extends SystemObject {
       inputCapacity: config.inputCapacity,
       outputCapacity: config.outputCapacity,
       inputQueue: [],
-      outputQueue: [],
-      buildCost: { ...config.buildCost },
-      upkeepCost: config.upkeepCost
+      outputQueue: []
     };
     
     this.upgrades.set(upgradeId, upgrade);
@@ -689,7 +686,7 @@ export class CytoskeletonSystem extends SystemObject {
     this.junctions.clear();
     
     // Check each segment against each upgrade for proximity
-    for (const segment of this.segments.values()) {
+    for (const segment of Object.values(this.segmentsState.segments)) {
       for (const upgrade of this.upgrades.values()) {
         if (this.segmentAdjacentToUpgrade(segment, upgrade)) {
           const junctionId = `junction_${this.nextJunctionId++}`;
@@ -759,15 +756,7 @@ export class CytoskeletonSystem extends SystemObject {
   // Public accessors for rendering system
   
   public getAllSegments(): FilamentSegment[] {
-    return Array.from(this.segments.values());
-  }
-  
-  public getSegment(segmentId: string): FilamentSegment | undefined {
-    return this.segments.get(segmentId);
-  }
-  
-  public getAllNetworks(): FilamentNetwork[] {
-    return Array.from(this.networks.values());
+    return Object.values(this.segmentsState.segments);
   }
   
   public getAllUpgrades(): OrganelleUpgrade[] {
@@ -786,21 +775,14 @@ export class CytoskeletonSystem extends SystemObject {
    * Get segments by type for targeted rendering
    */
   public getSegmentsByType(type: FilamentType): FilamentSegment[] {
-    return Array.from(this.segments.values()).filter(seg => seg.type === type);
-  }
-  
-  /**
-   * Get upgrades by type
-   */
-  public getUpgradesByType(type: UpgradeType): OrganelleUpgrade[] {
-    return Array.from(this.upgrades.values()).filter(upgrade => upgrade.type === type);
+    return Object.values(this.segmentsState.segments).filter(seg => seg.type === type);
   }
 
   /**
    * Get all segments that pass through a specific tile
    */
   public getSegmentsAtTile(coord: HexCoord): FilamentSegment[] {
-    return Array.from(this.segments.values()).filter(segment => {
+    return Object.values(this.segmentsState.segments).filter(segment => {
       // Check if segment passes through this coordinate
       return (segment.fromHex.q === coord.q && segment.fromHex.r === coord.r) ||
              (segment.toHex.q === coord.q && segment.toHex.r === coord.r);
