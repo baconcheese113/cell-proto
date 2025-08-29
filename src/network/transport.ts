@@ -160,6 +160,7 @@ export class WebRTCTransport implements NetworkTransport {
         break;
         
       case "room-created":
+        this.isHost = true;
         this.localId = "host-01";
         console.log(`🎉 Room created successfully by ${this.localId}`);
         this.setupHostChannels();
@@ -168,6 +169,10 @@ export class WebRTCTransport implements NetworkTransport {
       case "room-joined":
         console.log("🚪 Joined existing room");
         break;
+        
+      case "room-full":
+        this.ws.close();
+        throw new Error("Room is full. Please try again later or use a different room.");
         
       case "peer-joined":
         console.log("👋 Peer joined, creating offer");
@@ -194,6 +199,11 @@ export class WebRTCTransport implements NetworkTransport {
         }
         break;
         
+      case "error":
+        console.error("❌ Server error:", message.error);
+        this.ws.close();
+        throw new Error(`Server error: ${message.error}`);
+        
       default:
         console.warn("🤷 Unknown message type:", message.type);
     }
@@ -212,7 +222,6 @@ export class WebRTCTransport implements NetworkTransport {
     
     this.pc.ondatachannel = (event) => {
       const channel = event.channel;
-      console.log("📡 Received data channel:", channel.label);
       
       if (channel.label === "reliable") {
         this.reliableChannel = channel;
@@ -241,7 +250,6 @@ export class WebRTCTransport implements NetworkTransport {
   
   private setupChannelHandlers(channel: RTCDataChannel): void {
     channel.onopen = () => {
-      console.log(`📱 Data channel '${channel.label}' opened`);
       if (channel.label === "reliable" && !this.connected) {
         this.connected = true;
         this.readyResolve?.();
@@ -269,30 +277,42 @@ export class WebRTCTransport implements NetworkTransport {
   }
   
   private async createOffer(roomId: string): Promise<void> {
-    const offer = await this.pc.createOffer();
-    await this.pc.setLocalDescription(offer);
-    
-    this.ws.send(JSON.stringify({
-      type: "offer",
-      roomCode: roomId,
-      sdp: offer
-    }));
+    try {
+      const offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      
+      this.ws.send(JSON.stringify({
+        type: "offer",
+        roomCode: roomId,
+        sdp: offer
+      }));
+    } catch (error) {
+      console.error("❌ Failed to create offer:", error);
+    }
   }
   
   private async handleOffer(sdp: RTCSessionDescriptionInit, roomId: string): Promise<void> {
-    await this.pc.setRemoteDescription(sdp);
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    
-    this.ws.send(JSON.stringify({
-      type: "answer",
-      roomCode: roomId,
-      sdp: answer
-    }));
+    try {
+      await this.pc.setRemoteDescription(sdp);
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      
+      this.ws.send(JSON.stringify({
+        type: "answer",
+        roomCode: roomId,
+        sdp: answer
+      }));
+    } catch (error) {
+      console.error("❌ Failed to handle offer:", error);
+    }
   }
   
   private async handleAnswer(sdp: RTCSessionDescriptionInit): Promise<void> {
-    await this.pc.setRemoteDescription(sdp);
+    try {
+      await this.pc.setRemoteDescription(sdp);
+    } catch (error) {
+      console.error("❌ Failed to handle answer:", error);
+    }
   }
   
   private getRoomFromWs(): string {
@@ -331,7 +351,8 @@ export async function createQuickJoinWebRTC(roomId = "CELL01"): Promise<NetworkT
   // Auto-detect signaling URL: use local if on localhost, otherwise production
   const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
   const signalingUrl = isLocalhost 
-    ? "ws://localhost:8080" 
+    ? "ws://127.0.0.1:8787/ws"
+    // ? "ws://localhost:8080" 
     : "wss://cellproto-signaling.baconcheese113.workers.dev/ws";
 
   console.log(`🌐 Using signaling server: ${signalingUrl}`);

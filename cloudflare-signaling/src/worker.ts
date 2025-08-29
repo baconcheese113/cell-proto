@@ -31,6 +31,9 @@ export class RoomDO {
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+    
+    // Clean up any stale connections on startup
+    this.clients.clear();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -82,13 +85,19 @@ export class RoomDO {
         break;
       }
       case "join-room": {
-        // Check if room is full
-        if (this.clients.size >= 2) {
+        // Check if room is full (more than 2 clients)
+        if (this.clients.size > 2) {
           ws.send(JSON.stringify({ type: "room-full" }));
         } else {
-          // Notify existing clients that a peer joined
-          this.broadcast({ type: "peer-joined" }, ws);
-          ws.send(JSON.stringify({ type: "room-joined", roomCode: "default" }));
+          // First client becomes host, second becomes client
+          if (this.clients.size === 1) {
+            // This is the first (and only) client - they become the host
+            ws.send(JSON.stringify({ type: "room-created", roomCode: "default" }));
+          } else {
+            // This is the second client - notify the host that a peer joined
+            this.broadcast({ type: "peer-joined" }, ws);
+            ws.send(JSON.stringify({ type: "room-joined", roomCode: "default" }));
+          }
         }
         break;
       }
