@@ -20,7 +20,6 @@ import { getOrganelleDefinition, definitionToConfig } from "../organelles/organe
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
 import { getFootprintTiles } from "../organelles/organelle-footprints";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
-import { MembranePortSystem } from "../membrane/membrane-port-system";
 
 // New modular components
 import { Player } from "../actors/player";
@@ -104,9 +103,6 @@ export class GameScene extends Phaser.Scene {
   // Milestone 6: Membrane exchange system
   private membraneExchangeSystem!: MembraneExchangeSystem;
   
-  // Story 8.11: External interface system
-  private membranePortSystem!: MembranePortSystem;
-
   // Species diffusion system - Task 3
   private diffusionSystem!: DiffusionSystem;
 
@@ -133,6 +129,7 @@ export class GameScene extends Phaser.Scene {
   private buildPalette!: BuildPaletteUI;
   private selectedRecipeId: string | null = null; // Milestone 13: Support all recipe types (organelles, filaments, upgrades)
   private isInBuildMode: boolean = false;
+  private wasInBuildModeBeforeLeavingTile: boolean = false; // Track if build menu was open when leaving tile area
 
   // Milestone 6: Current tile tracking - Task 1
   private currentTileRef: HexTile | null = null;
@@ -263,7 +260,6 @@ export class GameScene extends Phaser.Scene {
     this.initializeHeatmapSystem();
     this.initializePassiveEffectsSystem();
     this.initializeDiffusionSystem();
-    this.initializeMembraneExchangeSystem();
     this.conservationTracker = new ConservationTracker(this, this.hexGrid, this.passiveEffectsSystem);
     
     // Milestone 9: Initialize cell locomotion systems
@@ -279,7 +275,6 @@ export class GameScene extends Phaser.Scene {
       
       // Systems that exist at this point
       membraneExchangeSystem: this.membraneExchangeSystem,
-      membranePortSystem: this.membranePortSystem,
       diffusionSystem: this.diffusionSystem,
       passiveEffectsSystem: this.passiveEffectsSystem,
       heatmapSystem: this.heatmapSystem,
@@ -765,6 +760,16 @@ export class GameScene extends Phaser.Scene {
         this.buildPalette.hide();
         this.isInBuildMode = false;
         this.selectedRecipeId = null;
+        // Remember that we had the build menu open when we left the tile area
+        this.wasInBuildModeBeforeLeavingTile = true;
+      }
+      
+      // Restore build menu if player returns to tile area and had it open before
+      if (newCurrentTile && this.wasInBuildModeBeforeLeavingTile && !this.buildPalette.getIsVisible()) {
+        this.buildPalette.show();
+        this.updateBuildPaletteFilter();
+        this.isInBuildMode = true;
+        this.wasInBuildModeBeforeLeavingTile = false;
       }
     }
   }
@@ -1937,14 +1942,6 @@ export class GameScene extends Phaser.Scene {
     console.log('Diffusion system initialized');
   }
 
-  private initializeMembraneExchangeSystem(): void {
-    this.membraneExchangeSystem = new MembraneExchangeSystem(this.hexGrid);
-    this.membranePortSystem = new MembranePortSystem(); // Story 8.11: External interface
-    console.log('Membrane exchange system and port system initialized');
-  }
-
-  // NOTE: initializeMembranePhysics() removed - membrane physics is now initialized 
-  // in initNetwork() for proper network replication support
 
   private initializeCellLocomotionSystems(): void {
     // Initialize cell space system with current cell center
@@ -2001,6 +1998,10 @@ export class GameScene extends Phaser.Scene {
     const cytoskeleton   = this.cytoskeletonSystem; // Use existing system
     const emotes         = new EmoteSystem(bus, this, players, this.cellRoot);
     
+    // Initialize networked membrane systems
+    const membraneExchange = new MembraneExchangeSystem(this, bus, this.hexGrid);
+    this.membraneExchangeSystem = membraneExchange;
+    
     // Initialize networked membrane physics system
     const membranePhysics = new MembranePhysicsSystem(this, this.worldRefsInstance, bus);
     this.membranePhysics = membranePhysics;
@@ -2028,6 +2029,9 @@ export class GameScene extends Phaser.Scene {
 
     // Add InstallOrderSystem to WorldRefs for CargoSystem access
     this.worldRefsInstance.installOrderSystem = installOrders;
+    
+    // Add networked MembraneExchangeSystem to WorldRefs
+    this.worldRefsInstance.membraneExchangeSystem = membraneExchange;
 
     // Optional per-frame host flush (microtask batching also works):
     const flush = () => {

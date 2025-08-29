@@ -12,7 +12,6 @@ import type { OrganelleSystem } from "../organelles/organelle-system";
 import type { OrganelleType } from "../organelles/organelle-registry";
 import type { BlueprintSystem } from "../construction/blueprint-system";
 import type { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
-import type { MembranePortSystem } from "../membrane/membrane-port-system";
 import type { DiffusionSystem } from "../species/diffusion-system";
 import type { PassiveEffectsSystem } from "../species/passive-effects-system";
 import type { HeatmapSystem } from "../species/heatmap-system";
@@ -150,7 +149,6 @@ export interface WorldRefs {
   
   // Membrane systems
   membraneExchangeSystem: MembraneExchangeSystem;
-  membranePortSystem: MembranePortSystem; // Story 8.11: External interface system
   
   // Species systems
   diffusionSystem: DiffusionSystem;

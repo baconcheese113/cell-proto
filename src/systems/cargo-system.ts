@@ -5,6 +5,7 @@ import { System } from "./system";
 import type { NetBus } from "../network/net-bus";
 import { RunOnServer } from "../network/decorators";
 import type { Organelle } from "@/organelles/organelle-system";
+import { getFootprintTiles } from "../organelles/organelle-footprints";
 
 // Cargo transformation configuration
 const ORGANELLE_TRANSFORMATIONS: Record<OrganelleType, { from: CargoType; to: CargoType } | null> = {
@@ -21,7 +22,7 @@ const ORGANELLE_TRANSFORMATIONS: Record<OrganelleType, { from: CargoType; to: Ca
 // Unified routing result for efficient cargo routing
 interface RouteResult {
   success: boolean;
-  organelle?: any; // Target organelle
+  organelle?: Organelle; // Target organelle
   path?: string[]; // Node path from CytoskeletonGraph
   seatId?: string; // Reserved seat ID
   reason?: string; // Failure reason
@@ -168,9 +169,8 @@ export class CargoSystem extends System {
     return this.cargoState.cargo[cargoId];
   }
 
-  createTranscript(proteinId: ProteinId, atHex?: HexCoord): Cargo {
-    // Spawn in nucleus footprint if available, otherwise default position
-    const spawnHex = atHex || this.findNucleusOrganelle()?.coord || { q: 0, r: 0 };
+  createTranscript(proteinId: ProteinId): Cargo {
+    const spawnHex = this.findNucleusOrganelle()?.coord || { q: 0, r: 0 };
     return this.createCargo(proteinId, 'transcript', spawnHex);
   }
 
@@ -236,15 +236,29 @@ export class CargoSystem extends System {
     // Look for organelle seats first (priority placement)
     const organelleSystem = this.worldRefs.organelleSystem;
     if (organelleSystem) {
+      console.log(`🔍 CargoSystem: Preferred position (${preferredPos.q}, ${preferredPos.r}) occupied, checking organelle seats`);
       const organelleAtPos = organelleSystem.getOrganelleAtTile(preferredPos);
       if (organelleAtPos) {
-        // Try to find an empty seat in the organelle
+        // Get the seat info to check capacity
         const seatInfo = organelleSystem.getSeatInfo(organelleAtPos.id);
+        console.log(`🔍 CargoSystem: Found organelle ${organelleAtPos.id} with seat info:`, seatInfo);
+        
         if (seatInfo && seatInfo.capacity > seatInfo.occupied) {
-          // There are available seats, check individual seat positions
+          // There are available seats, check all footprint positions
+          const footprintTiles = getFootprintTiles(organelleAtPos.config.footprint, organelleAtPos.coord.q, organelleAtPos.coord.r);
+          const occupiedPositions = new Set<string>();
+          
+          // Mark positions already taken by existing seats
           for (const seat of seatInfo.seats) {
-            if (!this.isHexOccupiedByCargo(seat.position, cargoId)) {
-              return seat.position;
+            occupiedPositions.add(`${seat.position.q},${seat.position.r}`);
+          }
+          
+          // Find available footprint positions
+          for (const tilePos of footprintTiles) {
+            const tileKey = `${tilePos.q},${tilePos.r}`;
+            if (!occupiedPositions.has(tileKey) && !this.isHexOccupiedByCargo(tilePos, cargoId)) {
+              console.log(`✅ CargoSystem: Found available position (${tilePos.q}, ${tilePos.r}) in organelle ${organelleAtPos.id} for cargo ${cargoId}`);
+              return tilePos;
             }
           }
         }
@@ -304,17 +318,14 @@ export class CargoSystem extends System {
    */
   private validateCargoForMovement(cargo: Cargo): boolean {
     if (!cargo.atHex) {
-      console.log(`🚫 CargoSystem: Cargo ${cargo.id} has no position (carried), cannot move`);
       return false;
     }
 
     if (!cargo.currentStageDestination) {
-      console.log(`🚫 CargoSystem: No destination set for cargo ${cargo.id}`);
       return false;
     }
 
     if (!cargo.reservedSeatId || !cargo.targetOrganelleId) {
-      console.log(`🚫 CargoSystem: No seat reservation for cargo ${cargo.id}`);
       return false;
     }
 
@@ -356,54 +367,36 @@ export class CargoSystem extends System {
     
     for (const order of orders) {
       
-      // First reserve a seat to prevent conflicts
-      const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-      const seatId = this.worldRefs.organelleSystem.reserveSeat(nucleusOrganelle.id, tempId);
+      // Create transcript first
+      const transcript = this.createTranscript(order.proteinId);
+      
+      // Reserve a seat for this transcript
+      const seatId = this.worldRefs.organelleSystem.reserveSeat(nucleusOrganelle.id, transcript.id);
       if (!seatId) {
-        console.warn(`🔬 CargoSystem: Failed to reserve seat in nucleus ${nucleusOrganelle.id} for order ${order.id}`);
-        continue;
-      }
-      
-      // Get the assigned seat position
-      const seatPosition = this.worldRefs.organelleSystem.getSeatPosition(nucleusOrganelle.id, seatId);
-      if (!seatPosition) {
-        console.warn(`🔬 CargoSystem: Failed to get seat position for ${seatId} in nucleus ${nucleusOrganelle.id}`);
-        this.worldRefs.organelleSystem.releaseSeat(nucleusOrganelle.id, seatId);
-        continue;
-      }
-      
-      // Create transcript at the reserved seat position
-      console.log(`🔬 CargoSystem: Creating transcript for ${order.proteinId} at reserved seat (${seatPosition.q}, ${seatPosition.r})`);
-      const transcript = this.createTranscript(order.proteinId, seatPosition);
-      
-      // Transfer seat reservation to the actual cargo ID
-      this.worldRefs.organelleSystem.releaseSeat(nucleusOrganelle.id, seatId);
-      const finalSeatId = this.worldRefs.organelleSystem.reserveSeat(nucleusOrganelle.id, transcript.id);
-      if (!finalSeatId) {
-        console.warn(`🔬 CargoSystem: Failed to transfer seat reservation to cargo ${transcript.id}`);
+        console.warn(`Failed to reserve seat in nucleus for transcript ${transcript.id}`);
         this.removeCargo(transcript.id);
         continue;
       }
       
-      console.log(`🔬 CargoSystem: Positioned transcript ${transcript.id} at nucleus seat (${seatPosition.q}, ${seatPosition.r})`);
-      
-      // Set destination and seat information for the transcript
-      transcript.destHex = order.destHex;
-      transcript.state = 'TRANSFORMING'; // Start processing immediately since it's spawned in nucleus
-      transcript.reservedSeatId = finalSeatId;
-      transcript.targetOrganelleId = nucleusOrganelle.id;
-      
-      // Use itinerary from the install order and start processing for current stage
-      transcript.itinerary = order.itinerary;
-      
-      // Start nucleus processing
-      const currentStage = transcript.itinerary.stages[0]; // Stage 0 = nucleus
-      if (currentStage && currentStage.processMs) {
-        transcript.processingTimer = currentStage.processMs;
-        console.log(`🎬 CargoSystem: Starting ${currentStage.processMs}ms processing for transcript ${transcript.id} in nucleus`);
+      // Get the seat position and move transcript there
+      const seatPosition = this.worldRefs.organelleSystem.getSeatPosition(nucleusOrganelle.id, seatId);
+      if (!seatPosition) {
+        console.warn(`Failed to get seat position for transcript ${transcript.id}`);
+        this.worldRefs.organelleSystem.releaseSeat(nucleusOrganelle.id, seatId);
+        this.removeCargo(transcript.id);
+        continue;
       }
       
-      console.log(`✅ CargoSystem: Created transcript ${transcript.id} for order ${order.id} with seat ${finalSeatId} and ${transcript.itinerary?.stages.length || 0} stages`);
+      // Position transcript and set up for processing
+      this.setCargoPosition(transcript, seatPosition);
+      transcript.destHex = order.destHex;
+      transcript.reservedSeatId = seatId;
+      transcript.targetOrganelleId = nucleusOrganelle.id;
+      transcript.itinerary = order.itinerary;
+      
+      // Trigger stage arrival processing for the nucleus stage
+      console.log(`🎬 CargoSystem: Starting nucleus processing for transcript ${transcript.id}`);
+      this.handleStageArrival(transcript);
       
       // Remove processed order
       this.worldRefs.installOrderSystem.removeProcessedOrder(order.id);
@@ -635,6 +628,16 @@ export class CargoSystem extends System {
         // If auto-routing assigned a seat, move cargo to seat position immediately
         if (cargo.reservedSeatId && cargo.targetOrganelleId) {
           this.positionCargoAtSeat(cargo, `Dropped cargo auto-positioning`);
+          
+          // Check if the cargo is now at the correct organelle for its current stage
+          const targetOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId);
+          const currentStage = cargo.itinerary?.stages[cargo.itinerary.stageIndex];
+          
+          if (targetOrganelle && currentStage && targetOrganelle.type === currentStage.kind) {
+            // Cargo has arrived at the correct organelle, trigger arrival processing
+            console.log(`📦 CargoSystem: Dropped cargo ${cargo.id} arrived at correct organelle ${currentStage.kind}, starting processing`);
+            this.handleStageArrival(cargo);
+          }
         }
         
         return true;
@@ -691,6 +694,22 @@ export class CargoSystem extends System {
     
     // Attempt auto-routing when cargo lands
     this.tryStartAutoRouting(cargo);
+    
+    // If auto-routing assigned a seat, move cargo to seat position immediately
+    if (cargo.reservedSeatId && cargo.targetOrganelleId) {
+      this.positionCargoAtSeat(cargo, `Thrown cargo auto-positioning`);
+      
+      // Check if the cargo is now at the correct organelle for its current stage
+      const targetOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId);
+      const currentStage = cargo.itinerary?.stages[cargo.itinerary.stageIndex];
+      
+      if (targetOrganelle && currentStage && targetOrganelle.type === currentStage.kind) {
+        // Cargo has arrived at the correct organelle, trigger arrival processing
+        console.log(`🎯 CargoSystem: Thrown cargo ${cargo.id} arrived at correct organelle ${currentStage.kind}, starting processing`);
+        this.handleStageArrival(cargo);
+      }
+    }
+    
     return true;
   }
 
@@ -768,43 +787,37 @@ export class CargoSystem extends System {
     // Validate the destination organelle exists and seat is still reserved
     const targetOrganelle = this.worldRefs.organelleSystem.getOrganelle(cargo.targetOrganelleId!);
     if (!targetOrganelle) {
-      console.log(`🚫 CargoSystem: Target organelle ${cargo.targetOrganelleId} not found for cargo ${cargo.id}`);
       return false;
     }
 
     // Get the actual seat position for validation
     const seatPosition = this.getSeatPositionForCargo(cargo);
     if (!seatPosition) {
-      console.log(`🚫 CargoSystem: Seat position not found for cargo ${cargo.id}`);
       return false;
     }
 
     // Validate destination matches the seat position for all organelles (including transporters)
     if (cargo.currentStageDestination!.q !== seatPosition.q || cargo.currentStageDestination!.r !== seatPosition.r) {
-      console.log(`🚫 CargoSystem: Destination mismatch for cargo ${cargo.id}: destination (${cargo.currentStageDestination!.q},${cargo.currentStageDestination!.r}) vs seat (${seatPosition.q},${seatPosition.r})`);
       return false;
     }
 
-    
     return true;
   }
 
   @RunOnServer()
   private updateProcessingTimers(): void {
-    const deltaMs = 1000; // Called every 1000ms from updateAutoRouting
+    // Processing timers are now handled by setTimeout in handleStageArrival
+    // This method is kept for compatibility but no longer manages processing completion
     
-    for (const cargo of Object.values(this.cargoState.cargo)) {
-      if (cargo.state === 'TRANSFORMING' && cargo.processingTimer > 0) {
-        cargo.processingTimer -= deltaMs;
-        
-        // When processing completes, transition back to routing state
-        if (cargo.processingTimer <= 0) {
-          cargo.processingTimer = 0;
-          cargo.state = 'QUEUED'; // Ready to route to next stage
-          console.log(`✅ CargoSystem: ${cargo.currentType} ${cargo.id} completed processing, ready for next stage`);
-        }
-      }
-    }
+    // We could add visual timer updates here if needed for UI feedback
+    // const deltaMs = 1000; // Called every 1000ms from updateAutoRouting
+    
+    // for (const cargo of Object.values(this.cargoState.cargo)) {
+    //   if (cargo.state === 'TRANSFORMING' && cargo.processingTimer > 0) {
+    //     cargo.processingTimer -= deltaMs;
+    //     // Note: Do NOT change cargo.state here - let setTimeout handle completion
+    //   }
+    // }
   }
 
   @RunOnServer()
@@ -818,7 +831,6 @@ export class CargoSystem extends System {
         
         // Re-evaluate if destination is still valid before each movement step
         if (!this.validateCurrentDestination(cargo)) {
-          console.log(`🔄 CargoSystem: Destination no longer valid for cargo ${cargo.id}, rerouting`);
           cargo.state = 'BLOCKED';
           cargo.segmentState = undefined;
           this.blockedCargo.add(cargo.id);
@@ -859,11 +871,6 @@ export class CargoSystem extends System {
     
     const destination = this.determineNextStageDestination(cargo);
     if (!destination) {
-      console.log(`🚫 CargoSystem: No destination found for cargo ${cargo.id} - setting state to BLOCKED`);
-      
-      // Release any current seat reservation before marking as blocked
-      // this.releaseSeatReservation(cargo, 'No destination found - blocking cargo');
-      
       cargo.state = 'BLOCKED'; // Set cargo state to blocked when pathfinding fails
       cargo.currentStageDestination = undefined; // Clear stale destination
       this.blockedCargo.add(cargo.id); // Add to retry queue
@@ -893,7 +900,6 @@ export class CargoSystem extends System {
       cargo.state = 'BLOCKED'; // Update UI state to reflect blocked status
       this.blockedCargo.add(cargo.id);
       this.cargoFailureTimes.set(cargo.id, Date.now()); // Record failure time
-      console.log(`🚫 CargoSystem: Cargo ${cargo.id} blocked, added to retry queue`);
     }
   }
 
@@ -904,8 +910,6 @@ export class CargoSystem extends System {
     let currentStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
     if (!currentStage) return null; // No more stages
     
-    console.log(`🎯 CargoSystem: Determining destination for ${cargo.currentType} ${cargo.id} at stage ${cargo.itinerary.stageIndex} (${currentStage.kind}) currently at ${cargo.atHex ? `(${cargo.atHex.q},${cargo.atHex.r})` : 'no location'}`);
-    
     // Check if we need to advance to the next stage
     // Only advance if cargo has completed processing in the current stage
     if (cargo.atHex && cargo.processingTimer <= 0) {
@@ -915,10 +919,8 @@ export class CargoSystem extends System {
         cargo.itinerary.stageIndex++;
         const nextStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
         if (!nextStage) {
-          console.log(`🏁 CargoSystem: ${cargo.currentType} ${cargo.id} completed all stages`);
           return null; // Completed all stages
         }
-        console.log(`➡️ CargoSystem: Advancing ${cargo.currentType} ${cargo.id} from stage ${cargo.itinerary.stageIndex-1} (${currentStage.kind}) to stage ${cargo.itinerary.stageIndex} (${nextStage.kind})`);
         // Update currentStage to the new stage for routing
         currentStage = nextStage;
       }
@@ -936,15 +938,12 @@ export class CargoSystem extends System {
       if (seatPosition) {
         // Validate destination is different from current position
         if (cargo.atHex && seatPosition.q === cargo.atHex.q && seatPosition.r === cargo.atHex.r) {
-          console.warn(`🚫 CargoSystem: ${cargo.currentType} ${cargo.id} destination (${seatPosition.q},${seatPosition.r}) same as current position! Stage: ${cargo.itinerary?.stageIndex}/${cargo.itinerary?.stages.length}, Current stage: ${currentStage.kind}`);
           return null;
         }
-        console.log(`✅ CargoSystem: ${cargo.currentType} ${cargo.id} routing to ${currentStage.kind} at (${seatPosition.q},${seatPosition.r})`);
         return seatPosition;
       }
       
       // Fallback to organelle center if seat position lookup fails (shouldn't happen)
-      console.warn(`🚫 CargoSystem: Could not get seat position for cargo ${cargo.id} with seat ${cargo.reservedSeatId}, using organelle center`);
       return routeResult.organelle.coord;
     }
     
@@ -979,18 +978,11 @@ export class CargoSystem extends System {
     }
     
     // Fallback to cytoskeleton pathfinding for non-adjacent movement
-    console.log(`🚀 CargoSystem: Cytoskeleton movement for cargo ${cargo.id} to seat at (${seatPosition.q}, ${seatPosition.r})`);
-    
     const graph = this.worldRefs.cytoskeletonSystem.graph;
     
     // Check if path exists to current destination
     const pathResult = graph.findPath(cargo.atHex!, seatPosition, cargo.currentType);
     if (!pathResult.success) {
-      console.log(`🚫 CargoSystem: No path found for cargo ${cargo.id}: ${pathResult.reason}`);
-      
-      // Release seat reservation since we can't reach it
-      // this.releaseSeatReservation(cargo, `No path found: ${pathResult.reason}`);
-      
       cargo.state = 'BLOCKED'; // Set blocked state when pathfinding fails
       this.blockedCargo.add(cargo.id); // Add to retry queue
       this.cargoFailureTimes.set(cargo.id, Date.now()); // Record failure time
@@ -1034,7 +1026,6 @@ export class CargoSystem extends System {
         if (cargo.state !== 'BLOCKED') {
           this.blockedCargo.delete(cargoId);
           this.cargoFailureTimes.delete(cargoId); // Clear failure time on success
-          console.log(`✅ CargoSystem: Unblocked cargo ${cargoId}`);
         } else {
           // Update failure time if it failed again
           this.cargoFailureTimes.set(cargoId, now);
@@ -1108,13 +1099,31 @@ export class CargoSystem extends System {
         cargo.itinerary.stageIndex++;
         console.log(`⏭️ CargoSystem: Cargo ${cargo.id} completed stage processing, advanced to stage ${cargo.itinerary.stageIndex} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`);
         
-        // Release current seat since cargo is moving to next stage
-        // this.releaseSeatReservation(cargo, `Completed stage ${cargo.itinerary.stageIndex - 1}, moving to next stage`);
-        
         this.tryStartAutoRouting(cargo);
       } else {
-        console.log(`🏁 CargoSystem: Cargo ${cargo.id} completed all stages`);
-        this.performProteinInstallation(cargo);
+        // This is the final stage - check if it's a transporter stage that needs final processing
+        if (cargo.itinerary) {
+          const finalStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
+          if (finalStage.kind === 'transporter') {
+            console.log(`🏭 CargoSystem: Cargo ${cargo.id} starting final transporter processing (${finalStage.processMs}ms) before installation`);
+            // Set cargo state to show it's processing
+            cargo.state = 'TRANSFORMING';
+            cargo.processingTimer = finalStage.processMs;
+            
+            // Set up final processing at transporter before installation
+            setTimeout(() => {
+              cargo.state = 'QUEUED'; // Reset state before installation
+              console.log(`🏁 CargoSystem: Cargo ${cargo.id} completed all stages including final transporter processing`);
+              this.performProteinInstallation(cargo);
+            }, finalStage.processMs);
+          } else {
+            console.log(`🏁 CargoSystem: Cargo ${cargo.id} completed all stages`);
+            this.performProteinInstallation(cargo);
+          }
+        } else {
+          console.log(`🏁 CargoSystem: Cargo ${cargo.id} completed all stages`);
+          this.performProteinInstallation(cargo);
+        }
       }
     }, currentStage.processMs);
   }
@@ -1151,22 +1160,22 @@ export class CargoSystem extends System {
           this.removeCargo(cargo.id);
           return;
         }
+        console.log(`✅ CargoSystem: Successfully installed ${cargo.proteinId} into ${targetOrganelle.type} ${targetOrganelle.id}`);
       } else {
-        console.warn(`🚧 CargoSystem: Protein installation for ${targetOrganelle.type} organelles not yet implemented`);
+        // For other organelle types, just log that installation isn't implemented yet
+        console.log(`🚧 CargoSystem: Protein installation for ${targetOrganelle.type} organelles not yet implemented - treating as completed for now`);
+        console.log(`✅ CargoSystem: Cargo delivery completed for ${cargo.proteinId} to ${targetOrganelle.type} ${targetOrganelle.id} (installation logic pending)`);
       }
-      
-      console.log(`✅ CargoSystem: Successfully installed ${cargo.proteinId} into ${targetOrganelle.type} ${targetOrganelle.id}`);
     } catch (error) {
       console.error(`❌ CargoSystem: Failed to install protein ${cargo.proteinId}:`, error);
     }
 
     // Clean up the cargo - release seat and remove from system
-    // this.releaseSeatReservation(cargo, 'Protein installation completed');
     this.removeCargo(cargo.id);
   }
 
   @RunOnServer()
-  private findAndInstallMembraneProtein(proteinId: ProteinId, organelle: any): boolean {
+  private findAndInstallMembraneProtein(proteinId: ProteinId, organelle: Organelle): boolean {
     // Get all membrane coordinates around the organelle footprint
     const membraneCoords: HexCoord[] = [];
     
@@ -1194,28 +1203,17 @@ export class CargoSystem extends System {
     
     // Try to install at each membrane coordinate until one succeeds
     for (const coord of membraneCoords) {
-      if (this.installMembraneProtein(proteinId, coord)) {
+      console.log(`🧬 CargoSystem: Attempting to install ${proteinId} at (${coord.q}, ${coord.r}) - delegating to MembraneExchangeSystem`);
+      const success = this.worldRefs.membraneExchangeSystem.installMembraneProtein(coord, proteinId);
+      if (success) {
         console.log(`🧬 CargoSystem: Successfully installed ${proteinId} at membrane position (${coord.q}, ${coord.r}) near ${organelle.id}`);
         return true;
-      }
+      } else {
+      console.warn(`❌ CargoSystem: Failed to install ${proteinId} at (${coord.q}, ${coord.r})`);
+    }
     }
     
     return false;
-  }
-
-  @RunOnServer()
-  private installMembraneProtein(proteinId: ProteinId, coord: HexCoord): boolean {
-    // Use the membrane exchange system's proper protein installation method
-    // This will populate the installedProteins map and show in tile info
-    const success = this.worldRefs.membraneExchangeSystem.installMembraneProtein(coord, proteinId);
-    
-    if (success) {
-      console.log(`🧬 CargoSystem: Installed ${proteinId} at (${coord.q}, ${coord.r})`);
-    } else {
-      console.error(`❌ CargoSystem: Failed to install ${proteinId} at (${coord.q}, ${coord.r})`);
-    }
-    
-    return success;
   }
 
   override destroy() {
