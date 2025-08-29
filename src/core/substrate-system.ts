@@ -29,6 +29,9 @@ export interface TerrainFeature {
   /** Feature type */
   type: TerrainFeatureType;
   
+  /** Feature-specific properties */
+  properties: any;
+  
   /** Visual properties */
   color?: number;
   alpha?: number;

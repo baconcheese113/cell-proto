@@ -18,8 +18,6 @@
     "useUnknownInCatchVariables": true,
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
-    "noImplicitAny": true,
-    
 
     // Hygiene
     "noUnusedLocals": true,
@@ -37,10 +35,6 @@
 
     // Class fields semantics (safe with Phaser/XState)
     "useDefineForClassFields": true,
-    
-    // Enable decorators for network replication
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
 
     // Explicitly disallow importing ".ts" in paths
     "allowImportingTsExtensions": false,

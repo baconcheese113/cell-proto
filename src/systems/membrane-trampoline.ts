@@ -9,7 +9,6 @@
  * - VFX ripples and trailing streaks
  */
 
-import type { Player } from "@/actors/player";
 import type { WorldRefs } from "../core/world-refs";
 import { SystemObject } from "./system-object";
 
@@ -92,16 +91,18 @@ export class MembraneTrampoline extends SystemObject {
     this.worldRefs.cellRoot.add(this.trailGraphics);
   }
   
-  override update(_deltaSeconds: number): void {
+  override update(deltaSeconds: number): void {
+    this.updateControlLockout(deltaSeconds);
+    this.checkForTrampolineBounce();
     this.renderTrailEffects();
   }
   
   /**
    * Story 12.5: Check if player is dashing into membrane for bounce
    */
-  // @ts-ignore
   private checkForTrampolineBounce(): void {
-    const player = this.worldRefs.player;
+    const player = this.getPlayerActor();
+    if (!player) return;
     
     // Only check if player is dashing and moving fast enough
     const dashState = player.getDashState();
@@ -133,7 +134,7 @@ export class MembraneTrampoline extends SystemObject {
    * Story 12.5: Execute the trampoline launch with angle reflection
    */
   private executeTrampolineLaunch(
-    player: Player, 
+    player: any, 
     playerPos: Phaser.Math.Vector2, 
     membranePoint: { position: Phaser.Math.Vector2; normal: Phaser.Math.Vector2; tension: number },
     dashSpeed: number
@@ -205,7 +206,6 @@ export class MembraneTrampoline extends SystemObject {
   /**
    * Update control lockout system
    */
-  // @ts-ignore
   private updateControlLockout(deltaSeconds: number): void {
     if (!this.currentLaunch.isActive) return;
     
@@ -346,18 +346,20 @@ export class MembraneTrampoline extends SystemObject {
     
     // Render launch trail if currently launched
     if (this.currentLaunch.isActive) {
-      const player = this.worldRefs.player;
-      const playerPos = player.getWorldPosition();
-      const trailIntensity = this.currentLaunch.lockoutRemaining / this.config.airControlLockout;
-      
-      if (trailIntensity > 0) {
-        const trailLength = this.currentLaunch.launchSpeed * 0.1 * trailIntensity;
-        const trailEnd = playerPos.clone().subtract(
-          this.currentLaunch.launchDirection.clone().scale(trailLength)
-        );
+      const player = this.getPlayerActor();
+      if (player) {
+        const playerPos = player.getWorldPosition();
+        const trailIntensity = this.currentLaunch.lockoutRemaining / this.config.airControlLockout;
         
-        this.trailGraphics.lineStyle(3, 0xffffff, trailIntensity * 0.6);
-        this.trailGraphics.lineBetween(playerPos.x, playerPos.y, trailEnd.x, trailEnd.y);
+        if (trailIntensity > 0) {
+          const trailLength = this.currentLaunch.launchSpeed * 0.1 * trailIntensity;
+          const trailEnd = playerPos.clone().subtract(
+            this.currentLaunch.launchDirection.clone().scale(trailLength)
+          );
+          
+          this.trailGraphics.lineStyle(3, 0xffffff, trailIntensity * 0.6);
+          this.trailGraphics.lineBetween(playerPos.x, playerPos.y, trailEnd.x, trailEnd.y);
+        }
       }
     }
   }
@@ -386,5 +388,10 @@ export class MembraneTrampoline extends SystemObject {
   public getCooldownRemaining(): number {
     const timeSinceLastLaunch = (this.scene.time.now - this.lastLaunchTime) / 1000;
     return Math.max(0, this.config.baseCooldown - timeSinceLastLaunch);
+  }
+  
+  private getPlayerActor(): any {
+    // Access player through scene - adjust based on actual player access pattern
+    return (this.scene as any).playerActor;
   }
 }

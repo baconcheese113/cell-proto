@@ -13,21 +13,20 @@ import type { MembraneExchangeSystem } from "../membrane/membrane-exchange-syste
 import type { SpeciesId } from "../species/species-registry";
 import type { OrganelleType } from "../organelles/organelle-registry";
 import { getAllSpeciesIds } from "../species/species-registry";
-import { System } from "../systems/system";
-import { RunOnServer } from "../network/decorators";
-import type { NetBus } from "../network/net-bus";
-import type { BaseBlueprint } from "./base-blueprint";
-import { BlueprintProgressUtils } from "./base-blueprint";
-import type { CytoskeletonSystem } from "@/systems/cytoskeleton-system";
 
-export interface Blueprint extends BaseBlueprint {
-  anchorCoord: HexCoord; // Primary placement coordinate  
+export interface Blueprint {
+  id: string;
   recipeId: OrganelleType;
+  anchorCoord: HexCoord; // Primary placement coordinate
+  
+  // Construction state
+  progress: Record<SpeciesId, number>; // species ID -> amount contributed
+  totalProgress: number; // sum of all progress
+  isActive: boolean;
   
   // Runtime
+  createdAt: number;
   lastTickTime: number;
-  
-  // Note: totalProgress removed - use BlueprintProgressUtils.calculateOverallProgress() instead
 }
 
 export interface PlacementValidation {
@@ -36,52 +35,24 @@ export interface PlacementValidation {
   footprintTiles: HexCoord[];
 }
 
-export class BlueprintSystem extends System {
-  private blueprintState = this.stateChannel<{ blueprints: Record<string, Blueprint> }>('blueprints', { blueprints: {} });
+export class BlueprintSystem {
+  private hexGrid: HexGrid;
+  private blueprints: Map<string, Blueprint> = new Map();
   private blueprintsByTile: Map<string, Blueprint> = new Map(); // tile key -> blueprint
   private nextBlueprintId: number = 1;
 
-  constructor(
-    scene: Phaser.Scene,
-    netBus: NetBus, 
-    private hexGrid: HexGrid, 
-    private getOccupiedTiles: () => Set<string>, 
-    private membraneExchangeSystem: MembraneExchangeSystem,
-    private cytoskeletonSystem: CytoskeletonSystem, // CytoskeletonSystem (avoid circular import)
-    private spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void, 
-  ) {
-    super(scene, netBus, 'BlueprintSystem', (deltaSeconds: number) => this.processConstruction(deltaSeconds), { address: 'BlueprintSystem' });
-  }
+  // For organelle system integration
+  private getOccupiedTiles: () => Set<string>;
+  private spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void;
+  
+  // Milestone 6: Membrane system integration
+  private membraneExchangeSystem?: MembraneExchangeSystem;
 
-  // Helper methods for state channel access
-  private get blueprints(): Record<string, Blueprint> {
-    return this.blueprintState.blueprints;
-  }
-
-  private setBlueprintInState(id: string, blueprint: Blueprint): void {
-    this.blueprintState.blueprints[id] = blueprint;
-  }
-
-  private deleteBlueprintFromState(id: string): void {
-    delete this.blueprintState.blueprints[id];
-  }
-
-  // Helper method to check if a tile is occupied by any blueprint (uses replicated state)
-  private isTileOccupiedByBlueprint(q: number, r: number): boolean {
-    for (const blueprint of Object.values(this.blueprints)) {
-      const footprintTiles = CONSTRUCTION_RECIPES.getFootprintAt(
-        blueprint.recipeId,
-        blueprint.anchorCoord.q,
-        blueprint.anchorCoord.r
-      );
-      
-      for (const tile of footprintTiles) {
-        if (tile.q === q && tile.r === r) {
-          return true;
-        }
-      }
-    }
-    return false;
+  constructor(hexGrid: HexGrid, getOccupiedTiles: () => Set<string>, spawnOrganelle?: (type: OrganelleType, coord: HexCoord) => void, membraneExchangeSystem?: MembraneExchangeSystem) {
+    this.hexGrid = hexGrid;
+    this.getOccupiedTiles = getOccupiedTiles;
+    this.spawnOrganelle = spawnOrganelle;
+    this.membraneExchangeSystem = membraneExchangeSystem;
   }
 
   /**
@@ -111,7 +82,7 @@ export class BlueprintSystem extends System {
 
       // Check if tile is already occupied by organelle or blueprint
       const tileKey = `${tile.q},${tile.r}`;
-      if (occupiedTiles.has(tileKey) || this.isTileOccupiedByBlueprint(tile.q, tile.r)) {
+      if (occupiedTiles.has(tileKey) || this.blueprintsByTile.has(tileKey)) {
         errors.push(`Tile (${tile.q}, ${tile.r}) is already occupied`);
       }
 
@@ -146,12 +117,6 @@ export class BlueprintSystem extends System {
       if (!recipe.membraneOnly && isMembraneTile) {
         errors.push(`Non-membrane structures cannot be built on membrane tiles`);
       }
-      
-      // Milestone 13: Check for existing cytoskeleton segments
-      const segmentsAtTile = this.cytoskeletonSystem.getSegmentsAtTile({ q: tile.q, r: tile.r });
-      if (segmentsAtTile.length > 0) {
-        errors.push(`Tile (${tile.q}, ${tile.r}) is occupied by cytoskeleton segments`);
-      }
     }
 
     return {
@@ -164,7 +129,6 @@ export class BlueprintSystem extends System {
   /**
    * Task 2: Place a blueprint
    */
-  @RunOnServer()
   public placeBlueprint(recipeId: OrganelleType, anchorQ: number, anchorR: number): { success: boolean; blueprintId?: string; error?: string } {
     const validation = this.validatePlacement(recipeId, anchorQ, anchorR);
     
@@ -189,16 +153,15 @@ export class BlueprintSystem extends System {
       recipeId,
       anchorCoord: { q: anchorQ, r: anchorR },
       progress,
-      required: { ...recipe.buildCost }, // Add required resources from recipe
+      totalProgress: 0,
       isActive: true,
       createdAt: Date.now(),
       lastTickTime: Date.now()
     };
 
-    this.setBlueprintInState(blueprintId, blueprint);
+    this.blueprints.set(blueprintId, blueprint);
 
     // Mark footprint tiles as occupied by this blueprint
-    // NOTE: blueprintsByTile Map is now redundant since we use replicated state for queries
     for (const tile of validation.footprintTiles) {
       const tileKey = `${tile.q},${tile.r}`;
       this.blueprintsByTile.set(tileKey, blueprint);
@@ -213,13 +176,12 @@ export class BlueprintSystem extends System {
   }
 
   /**
-   * Construction processing called automatically by System base class
    * Task 3: Construction progress - pull species from footprint tiles
    * Task 8: Respects priority order (runs after organelles)
    */
-  private processConstruction(deltaTime: number): void {
+  public processConstruction(deltaTime: number): void {
     // Process blueprints in creation order (FIFO - first placed gets priority)
-    const sortedBlueprints = Object.values(this.blueprints)
+    const sortedBlueprints = Array.from(this.blueprints.values())
       .filter(bp => bp.isActive)
       .sort((a, b) => a.createdAt - b.createdAt);
 
@@ -239,7 +201,7 @@ export class BlueprintSystem extends System {
     );
 
     // Calculate how much we can pull this tick
-    const maxPullPerTick = recipe.buildRatePerTick * deltaTime; // deltaTime is already in seconds
+    const maxPullPerTick = recipe.buildRatePerTick * (deltaTime / 1000); // convert to per-second rate
 
     // Try to pull each required species
     for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost) as [SpeciesId, number][]) {
@@ -257,6 +219,9 @@ export class BlueprintSystem extends System {
       
       if (actualPulled > 0) {
         blueprint.progress[speciesId] = blueprint.progress[speciesId] + actualPulled;
+        blueprint.totalProgress += actualPulled;
+        
+        // console.log(`Blueprint ${blueprint.id} consumed ${actualPulled.toFixed(2)} ${speciesId} (${blueprint.progress[speciesId].toFixed(2)}/${requiredAmount})`);
       }
     }
 
@@ -290,7 +255,7 @@ export class BlueprintSystem extends System {
    * Task 4: Player contribution - add dropped species directly to progress
    */
   public addPlayerContribution(blueprintId: string, speciesId: SpeciesId, amount: number): boolean {
-    const blueprint = this.blueprints[blueprintId];
+    const blueprint = this.blueprints.get(blueprintId);
     if (!blueprint || !blueprint.isActive) return false;
 
     const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
@@ -303,6 +268,7 @@ export class BlueprintSystem extends System {
 
     if (actualContribution > 0) {
       blueprint.progress[speciesId] = currentProgress + actualContribution;
+      blueprint.totalProgress += actualContribution;
       
       console.log(`Player contributed ${actualContribution.toFixed(2)} ${speciesId} to ${blueprint.id}`);
       
@@ -317,8 +283,17 @@ export class BlueprintSystem extends System {
    * Task 6: Check completion and spawn organelle
    */
   private checkCompletion(blueprint: Blueprint, recipe: ConstructionRecipe): void {
-    // Use shared completion logic
-    if (BlueprintProgressUtils.isComplete(blueprint)) {
+    // Check if ALL species requirements are met (not just total progress)
+    let allRequirementsMet = true;
+    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost) as [SpeciesId, number][]) {
+      const currentProgress = blueprint.progress[speciesId] || 0;
+      if (currentProgress < requiredAmount) {
+        allRequirementsMet = false;
+        break;
+      }
+    }
+    
+    if (allRequirementsMet) {
       console.log(`Blueprint ${blueprint.id} completed! All requirements met. Spawning ${recipe.onCompleteType}`);
       
       // Spawn organelle if callback is provided and recipe specifies an organelle to create
@@ -336,9 +311,8 @@ export class BlueprintSystem extends System {
   /**
    * Task 7: Cancel/demolish blueprint
    */
-  @RunOnServer()
   public cancelBlueprint(blueprintId: string, refundFraction: number = 0.5): boolean {
-    const blueprint = this.blueprints[blueprintId];
+    const blueprint = this.blueprints.get(blueprintId);
     if (!blueprint) return false;
 
     // Calculate refund
@@ -376,7 +350,7 @@ export class BlueprintSystem extends System {
   }
 
   private removeBlueprint(blueprintId: string): void {
-    const blueprint = this.blueprints[blueprintId];
+    const blueprint = this.blueprints.get(blueprintId);
     if (!blueprint) return;
 
     // Remove from tile occupation map
@@ -386,48 +360,30 @@ export class BlueprintSystem extends System {
       blueprint.anchorCoord.r
     );
 
-    // NOTE: blueprintsByTile Map is now redundant since we use replicated state for queries
     for (const tile of footprintTiles) {
       const tileKey = `${tile.q},${tile.r}`;
       this.blueprintsByTile.delete(tileKey);
     }
 
-    this.deleteBlueprintFromState(blueprintId);
+    this.blueprints.delete(blueprintId);
   }
 
   // Accessors for UI and integration
   public getAllBlueprints(): Blueprint[] {
-    return Object.values(this.blueprints);
+    return Array.from(this.blueprints.values());
   }
 
   public getBlueprint(id: string): Blueprint | undefined {
-    return this.blueprints[id];
+    return this.blueprints.get(id);
   }
 
   public getBlueprintAtTile(q: number, r: number): Blueprint | undefined {
-    // Search through replicated blueprint state instead of local tile map
-    // This ensures clients can find blueprints placed by host
-    for (const blueprint of Object.values(this.blueprints)) {
-      // Get the blueprint's footprint tiles
-      const footprintTiles = CONSTRUCTION_RECIPES.getFootprintAt(
-        blueprint.recipeId,
-        blueprint.anchorCoord.q,
-        blueprint.anchorCoord.r
-      );
-      
-      // Check if the requested tile is within this blueprint's footprint
-      for (const tile of footprintTiles) {
-        if (tile.q === q && tile.r === r) {
-          return blueprint;
-        }
-      }
-    }
-    
-    return undefined;
+    const tileKey = `${q},${r}`;
+    return this.blueprintsByTile.get(tileKey);
   }
 
   public getFootprintTiles(blueprintId: string): HexCoord[] {
-    const blueprint = this.blueprints[blueprintId];
+    const blueprint = this.blueprints.get(blueprintId);
     if (!blueprint) return [];
 
     return CONSTRUCTION_RECIPES.getFootprintAt(
@@ -440,9 +396,8 @@ export class BlueprintSystem extends System {
   /**
    * Instantly complete a blueprint construction (for F key functionality)
    */
-  @RunOnServer()
   public instantlyComplete(blueprintId: string): { success: boolean; error?: string } {
-    const blueprint = this.blueprints[blueprintId];
+    const blueprint = this.blueprints.get(blueprintId);
     if (!blueprint) {
       return { success: false, error: 'Blueprint not found' };
     }
@@ -459,6 +414,7 @@ export class BlueprintSystem extends System {
     // Fill all requirements instantly
     for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
       blueprint.progress[speciesId as SpeciesId] = requiredAmount;
+      blueprint.totalProgress += requiredAmount;
     }
 
     // Force completion check

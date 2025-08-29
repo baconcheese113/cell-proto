@@ -5,8 +5,7 @@
  * Displays unified cargo information with visual indicators
  */
 
-import type { Cargo, CargoType } from "@/core/world-refs";
-import type { CargoSystem } from "./cargo-system";
+import type { UnifiedCargoSystem, CargoType } from "./unified-cargo-system";
 
 export interface CargoHUDConfig {
   position: { x: number; y: number };
@@ -31,12 +30,11 @@ export class CargoHUD {
   
   constructor(
     private scene: Phaser.Scene,
-    private cargoSystem: CargoSystem,
+    private cargoSystem: UnifiedCargoSystem,
     config: Partial<CargoHUDConfig> = {}
   ) {
-    console.log(`🎨 CargoHUD: Constructor called for player`);
     this.config = {
-      position: { x: 20, y: 220 },
+      position: { x: 20, y: 20 },
       width: 220,
       height: 100,
       backgroundColor: 0x000000,
@@ -46,7 +44,6 @@ export class CargoHUD {
     };
     
     this.createHUDElements();
-    console.log(`🎨 CargoHUD: Constructor complete, container created:`, !!this.container);
   }
   
   private createHUDElements(): void {
@@ -97,56 +94,43 @@ export class CargoHUD {
     
     // Initially hidden
     this.container.setVisible(false);
-    this.container.setScrollFactor(0);
   }
   
   public update(): void {
-    // Get carried cargo for this player
-    const carriedCargo = this.cargoSystem.getMyPlayerInventory();
-    const showLogs = Math.random() < 0.001; // don't Log more frequently for debugging
+    const hudInfo = this.cargoSystem.getHUDInfo();
     
-    if (carriedCargo.length > 0) {
+    if (hudInfo) {
       if (!this.isVisible) {
-        if(showLogs) console.log(`🎨 CargoHUD: Showing HUD with ${carriedCargo.length} carried cargo`);
         this.container.setVisible(true);
         this.isVisible = true;
       }
       
-      // Show info for the first carried cargo item
-      const cargo = carriedCargo[0];
-      
-      // Calculate real-time TTL on client for smooth display
-      const now = Date.now();
-      const elapsedMs = now - cargo.createdAt;
-      const elapsedSeconds = elapsedMs / 1000;
-      const ttlRemaining = Math.max(0, cargo.ttlSecondsInitial - elapsedSeconds);
-      
-      // Pass the cargo object directly instead of extracting individual properties
-      this.updateCargoDisplay(cargo, ttlRemaining);
+      this.updateCargoDisplay(hudInfo);
     } else {
       if (this.isVisible) {
-        if(showLogs) console.log(`🎨 CargoHUD: Hiding HUD - no carried cargo`);
         this.container.setVisible(false);
         this.isVisible = false;
       }
     }
   }
   
-  private updateCargoDisplay(cargo: Cargo, ttlRemaining: number): void {
-    // Calculate TTL percentage
-    const ttlPercent = ttlRemaining / cargo.ttlSecondsInitial;
-    
+  private updateCargoDisplay(hudInfo: {
+    type: CargoType;
+    ttlRemaining: number;
+    ttlPercent: number;
+    targets: Array<{ targetType: string; distance: number; isValid: boolean }>;
+  }): void {
     // Update cargo icon
-    this.updateCargoIcon(cargo.currentType);
+    this.updateCargoIcon(hudInfo.type);
     
     // Update cargo type text
-    this.cargoTypeText.setText(this.getCargoDisplayName(cargo.currentType));
+    this.cargoTypeText.setText(this.getCargoDisplayName(hudInfo.type));
     
     // Update TTL display
-    this.updateTTLDisplay(ttlRemaining, ttlPercent);
+    this.updateTTLDisplay(hudInfo.ttlRemaining, hudInfo.ttlPercent);
     
-    // Update targets display using cargo.itinerary directly
-    this.updateTargetsDisplayFromItinerary(cargo);
+    // Update targets display
+    this.updateTargetsDisplay(hudInfo.targets);
   }
   
   private updateCargoIcon(type: CargoType): void {
@@ -220,19 +204,22 @@ export class CargoHUD {
     this.ttlBar.strokeRect(barX, barY, barWidth, barHeight);
   }
   
-  /**
-   * Updated method that uses cargo.itinerary directly instead of separate parameters
-   */
-  private updateTargetsDisplayFromItinerary(cargo: Cargo): void {
-    let targetsText = "";
+  private updateTargetsDisplay(targets: Array<{ targetType: string; distance: number; isValid: boolean }>): void {
+    let targetsText = "Targets:\n";
     
-    // Show current stage info from itinerary
-    if (cargo.itinerary) {
-      const currentStage = cargo.itinerary.stages[cargo.itinerary.stageIndex];
-      if (currentStage) {
-        const stageNumber = cargo.itinerary.stageIndex + 1;
-        const totalStages = cargo.itinerary.stages.length;
-        targetsText += `Target: ${currentStage.kind} (Stage ${stageNumber}/${totalStages})\n`;
+    if (targets.length === 0) {
+      targetsText += "None available";
+    } else {
+      for (let i = 0; i < Math.min(3, targets.length); i++) { // Show max 3 targets
+        const target = targets[i];
+        const distance = Math.round(target.distance);
+        const status = target.isValid ? "✓" : "○";
+        
+        targetsText += `${status} ${target.targetType} (${distance}px)\n`;
+      }
+      
+      if (targets.length > 3) {
+        targetsText += `... +${targets.length - 3} more`;
       }
     }
     

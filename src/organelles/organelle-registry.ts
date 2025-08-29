@@ -82,7 +82,7 @@ export const ORGANELLE_REGISTRY: Record<OrganelleType, OrganelleDefinition> = {
     throughputCap: 3,
     priority: 2,
     buildCost: { 'AA': 15, 'PRE_MRNA': 8 },
-    buildRatePerTick: 3.0, // Increased from 0.5 to 3.0 (7-8 seconds to build)
+    buildRatePerTick: 0.5,
     starterPlacement: {
       coord: { q: 2, r: -1 },
       instanceId: 'ribosome-hub-1'
@@ -99,7 +99,7 @@ export const ORGANELLE_REGISTRY: Record<OrganelleType, OrganelleDefinition> = {
     throughputCap: 2,
     priority: 3,
     buildCost: { 'PROTEIN': 45 },
-    buildRatePerTick: 4.5, // Increased from 0.4 to 4.5 (10 seconds to build)
+    buildRatePerTick: 0.4,
     starterPlacement: {
       coord: { q: -1, r: 3 },
       instanceId: 'proto-er-1'
@@ -116,7 +116,7 @@ export const ORGANELLE_REGISTRY: Record<OrganelleType, OrganelleDefinition> = {
     throughputCap: 20,
     priority: 4,
     buildCost: { 'PROTEIN': 35, 'CARGO': 15 },
-    buildRatePerTick: 5.0, // Increased from 0.6 to 5.0 (10 seconds to build)
+    buildRatePerTick: 0.6,
     starterPlacement: {
       coord: { q: 5, r: -1 },
       instanceId: 'golgi-1'
@@ -133,7 +133,7 @@ export const ORGANELLE_REGISTRY: Record<OrganelleType, OrganelleDefinition> = {
     throughputCap: 18,
     priority: 2,
     buildCost: { 'PROTEIN': 30 },
-    buildRatePerTick: 3.0 // Increased from 0.7 to 3.0 (10 seconds to build)
+    buildRatePerTick: 0.7
   },
 
   // Milestone 6: Membrane organelles
@@ -208,7 +208,7 @@ export function getStarterOrganelleDefinitions(): OrganelleDefinition[] {
 /**
  * Convert organelle definition to config format for organelle system
  */
-export function definitionToConfig(definition: OrganelleDefinition, instanceId?: string) {
+export function definitionToConfig(definition: OrganelleDefinition, instanceId?: string): any {
   return {
     id: instanceId || `${definition.type}-${Date.now()}`,
     type: definition.type,

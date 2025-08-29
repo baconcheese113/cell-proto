@@ -1,12 +1,11 @@
 import type { WorldRefs } from "../core/world-refs";
-import { System } from "./system";
-import type { NetBus } from "../network/net-bus";
+import { SystemObject } from "./system-object";
 
 /**
  * Consolidated Cell Transport System
  * Handles: organelle updates, membrane exchange, diffusion, passive effects
  */
-export class CellTransport extends System {
+export class CellTransport extends SystemObject {
   private worldRefs: WorldRefs;
   private diffusionTimeAccumulator = 0;
   private readonly diffusionTimestep = 1/30; // 30 Hz diffusion rate
@@ -15,15 +14,15 @@ export class CellTransport extends System {
   private updateCount = 0;
   private lastPerformanceLog = 0;
 
-  constructor(scene: Phaser.Scene, bus: NetBus, worldRefs: WorldRefs) {
-    super(scene, bus, 'CellTransport', (deltaSeconds: number) => this.update(deltaSeconds));
+  constructor(scene: Phaser.Scene, worldRefs: WorldRefs) {
+    super(scene, 'CellTransport', (deltaSeconds: number) => this.update(deltaSeconds));
     this.worldRefs = worldRefs;
   }
 
   /**
    * Main update cycle - runs all transport phases in order
    */
-  public override update(deltaSeconds: number) {
+  override update(deltaSeconds: number) {
     this.updateCount++;
     
     // Log performance metrics every 5 seconds
@@ -50,5 +49,13 @@ export class CellTransport extends System {
 
     // Phase 4: Update passive effects (species production/consumption)
     this.worldRefs.passiveEffectsSystem.step(deltaSeconds);
+
+    // Phase 5: Update conservation tracking
+    this.worldRefs.conservationTracker.update();
+  }
+
+  override destroy() {
+    // Nothing to clean up - systems managed by worldRefs
+    super.destroy();
   }
 }

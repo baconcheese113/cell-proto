@@ -33,6 +33,11 @@ interface RenderConfig {
   // Infrastructure overlay
   infrastructureAlpha: number;
   flowArrowColor: number;
+  utilizationColors: {
+    low: number;    // Green
+    medium: number; // Yellow  
+    high: number;   // Red
+  };
   
   // Milestone 13 Part B: Speed visualization
   chevronConfig: {
@@ -62,7 +67,6 @@ export class CytoskeletonRenderer extends SystemObject {
   
   // State
   private infrastructureOverlayEnabled = false;
-  private pathVisualizationEnabled = true; // Task 6: Cargo path visualization
   private lastFullRedraw = 0;
   
   // Milestone 13 Part B: Animation state for chevrons
@@ -84,6 +88,11 @@ export class CytoskeletonRenderer extends SystemObject {
     
     infrastructureAlpha: 0.8,   // Bright when overlay on
     flowArrowColor: 0xffffff,
+    utilizationColors: {
+      low: 0x50e3c2,     // Green
+      medium: 0xf5a623,  // Yellow
+      high: 0xd0021b     // Red
+    },
     
     // Milestone 13 Part B: Speed visualization chevrons
     chevronConfig: {
@@ -164,16 +173,6 @@ export class CytoskeletonRenderer extends SystemObject {
   }
 
   /**
-   * Task 6: Toggle cargo path visualization on/off
-   */
-  public togglePathVisualization(): void {
-    this.pathVisualizationEnabled = !this.pathVisualizationEnabled;
-    this.renderAll();
-    
-    console.log(`Cargo path visualization: ${this.pathVisualizationEnabled ? 'ON' : 'OFF'}`);
-  }
-
-  /**
    * Main rendering method
    */
   private renderAll(): void {
@@ -185,11 +184,6 @@ export class CytoskeletonRenderer extends SystemObject {
     // Render overlays if enabled
     if (this.infrastructureOverlayEnabled) {
       this.renderInfrastructureOverlay();
-    }
-    
-    // Task 6: Render cargo paths if enabled
-    if (this.pathVisualizationEnabled) {
-      this.renderCargoPaths();
     }
   }
 
@@ -285,8 +279,8 @@ export class CytoskeletonRenderer extends SystemObject {
     
     for (const blueprint of blueprints) {
       // Calculate construction progress
-      const aaProgress = blueprint.progress['AA'] / blueprint.required['AA'];
-      const proteinProgress = blueprint.progress['PROTEIN'] / blueprint.required['PROTEIN'];
+      const aaProgress = blueprint.progress.AA / blueprint.required.AA;
+      const proteinProgress = blueprint.progress.PROTEIN / blueprint.required.PROTEIN;
       const overallProgress = Math.min(aaProgress, proteinProgress);
       
       // Style based on filament type
@@ -378,12 +372,17 @@ export class CytoskeletonRenderer extends SystemObject {
   }
 
   /**
-   * Story 13.1: Render infrastructure overlay with flow arrows
+   * Story 13.1: Render infrastructure overlay with flow arrows and utilization
    */
   private renderInfrastructureOverlay(): void {
     if (!this.infrastructureOverlayEnabled) return;
     
     const segments = this.cytoskeletonSystem.getAllSegments();
+    
+    // Render utilization-colored segments
+    for (const segment of segments) {
+      this.renderUtilizationOverlay(segment);
+    }
     
     // Render flow arrows
     this.renderFlowArrows(segments);
@@ -401,77 +400,28 @@ export class CytoskeletonRenderer extends SystemObject {
   }
 
   /**
-   * Task 6: Render cargo paths as colored trails on hex tiles
+   * Render segment utilization as colored overlays
    */
-  private renderCargoPaths(): void {
-    if (!this.pathVisualizationEnabled) return;
+  private renderUtilizationOverlay(segment: FilamentSegment): void {
+    const utilization = Math.min(1.0, Math.max(0.0, segment.utilization));
+    let color: number;
     
-    const allCargo = this.worldRefs.cargoSystem.getAllCargo();
-    
-    // Render paths for cargo that's currently on the segment network
-    for (const cargo of allCargo) {
-      if (!cargo.segmentState || !cargo.segmentState.plannedPath) continue;
-      
-      this.renderCargoPath(cargo);
+    if (utilization < 0.3) {
+      color = this.config.utilizationColors.low;
+    } else if (utilization < 0.7) {
+      color = this.config.utilizationColors.medium;
+    } else {
+      color = this.config.utilizationColors.high;
     }
-  }
-
-  /**
-   * Task 6: Render the planned path for a single cargo item
-   */
-  private renderCargoPath(cargo: any): void {
-    const segmentState = cargo.segmentState;
-    if (!segmentState.plannedPath || segmentState.plannedPath.length < 2) return;
-
-    // Get color based on cargo type
-    const pathColor = cargo.currentType === 'vesicle' ? 0x00ff00 : 0xff9900; // Green for vesicles, orange for transcripts
-    const pathAlpha = 0.6;
     
-    // Draw path as connected lines with markers on hex centers
-    this.overlayGraphics.lineStyle(2, pathColor, pathAlpha);
+    const alpha = 0.6 + (utilization * 0.4); // More opaque when more utilized
     
-    let lastWorldPos: { x: number; y: number } | null = null;
+    this.overlayGraphics.lineStyle(segment.type === 'actin' ? 3 : 4, color, alpha);
     
-    for (let i = 0; i < segmentState.plannedPath.length; i++) {
-      const nodeId = segmentState.plannedPath[i];
-      
-      // Extract hex coordinates from node ID (format: "node_q_r")
-      const nodeHex = this.nodeIdToHex(nodeId);
-      if (!nodeHex) continue;
-      
-      const worldPos = this.worldRefs.hexGrid.hexToWorld(nodeHex);
-      
-      // Draw line to this position
-      if (lastWorldPos) {
-        this.overlayGraphics.lineBetween(lastWorldPos.x, lastWorldPos.y, worldPos.x, worldPos.y);
-      }
-      
-      // Draw a small marker at each path point
-      this.overlayGraphics.fillStyle(pathColor, pathAlpha + 0.2);
-      this.overlayGraphics.fillCircle(worldPos.x, worldPos.y, 3);
-      
-      // Highlight current position with a larger marker
-      if (i === segmentState.pathIndex) {
-        this.overlayGraphics.fillStyle(pathColor, 1.0);
-        this.overlayGraphics.fillCircle(worldPos.x, worldPos.y, 5);
-      }
-      
-      lastWorldPos = worldPos;
-    }
-  }
-
-  /**
-   * Task 6: Helper to extract hex coordinates from node ID
-   */
-  private nodeIdToHex(nodeId: string): { q: number; r: number } | null {
-    // Node IDs have format "node_q_r" 
-    const match = nodeId.match(/node_(-?\d+)_(-?\d+)/);
-    if (!match) return null;
+    const fromWorld = this.worldRefs.hexGrid.hexToWorld(segment.fromHex);
+    const toWorld = this.worldRefs.hexGrid.hexToWorld(segment.toHex);
     
-    return {
-      q: parseInt(match[1]),
-      r: parseInt(match[2])
-    };
+    this.overlayGraphics.lineBetween(fromWorld.x, fromWorld.y, toWorld.x, toWorld.y);
   }
 
   /**
@@ -481,11 +431,13 @@ export class CytoskeletonRenderer extends SystemObject {
     this.overlayGraphics.fillStyle(this.config.flowArrowColor, 0.8);
     
     for (const segment of segments) {
-      // Show arrows on all segments to indicate structure
-      const fromWorld = this.worldRefs.hexGrid.hexToWorld(segment.fromHex);
-      const toWorld = this.worldRefs.hexGrid.hexToWorld(segment.toHex);
-      
-      this.renderArrow(fromWorld, toWorld);
+      if (segment.currentLoad > 0) {
+        // Only show arrows on segments with active cargo
+        const fromWorld = this.worldRefs.hexGrid.hexToWorld(segment.fromHex);
+        const toWorld = this.worldRefs.hexGrid.hexToWorld(segment.toHex);
+        
+        this.renderArrow(fromWorld, toWorld);
+      }
     }
   }
 
@@ -541,8 +493,8 @@ export class CytoskeletonRenderer extends SystemObject {
       const segmentLength = Phaser.Math.Distance.Between(from.x, from.y, to.x, to.y);
       const angle = Phaser.Math.Angle.Between(from.x, from.y, to.x, to.y);
       
-      // Animation speed constant (simplified)
-      const animationSpeed = chevronConfig.baseSpeed; // Constant speed for all segments
+      // Animation speed based on segment speed
+      const animationSpeed = chevronConfig.baseSpeed * segment.speed;
       const animationOffset = (this.animationTime * animationSpeed * chevronConfig.spacing) % chevronConfig.spacing;
       
       // Color based on filament type

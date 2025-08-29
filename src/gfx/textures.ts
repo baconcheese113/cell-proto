@@ -4,13 +4,8 @@ export function makeGridTexture(
   scene: Phaser.Scene, w: number, h: number, bg: number, minor: number, major: number
 ): string {
   const key = `grid-${w}x${h}-${bg}-${minor}-${major}`;
-  console.log(`🎨 Creating grid texture: ${key} (${w}x${h} = ${(w*h*4/1024/1024).toFixed(1)}MB)`);
-  if (scene.textures.exists(key)) {
-    console.log(`♻️ Grid texture ${key} already exists, reusing`);
-    return key;
-  }
+  if (scene.textures.exists(key)) return key;
   const tex = scene.textures.createCanvas(key, w, h);
-  if (!tex) return key;
   if (!tex) return key;
   const ctx = tex.getContext();
   if (!ctx) return key;
@@ -34,11 +29,7 @@ export function makeCellTexture(
   scene: Phaser.Scene, size: number, rim: number, fill: number, edge: number
 ): string {
   const key = `cell-${size}-${rim}-${fill}-${edge}`;
-  console.log(`🎨 Creating cell texture: ${key} (${size}x${size})`);
-  if (scene.textures.exists(key)) {
-    console.log(`♻️ Cell texture ${key} already exists, reusing`);
-    return key;
-  }
+  if (scene.textures.exists(key)) return key;
   const gfx = scene.add.graphics();
   gfx.fillStyle(fill, 0.9);
   gfx.fillCircle(size / 2, size / 2, size / 2 - rim);

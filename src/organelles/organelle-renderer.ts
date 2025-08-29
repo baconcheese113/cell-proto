@@ -8,12 +8,10 @@ import Phaser from "phaser";
 import { OrganelleSystem } from "./organelle-system";
 import type { Organelle } from "./organelle-system";
 import { getFootprintTiles } from "./organelle-footprints";
-import type { WorldRefs } from "../core/world-refs";
 
 export class OrganelleRenderer {
   private scene: Phaser.Scene;
   private organelleSystem: OrganelleSystem;
-  private worldRefs?: WorldRefs;
   private hexSize: number;
   
   // Visual elements
@@ -21,10 +19,9 @@ export class OrganelleRenderer {
   private labelGroup!: Phaser.GameObjects.Group;
   private parentContainer?: Phaser.GameObjects.Container; // HOTFIX: Support for cellRoot parenting
 
-  constructor(scene: Phaser.Scene, organelleSystem: OrganelleSystem, hexSize: number, parentContainer?: Phaser.GameObjects.Container, worldRefs?: WorldRefs) {
+  constructor(scene: Phaser.Scene, organelleSystem: OrganelleSystem, hexSize: number, parentContainer?: Phaser.GameObjects.Container) {
     this.scene = scene;
     this.organelleSystem = organelleSystem;
-    this.worldRefs = worldRefs;
     this.hexSize = hexSize;
     this.parentContainer = parentContainer;
     this.initializeGraphics();
@@ -74,21 +71,9 @@ export class OrganelleRenderer {
       organelle.coord.r
     );
     
-    // Check if this is a transporter with installed proteins
-    const isTransporterWithProtein = organelle.type === 'transporter' && 
-      this.worldRefs?.membraneExchangeSystem?.hasInstalledProtein(organelle.coord);
-    
-    // Set style for organelle - modify for transporters with proteins
-    let organelleColor = config.color;
-    let fillAlpha = 0.15;
-    
-    if (isTransporterWithProtein) {
-      organelleColor = 0x00ff00; // Green for active transporters
-      fillAlpha = 0.3; // More visible fill
-    }
-    
-    this.graphics.lineStyle(2, organelleColor, 0.8);
-    this.graphics.fillStyle(organelleColor, fillAlpha);
+    // Set style for organelle
+    this.graphics.lineStyle(2, config.color, 0.8);
+    this.graphics.fillStyle(config.color, 0.15);
     
     // Draw each hex tile in the footprint
     for (const tileCoord of footprintTiles) {
@@ -97,32 +82,18 @@ export class OrganelleRenderer {
     }
     
     // Add outline around the entire footprint
-    this.graphics.lineStyle(3, organelleColor, 1.0);
+    this.graphics.lineStyle(3, config.color, 1.0);
     for (const tileCoord of footprintTiles) {
       const worldPos = this.hexToWorld(tileCoord);
       this.graphics.strokeCircle(worldPos.x, worldPos.y, this.hexSize * 0.6);
-      
-      // Add special indicator for transporters with proteins
-      if (isTransporterWithProtein) {
-        // Draw a small protein indicator
-        this.graphics.fillStyle(0xffffff, 0.9);
-        this.graphics.fillCircle(worldPos.x, worldPos.y, this.hexSize * 0.2);
-        this.graphics.lineStyle(1, 0x000000, 1.0);
-        this.graphics.strokeCircle(worldPos.x, worldPos.y, this.hexSize * 0.2);
-      }
     }
     
     // Get center position for label (use primary coordinate)
     const centerPos = this.hexToWorld(organelle.coord);
     
-    // Add main label - modify text for active transporters
-    let labelText = config.label;
-    if (isTransporterWithProtein) {
-      labelText = "Active " + config.label;
-    }
-    
-    const colorString = `#${organelleColor.toString(16).padStart(6, '0')}`;
-    const label = this.scene.add.text(centerPos.x, centerPos.y - this.hexSize - 12, labelText, {
+    // Add main label
+    const colorString = `#${config.color.toString(16).padStart(6, '0')}`;
+    const label = this.scene.add.text(centerPos.x, centerPos.y - this.hexSize - 12, config.label, {
       fontFamily: "monospace",
       fontSize: "12px",
       color: colorString,

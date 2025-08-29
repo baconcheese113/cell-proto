@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import { addHud, setHud } from "../ui/hud";
 import { makeGridTexture, makeCellTexture } from "../gfx/textures";
 import { HexGrid, type HexCoord, type HexTile } from "../hex/hex-grid";
-import { type SpeciesId } from "../species/species-registry";
+import { getAllSpecies, type SpeciesId } from "../species/species-registry";
 import { DiffusionSystem } from "../species/diffusion-system";
 import { HeatmapSystem } from "../species/heatmap-system";
 import { PassiveEffectsSystem } from "../species/passive-effects-system";
@@ -12,49 +12,45 @@ import { OrganelleRenderer } from "../organelles/organelle-renderer";
 import { OrganelleSelectionSystem } from "../organelles/organelle-selection";
 import { PlayerInventorySystem } from "../player/player-inventory";
 import { BlueprintSystem } from "../construction/blueprint-system";
-import { BlueprintRenderer } from "../construction/blueprint-renderer";
-import { BlueprintProgressUtils } from "../construction/base-blueprint";
 import { BuildPaletteUI, type BuildContext } from "../construction/build-palette-ui";
 import type { OrganelleType } from "../organelles/organelle-registry";
-import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
+import { BlueprintRenderer } from "../construction/blueprint-renderer";
 import { CONSTRUCTION_RECIPES } from "../construction/construction-recipes";
+import { getOrganelleDefinition, definitionToConfig } from "../organelles/organelle-registry";
 import { getFootprintTiles } from "../organelles/organelle-footprints";
 import { MembraneExchangeSystem } from "../membrane/membrane-exchange-system";
+import { MembranePortSystem } from "../membrane/membrane-port-system";
 
 // New modular components
 import { Player } from "../actors/player";
 import { TileActionController } from "../controllers/tile-action-controller";
 // Consolidated system architecture
+import { CellProduction } from "../systems/cell-production";
 import { CellTransport } from "../systems/cell-transport";
 import { CellOverlays } from "../systems/cell-overlays";
-import { CargoHUD } from "../systems/cargo-hud";
 // Milestone 9: Cell locomotion systems
 import { CellSpaceSystem } from "../core/cell-space-system";
 import { SubstrateSystem } from "../core/substrate-system";
 import { CellMotility } from "../systems/cell-motility";
-// Milestone 12: Throw & Membrane Interactions v2 - Networked Systems
+// Milestone 12: Throw & Membrane Interactions v1
 import { ThrowSystem } from "../systems/throw-system";
-import { CargoSystem } from "../systems/cargo-system";
+import { UnifiedCargoSystem } from "../systems/unified-cargo-system";
 import { MembraneTrampoline } from "../systems/membrane-trampoline";
-import { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
 import { ThrowInputController } from "../systems/throw-input-controller";
+import { CargoHUD } from "../systems/cargo-hud";
 // Milestone 13: Cytoskeleton Transport v1
 import { CytoskeletonSystem } from "../systems/cytoskeleton-system";
 import { CytoskeletonRenderer } from "../systems/cytoskeleton-renderer";
 import { FilamentBuilder } from "../systems/filament-builder";
-import type { WorldRefs, InstallOrder } from "../core/world-refs";
-import { LoopbackTransport } from "../network/transport";
-import type { NetBundle } from "../app/net-bundle";
+import { initializeEnhancedVesicleRouting, updateEnhancedVesicleRouting } from "../systems/cytoskeleton-vesicle-integration";
+import type { WorldRefs, InstallOrder, Transcript, Vesicle } from "../core/world-refs";
+// Milestone 14: Multiplayer Core v1
+import { NetworkTransport } from "../network/transport";
 import { RoomUI } from "../network/room-ui";
-import type { NetworkTransport } from "../network/transport";
-// New network approach
-import { NetBus } from "../network/net-bus";
-import { SpeciesSystem } from "../systems/species-system";
-import { PlayerSystem } from "../systems/player-system";
-import { EmoteSystem } from "../systems/emote-system";
-import { InstallOrderSystem } from "../systems/install-order-system";
+import { NetHUD } from "../network/net-hud";
+import { NetSyncSystem } from "../network/net-sync-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F4" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F9" | "F10" | "F11" | "F12" | "ESC", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -66,7 +62,6 @@ export class GameScene extends Phaser.Scene {
 
   // NEW: Modular controllers and systems
   private tileActionController!: TileActionController;
-  private throwInputController!: ThrowInputController;
 
   private cellCenter = new Phaser.Math.Vector2(0, 0);
   private cellRadius = 216; // Original size for hex grid area
@@ -78,16 +73,13 @@ export class GameScene extends Phaser.Scene {
   private gridRadius = 12; // Tunable number of hex rings
   private hexGraphics!: Phaser.GameObjects.Graphics;
   private showHexGrid = true;
-  private hoveredTile: HexTile | null = null;
-  private selectedTile: HexTile | null = null;
+  private hoveredTile: any = null; // HexTile | null
+  private selectedTile: any = null; // HexTile | null
   private hexInteractionGraphics!: Phaser.GameObjects.Graphics;
   private tileInfoPanel!: Phaser.GameObjects.Text;
   private debugInfoPanel!: Phaser.GameObjects.Text;
   private buildDateText!: Phaser.GameObjects.Text;
-  private lastInfoUpdateTile: HexTile | null = null;
-  
-  // Client-side position tracking for change detection
-  private _lastClientPos: { x: number; y: number; vx: number; vy: number } | null = null;
+  private lastInfoUpdateTile: any = null; // Track last tile that was used for info update
   private lastInfoUpdateTime = 0; // Track when info was last updated
 
   // Milestone 6: Membrane debug visualization
@@ -96,13 +88,12 @@ export class GameScene extends Phaser.Scene {
   private transporterLabels: Phaser.GameObjects.Text[] = [];
   private proteinGlyphs: Phaser.GameObjects.Text[] = [];
   
-  // Pathfinding debug visualization
-  private pathfindingGraphics!: Phaser.GameObjects.Graphics;
-  private showPathfindingDebug = false; // Enable by default for debugging
-  
   // Milestone 6: Membrane exchange system
   private membraneExchangeSystem!: MembraneExchangeSystem;
   
+  // Story 8.11: External interface system
+  private membranePortSystem!: MembranePortSystem;
+
   // Species diffusion system - Task 3
   private diffusionSystem!: DiffusionSystem;
 
@@ -114,6 +105,7 @@ export class GameScene extends Phaser.Scene {
 
   // Conservation tracking - Task 8
   private conservationTracker!: ConservationTracker;
+  private conservationPanel!: Phaser.GameObjects.Text;
 
   // Organelle system - Milestone 3 Task 1
   private organelleSystem!: OrganelleSystem;
@@ -125,11 +117,10 @@ export class GameScene extends Phaser.Scene {
 
   // Blueprint system - Milestone 5
   private blueprintSystem!: BlueprintSystem;
-  private blueprintRenderer!: BlueprintRenderer;
   private buildPalette!: BuildPaletteUI;
+  private blueprintRenderer!: BlueprintRenderer;
   private selectedRecipeId: string | null = null; // Milestone 13: Support all recipe types (organelles, filaments, upgrades)
   private isInBuildMode: boolean = false;
-  private wasInBuildModeBeforeLeavingTile: boolean = false; // Track if build menu was open when leaving tile area
 
   // Milestone 6: Current tile tracking - Task 1
   private currentTileRef: HexTile | null = null;
@@ -138,17 +129,24 @@ export class GameScene extends Phaser.Scene {
   // Milestone 6: Toast system - Task 2
   private toastText!: Phaser.GameObjects.Text;
 
-  // Milestone 7: Orders system
+  // Milestone 7: Orders & Transcripts system - Task 1
   private installOrders: Map<string, InstallOrder> = new Map(); // keyed by order.id
+  private transcripts: Map<string, Transcript> = new Map(); // keyed by transcript.id
+  private transcriptGraphics!: Phaser.GameObjects.Graphics; // for rendering transcript dots
+  private carriedTranscripts: Transcript[] = []; // transcripts carried by player (max 1-2)
   private nextOrderId = 1;
+  private nextTranscriptId = 1;
 
-  // NOTE: Transcripts and Vesicles now managed by CargoSystem
-  // Legacy Maps removed - use this.cargoSystem instead
+  // Milestone 8: Vesicle system for secretory pipeline
+  private vesicles: Map<string, Vesicle> = new Map();
+  private carriedVesicles: Vesicle[] = [];
+  private nextVesicleId = 1;
 
   // NOTE: Movement mechanics now handled by Player actor
   // NOTE: Membrane physics now handled by Player actor
 
-  // Consolidated system architecture
+  // Consolidated system architecture - NEW
+  private cellProduction!: CellProduction;
   private cellTransport!: CellTransport;
   
   // Store WorldRefs instance to ensure consistent reference
@@ -161,12 +159,11 @@ export class GameScene extends Phaser.Scene {
   private cellMotility!: CellMotility;
   
   // Milestone 12: Throw & Membrane Interactions v1
-  // Milestone 12: Networked Cargo & Throw Systems
   private throwSystem!: ThrowSystem;
-  private cargoSystem!: CargoSystem;
-  private cargoHUD?: CargoHUD; // CargoHUD instance
+  private unifiedCargoSystem!: UnifiedCargoSystem;
   private membraneTrampoline!: MembraneTrampoline;
-  private membranePhysics!: MembranePhysicsSystem; // NEW: Dynamic membrane physics
+  public throwInputController!: ThrowInputController;
+  private cargoHUD!: CargoHUD;
   
   // Milestone 13: Cytoskeleton Transport v1
   private cytoskeletonSystem!: CytoskeletonSystem;
@@ -174,13 +171,10 @@ export class GameScene extends Phaser.Scene {
   private filamentBuilder!: FilamentBuilder;
   
   // Milestone 14: Multiplayer Core v1
+  private networkTransport!: NetworkTransport;
   private roomUI!: RoomUI;
-  
-  // New network approach
-  public net!: NetBundle;
-  
-  // Remote player rendering
-  private remoteSprites = new Map<string, Phaser.GameObjects.Graphics>();
+  private netHUD!: NetHUD;
+  private netSyncSystem!: NetSyncSystem;
   
   // Milestone 9: Cell motility mode
   private cellDriveMode = false;
@@ -201,14 +195,7 @@ export class GameScene extends Phaser.Scene {
 
   constructor() { super("game"); }
 
-  create(data?: { useMultiplayer?: boolean; transport?: NetworkTransport; isHost?: boolean; roomId?: string }) {
-    // Store multiplayer settings for later initialization after worldRefs is ready
-    const networkConfig = data?.useMultiplayer && data?.transport ? {
-      transport: data.transport, 
-      isHost: data.isHost!, 
-      roomId: data.roomId!
-    } : null;
-
+  create() {
     // Background grid - cap size to prevent memory issues
     const view = this.scale.gameSize;
     const maxGridSize = 2048; // Reasonable maximum for browser memory
@@ -221,14 +208,15 @@ export class GameScene extends Phaser.Scene {
     this.cellRoot = this.add.container(view.width * 0.5, view.height * 0.5);
     this.cellRoot.setDepth(1); // Above background, will contain all cell visuals
     
-    // Cell membrane (static fallback - will be hidden when dynamic membrane is active)
+    // Cell membrane
     this.cellCenter.set(view.width * 0.5, view.height * 0.5);
     const cellKey = makeCellTexture(this, this.cellRadius * 2 + this.membraneThickness * 2, this.membraneThickness, this.col.cellFill, this.col.membrane);
     this.cellSprite = this.add.image(0, 0, cellKey).setDepth(1); // Position relative to cellRoot
-    this.cellSprite.setVisible(false); // Hide static membrane in favor of dynamic physics membrane
     
     // HOTFIX H2: Re-parent cell sprite to cellRoot
     this.cellRoot.add(this.cellSprite);
+    
+    console.log('CellRoot container created at:', this.cellCenter.x, this.cellCenter.y);
 
     // Initialize hex grid FIRST (required by Player)
     this.initializeHexGrid();
@@ -254,129 +242,119 @@ export class GameScene extends Phaser.Scene {
     // HOTFIX H2: Re-parent player to cellRoot
     this.cellRoot.add(this.playerActor);
 
-    // Initialize non-network dependent systems first...
+    // Initialize all other systems...
+    this.initializeOrganelleSystem();
     this.initializePlayerInventory();
     this.initializeDebugInfo();
     this.initializeHeatmapSystem();
     this.initializePassiveEffectsSystem();
     this.initializeDiffusionSystem();
-    this.conservationTracker = new ConservationTracker(this, this.hexGrid, this.passiveEffectsSystem);
+    this.initializeMembraneExchangeSystem();
+    this.initializeBlueprintSystem(); // Initialize before WorldRefs creation
+    this.initializeConservationTracker();
     
     // Milestone 9: Initialize cell locomotion systems
     this.initializeCellLocomotionSystems();
 
-    // Create MINIMAL WorldRefs first (just what networking needs)
-    const minimalWorldRefs = {
+    // NEW: After all systems initialized, create transcript systems and WorldRefs 
+    
+    // Create a temporary WorldRefs for system initialization (without cellMotility)
+    const baseWorldRefs = {
       hexGrid: this.hexGrid,
       cellRoot: this.cellRoot,
       playerInventory: this.playerInventory,
       player: this.playerActor,
-      scene: this,
-      
-      // Systems that exist at this point
+      organelleSystem: this.organelleSystem,
+      organelleRenderer: this.organelleRenderer,
+      blueprintSystem: this.blueprintSystem,
+      blueprintRenderer: this.blueprintRenderer,
       membraneExchangeSystem: this.membraneExchangeSystem,
+      membranePortSystem: this.membranePortSystem, // Story 8.11: External interface
       diffusionSystem: this.diffusionSystem,
       passiveEffectsSystem: this.passiveEffectsSystem,
       heatmapSystem: this.heatmapSystem,
+      conservationTracker: this.conservationTracker,
+      // Milestone 9: Cell locomotion systems
       cellSpaceSystem: this.cellSpaceSystem,
       substrateSystem: this.substrateSystem,
-      
-      // Placeholders for systems that will be created after networking
-      organelleSystem: null as any,
-      organelleRenderer: null as any,
-      blueprintSystem: null as any,
-      cellOverlays: null as any,
-      cytoskeletonRenderer: null as any,
-      cellMotility: null as any,
-      cytoskeletonSystem: null as any,
-      cytoskeletonGraph: null as any,
-      cargoSystem: null as any,
-      installOrderSystem: null as any,
-      
-      // Data collections
+      cellMotility: undefined as any, // Will be set after creation
       installOrders: this.installOrders,
+      transcripts: this.transcripts,
+      carriedTranscripts: this.carriedTranscripts,
       nextOrderId: this.nextOrderId,
-      
-      // UI methods
+      nextTranscriptId: this.nextTranscriptId,
+      // Milestone 8: Vesicle system
+      vesicles: this.vesicles,
+      carriedVesicles: this.carriedVesicles,
+      nextVesicleId: this.nextVesicleId,
       showToast: (message: string) => this.showToast(message),
-      refreshTileInfo: () => {}, // Placeholder
+      refreshTileInfo: () => this.updateTileInfoPanel()
+    };
+
+    // Now create complete WorldRefs with all systems (old individual systems removed)
+    const worldRefs: WorldRefs = {
+      ...baseWorldRefs,
+      scene: this, // Add scene reference for membrane visual refreshes
+      cellMotility: null as any, // Placeholder, will be set after creation
+      cytoskeletonSystem: null as any, // Placeholder, will be set after creation
+      cytoskeletonGraph: null as any, // Placeholder, will be set after cytoskeleton system creation
+      cytoskeletonRenderer: null as any, // Placeholder, will be set after creation
+      cellOverlays: null as any // Placeholder, will be set after creation
     };
     
-    // Store minimal worldRefs instance for networking initialization
-    this.worldRefsInstance = minimalWorldRefs;
-
-    // NETWORKING: Initialize networking now that minimal worldRefs is ready
-    if (networkConfig) {
-      this.initNetwork(networkConfig);
-    } else {
-      // Default: local play with loopback transport
-      this.initializeNetworking();
-    }
-
-    // Initialize network-dependent systems after networking is ready
-    this.initializeOrganelleSystem();
-
-    // Initialize CargoSystem early and add to worldRefs
-    this.cargoSystem = new CargoSystem(this, this.net.bus, this.worldRefsInstance);
-
-    // UPDATE WorldRefs with newly created network-dependent systems
-    this.worldRefsInstance.organelleSystem = this.organelleSystem;
-    this.worldRefsInstance.organelleRenderer = this.organelleRenderer;
-    this.worldRefsInstance.blueprintSystem = this.blueprintSystem;
-    this.worldRefsInstance.cargoSystem = this.cargoSystem;
+    // Store worldRefs instance for consistent reference across systems
+    this.worldRefsInstance = worldRefs;
     
+    console.log(`🧪 [SCENE] WorldRefs created with scene reference:`, !!worldRefs.scene);
+
     // Create CellMotility now that we have worldRefs structure
-    this.cellMotility = new CellMotility(this, this.net.bus, this.worldRefsInstance, this.cellSpaceSystem);
-    this.worldRefsInstance.cellMotility = this.cellMotility;
+    this.cellMotility = new CellMotility(this, worldRefs, this.cellSpaceSystem);
+    worldRefs.cellMotility = this.cellMotility;
 
     // Create modular controllers and systems
     this.tileActionController = new TileActionController({
       scene: this,
-      worldRefs: this.worldRefsInstance,
-      net: this.net
+      worldRefs
     });
 
     // Initialize consolidated systems - NEW ARCHITECTURE
-    
-    this.cellTransport = new CellTransport(this, this.net.bus, this.worldRefsInstance);
-    this.cellOverlays = new CellOverlays(this, this.net.bus, this.worldRefsInstance, this.cellRoot); // Now cellMotility is defined
-    this.worldRefsInstance.cellOverlays = this.cellOverlays;
+    this.cellProduction = new CellProduction(this, worldRefs, this.cellRoot);
+    this.cellTransport = new CellTransport(this, worldRefs);
+    this.cellOverlays = new CellOverlays(this, worldRefs, this.cellRoot); // Now cellMotility is defined
+    worldRefs.cellOverlays = this.cellOverlays;
 
-    // Milestone 12: CargoSystem already initialized above
-    
-    // Phase 2.1: Add CargoSystem to WorldRefs for unified access
-    this.worldRefsInstance.cargoSystem = this.cargoSystem;
-    
-    // Initialize CargoHUD after CargoSystem
-    this.cargoHUD = new CargoHUD(this, this.cargoSystem);
-    
-    this.throwSystem = new ThrowSystem(this.net.bus, this, this.cargoSystem);
-    
-    // Initialize ThrowInputController after systems are ready
-    this.throwInputController = new ThrowInputController(
-      this,
-      this.worldRefsInstance,
-      this.throwSystem,
-      this.cargoSystem,
-      this.net,
-      this.playerActor
-    );
-    
-    this.membraneTrampoline = new MembraneTrampoline(this, this.worldRefsInstance);
+    // Milestone 12: Initialize Unified Cargo System (throw system after networking)
+    this.unifiedCargoSystem = new UnifiedCargoSystem(this, worldRefs);
+    this.membraneTrampoline = new MembraneTrampoline(this, worldRefs);
     
     // Milestone 13: Initialize Cytoskeleton Transport v1
-    this.cytoskeletonSystem = new CytoskeletonSystem(this, this.net.bus, this.worldRefsInstance);
-    this.worldRefsInstance.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
-    this.worldRefsInstance.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
-    this.cytoskeletonRenderer = new CytoskeletonRenderer(this, this.worldRefsInstance, this.cytoskeletonSystem);
-    this.worldRefsInstance.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
+    this.cytoskeletonSystem = new CytoskeletonSystem(this, worldRefs);
+    worldRefs.cytoskeletonSystem = this.cytoskeletonSystem; // Add to worldRefs
+    worldRefs.cytoskeletonGraph = this.cytoskeletonSystem.graph; // Add graph reference
+    this.cytoskeletonRenderer = new CytoskeletonRenderer(this, worldRefs, this.cytoskeletonSystem);
+    worldRefs.cytoskeletonRenderer = this.cytoskeletonRenderer; // Add renderer to worldRefs
+    this.filamentBuilder = new FilamentBuilder(this, worldRefs, this.cytoskeletonSystem);
     
-    this.net.cytoskeleton = this.cytoskeletonSystem;
-    this.net.bus.registerInstance(this.cytoskeletonSystem);
-    
-    this.initializeBlueprintSystem();
-    
-    this.filamentBuilder = new FilamentBuilder(this, this.worldRefsInstance, this.cytoskeletonSystem);
+    // Milestone 13 Part D: Initialize enhanced vesicle routing with cytoskeleton
+    initializeEnhancedVesicleRouting(worldRefs);
+
+    // Milestone 14: Initialize Multiplayer Core v1
+    this.initializeNetworking();
+
+    // Milestone 12: Initialize Throw System (after networking for isHost check)
+    const isHost = (this.netSyncSystem as any)?.isHost ?? true; // Default to true if no network
+    console.log(`🎯 GameScene: Creating ThrowInputController - netSyncSystem exists: ${!!this.netSyncSystem}, isHost: ${isHost}`);
+    this.throwSystem = new ThrowSystem(this, worldRefs, this.unifiedCargoSystem, isHost);
+    this.throwInputController = new ThrowInputController(
+      this, 
+      worldRefs, 
+      this.throwSystem, 
+      this.unifiedCargoSystem,
+      { netSyncSystem: this.netSyncSystem }
+    );
+    this.cargoHUD = new CargoHUD(this, this.unifiedCargoSystem, {
+      position: { x: 20, y: 130 } // Position below other HUD elements
+    });
 
     // Input keys
     this.keys = {
@@ -417,14 +395,11 @@ export class GameScene extends Phaser.Scene {
       N: this.input.keyboard!.addKey("N"), // Toggle infrastructure overlay
       F1: this.input.keyboard!.addKey("F1"), // Build actin filaments
       F2: this.input.keyboard!.addKey("F2"), // Build microtubules
-      F3: this.input.keyboard!.addKey("F3"), // Toggle pathfinding debug
-      F4: this.input.keyboard!.addKey("F4"), // Test membrane physics (NEW)
       F9: this.input.keyboard!.addKey("F9"), // Toggle network HUD
       F10: this.input.keyboard!.addKey("F10"), // Toggle room UI
       F11: this.input.keyboard!.addKey("F11"), // Simulate packet loss
       F12: this.input.keyboard!.addKey("F12"), // Toggle network logging
       ESC: this.input.keyboard!.addKey("ESC"), // Exit build mode
-      ZERO: this.input.keyboard!.addKey("ZERO"), // Emote trigger
     };
 
     // Initialize remaining UI systems
@@ -432,6 +407,7 @@ export class GameScene extends Phaser.Scene {
     this.initializeHexInteraction();
     this.initializeTileInfoPanel();
     this.initializeDebugInfo();
+    this.initializeTranscriptSystem(); // Milestone 7 Task 1
     
     // Initialize protein glyphs by rendering membrane debug
     this.renderMembraneDebug();
@@ -446,15 +422,15 @@ export class GameScene extends Phaser.Scene {
     
     // HOTFIX H4: Initialize camera to center on cell
     this.cameras.main.centerOn(this.cellCenter.x, this.cellCenter.y);
+    console.log('Camera centered on cell at:', this.cellCenter.x, this.cellCenter.y);
 
     // Window resize handling
     this.scale.on("resize", (sz: Phaser.Structs.Size) => {
       const newWidth = Math.ceil(sz.width);
       const newHeight = Math.ceil(sz.height);
       
-      // Regenerate background grid with same memory cap as initial creation
-      const maxGridSize = 2048; // Reasonable maximum for browser memory  
-      const gridSize = Math.min(Math.max(newWidth, newHeight) * 2, maxGridSize);
+      // Regenerate background grid
+      const gridSize = Math.max(newWidth, newHeight) * 2;
       const key = makeGridTexture(this, gridSize, gridSize, this.col.bg, this.col.gridMinor, this.col.gridMajor);
       this.grid.setTexture(key).setOrigin(0.5, 0.5);
       this.grid.setPosition(newWidth * 0.5, newHeight * 0.5);
@@ -479,9 +455,6 @@ export class GameScene extends Phaser.Scene {
         if (this.organelleRenderer) {
           this.organelleRenderer.onResize();
         }
-        if (this.blueprintRenderer) {
-          this.blueprintRenderer.onResize();
-        }
         
         // Update selection system
         if (this.organelleSelection) {
@@ -495,9 +468,9 @@ export class GameScene extends Phaser.Scene {
 
     // Setup shutdown handler for consolidated systems
     this.events.once('shutdown', () => {
+      this.cellProduction?.destroy();
       this.cellTransport?.destroy();
       this.cellOverlays?.destroy();
-      this.net.emotes?.destroy();
     });
   }
 
@@ -521,6 +494,30 @@ export class GameScene extends Phaser.Scene {
       this.cameras.main.centerOn(playerWorldX, playerWorldY);
     }
 
+    // MILESTONE 14: Block game input when room UI input field has focus
+    if (this.roomUI.hasInputFocus()) {
+      // Only allow F10 to close room UI and other F keys for dev tools
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
+        this.roomUI.toggle();
+      }
+      
+      // Allow other F keys for dev tools
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F9)) {
+        this.netHUD.toggle();
+      }
+      
+      if (Phaser.Input.Keyboard.JustDown(this.keys.F11)) {
+        // Toggle packet loss simulation
+        const currentLoss = this.networkTransport.getDevStats().packetLossRate;
+        const newLoss = currentLoss > 0 ? 0 : 0.1; // 10% packet loss
+        this.networkTransport.setPacketLossRate(newLoss);
+        this.showToast(`Packet loss: ${(newLoss * 100).toFixed(1)}%`);
+      }
+      
+      // Skip all other game input processing
+      return;
+    }
+
     // Handle hex grid toggle
     if (Phaser.Input.Keyboard.JustDown(this.keys.G)) {
       this.toggleHexGrid();
@@ -529,16 +526,6 @@ export class GameScene extends Phaser.Scene {
     // Milestone 6: Handle membrane debug toggle
     if (Phaser.Input.Keyboard.JustDown(this.keys.M)) {
       this.toggleMembraneDebug();
-    }
-
-    // Handle pathfinding debug toggle
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F3)) {
-      this.togglePathfindingDebug();
-    }
-
-    // NEW: Test membrane physics impacts
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F4)) {
-      this.testMembranePhysics();
     }
 
     // Handle heatmap controls - Task 5
@@ -566,10 +553,16 @@ export class GameScene extends Phaser.Scene {
       if (this.cellDriveMode) {
         this.cellSpaceSystem.setPosition(this.cellCenter.x, this.cellCenter.y);
       }
+      
+      console.log(`Cell drive mode: ${this.cellDriveMode ? 'ON' : 'OFF'}`);
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.Y)) {
       // System status debug - show consolidated system info
       this.printSystemStatus();
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.U)) {
+      // Milestone 8: Toggle queue badges
+      this.cellOverlays.toggleQueueBadges();
     }
     
     // MILESTONE 9 FIX 4: Debug ATP injection for testing dash
@@ -588,6 +581,26 @@ export class GameScene extends Phaser.Scene {
       this.cytoskeletonRenderer.toggleInfrastructureOverlay();
       const state = this.cytoskeletonRenderer.isInfrastructureOverlayEnabled() ? 'ON' : 'OFF';
       this.showToast(`Infrastructure overlay: ${state}`);
+    }
+
+    // MILESTONE 13 TESTING: Cytoskeleton integration debugging
+    if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
+      // Debug key: Log cytoskeleton and vesicle stats
+      console.log("=== CYTOSKELETON INTEGRATION DEBUG ===");
+      
+      // Log cytoskeleton graph stats
+      console.log("🚂 Cytoskeleton System Stats:");
+      console.log(`📊 Cytoskeleton Graph: nodes and edges available`);
+      
+      // Log vesicle stats
+      console.log(`📦 Vesicle Stats: ${this.vesicles.size} active vesicles`);
+      let railVesicles = 0;
+      for (const vesicle of this.vesicles.values()) {
+        if (vesicle.railState) railVesicles++;
+      }
+      console.log(`🚂 Rail Transport: ${railVesicles} vesicles on rails`);
+      
+      this.showToast("Cytoskeleton stats logged to console");
     }
 
     // MILESTONE 13: Filament building
@@ -610,19 +623,44 @@ export class GameScene extends Phaser.Scene {
     }
 
     // MILESTONE 14: Network controls
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F9)) {
+      this.netHUD.toggle();
+    }
+    
     if (Phaser.Input.Keyboard.JustDown(this.keys.F10)) {
       this.roomUI.toggle();
     }
-
-    // ZERO key for emotes
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ZERO)) {
-      this.net.emotes.send();
+    
+    // Network dev tools
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F11)) {
+      // Toggle packet loss simulation
+      const currentLoss = this.networkTransport.getDevStats().packetLossRate;
+      const newLoss = currentLoss > 0 ? 0 : 0.1; // 10% packet loss
+      this.networkTransport.setPacketLossRate(newLoss);
+      this.showToast(`Packet loss: ${(newLoss * 100).toFixed(1)}%`);
+    }
+    
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F12)) {
+      // Toggle network logging
+      const loggingEnabled = this.networkTransport.toggleNetworkLogging();
+      this.showToast(`Network logging: ${loggingEnabled ? 'ON' : 'OFF'}`);
+    }
+    
+    // Shift+F10 for artificial latency
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F10) && this.input.keyboard!.checkDown(this.input.keyboard!.addKey('SHIFT'))) {
+      const currentLatency = this.networkTransport.getDevStats().artificialLatency;
+      const newLatency = currentLatency > 0 ? 0 : 150; // 150ms artificial latency
+      this.networkTransport.setArtificialLatency(newLatency);
+      this.showToast(`Artificial latency: ${newLatency}ms`);
+    }
+    
+    // O key for creating test entities (multiplayer testing)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.O)) {
+      this.createTestEntities();
     }
 
     // Debug species controls - Task 4
     this.handleDebugControls();
-
-    this.handleTileInteractions();
 
     // NEW: Modular input handling through tile action controller
     // (Handles build mode, protein requests, etc.)
@@ -666,12 +704,10 @@ export class GameScene extends Phaser.Scene {
           SPACE: this.keys.SPACE // Allow dash input
         } as any;
         this.playerActor.update(deltaSeconds, reducedKeys);
+        console.log(`🏀 Control locked out (${(controlReduction * 100).toFixed(0)}% control)`);
       } else {
         // Normal mode: player actor handles WASD, cellMotility ignores input
         this.playerActor.update(deltaSeconds, this.keys);
-        
-        // Send player input to network for replication
-        this.synchronizePlayerState();
       }
     }
     
@@ -681,49 +717,46 @@ export class GameScene extends Phaser.Scene {
     // Use modular tile action controller for input handling
     this.tileActionController.handleInput(this.keys, this.currentTileRef);
     
-    // NOTE: Consolidated systems (CargoSystem, CellTransport, CellOverlays, BlueprintSystem) 
-    // are now automatically updated by Phaser's lifecycle via System base class
+    // NOTE: Consolidated systems (CellProduction, CellTransport, CellOverlays) 
+    // are now automatically updated by Phaser's lifecycle via SystemObject
     
     // Manual updates for systems not yet consolidated:
+    if (!this.conservationTracker.isPausedState()) {
+      // Update blueprint construction - Milestone 5
+      this.blueprintSystem.processConstruction(this.game.loop.delta);
+    }
     
     // Update heatmap - Task 5
     this.heatmapSystem.update();
     
-    // Render organelles - Milestone 3 Task 1
-    this.organelleRenderer.render();
-    
     // Update blueprint rendering - Milestone 5 Task 5
     this.blueprintRenderer.render();
+    
+    // NOTE: Transcript rendering now handled by CellProduction system
     
     // Update build palette position to maintain fixed screen location
     this.buildPalette.updatePosition();
     
     // Milestone 12: Update throw & membrane interaction systems
     this.throwInputController.update();
-    this.cargoHUD?.update();
+    this.cargoHUD.update();
     
     // Update player cargo indicator
-    const carriedCargo = this.cargoSystem.getMyPlayerInventory()[0] || null;
-    this.playerActor.updateCargoIndicator(carriedCargo ? 'transcript' : null); // Simplified for now
-    
-    // Render cargo
-    this.cargoSystem.renderCargo();
+    const carriedCargo = this.unifiedCargoSystem.getCarriedCargo();
+    this.playerActor.updateCargoIndicator(carriedCargo ? carriedCargo.type : null);
     
     // Update HUD with current information
     this.updateHUD();
     
+    // Milestone 14: Update network HUD
+    this.netHUD.update();
+    
     // Update conservation tracking - Task 8
     this.conservationTracker.update();
+    this.updateConservationPanel();
     
-    // Update EmoteSystem for visual effects
-    // this.net.emotes.update();
-    
-    // Update player input and physics
-    this.synchronizePlayerState();
-    this.net.players.tick(this.game.loop.delta / 1000); // Convert ms to seconds
-    
-    // Render remote players from network state
-    this.updateRemotePlayers();
+    // Milestone 13 Part D: Update enhanced vesicle routing
+    updateEnhancedVesicleRouting();
   }
 
   /**
@@ -760,16 +793,6 @@ export class GameScene extends Phaser.Scene {
         this.buildPalette.hide();
         this.isInBuildMode = false;
         this.selectedRecipeId = null;
-        // Remember that we had the build menu open when we left the tile area
-        this.wasInBuildModeBeforeLeavingTile = true;
-      }
-      
-      // Restore build menu if player returns to tile area and had it open before
-      if (newCurrentTile && this.wasInBuildModeBeforeLeavingTile && !this.buildPalette.getIsVisible()) {
-        this.buildPalette.show();
-        this.updateBuildPaletteFilter();
-        this.isInBuildMode = true;
-        this.wasInBuildModeBeforeLeavingTile = false;
       }
     }
   }
@@ -793,117 +816,18 @@ export class GameScene extends Phaser.Scene {
     this.toastText.setData('timer', timer);
   }
 
-  /**
-   * Update remote player avatars from network state
-   */
-  private updateRemotePlayers(): void {
-    const mirror = this.net.players.players; // PlayersState
-    
-    // Update or create sprites for remote players only (exclude self)
-    for (const [id, p] of Object.entries(mirror.byId)) {
-      // Skip creating a remote sprite for self - we already have a local player
-      if (id === this.net.bus.localId) continue;
-      
-      let g = this.remoteSprites.get(id);
-      if (!g) {
-        g = this.add.graphics();
-        g.fillStyle(0xff4d4d, 1); // Red color for remote players
-        g.fillCircle(0, 0, 6);
-        this.cellRoot.add(g); // ensure same coordinate space as worldRefs
-        this.remoteSprites.set(id, g);
-      }
-      g.setPosition(p.x, p.y);
-      g.setVisible(true);
-    }
-    
-    // Optionally hide sprites for ids no longer present
-    for (const [id, g] of this.remoteSprites) {
-      if (!mirror.byId[id] || id === this.net.bus.localId) { // Also clean up any self sprites that shouldn't exist
-        g.destroy(); 
-        this.remoteSprites.delete(id); 
-      }
-    }
-  }
-
-  /**
-   * Check if position or velocity changed meaningfully (>0.01 threshold)
-   */
-  private hasPlayerStateChanged(
-    oldState: { x: number; y: number; vx: number; vy: number },
-    newState: { x: number; y: number; vx: number; vy: number }
-  ): boolean {
-    const posChanged = Math.abs(oldState.x - newState.x) > 0.01 || 
-                      Math.abs(oldState.y - newState.y) > 0.01;
-    const velChanged = Math.abs(oldState.vx - newState.vx) > 0.01 || 
-                      Math.abs(oldState.vy - newState.vy) > 0.01;
-    return posChanged || velChanged;
-  }
-
-  /**
-   * Extract input acceleration from keyboard keys
-   */
-  private getInputAcceleration(): { ax: number; ay: number; drive: boolean } {
-    let ax = 0, ay = 0;
-    if (this.keys.A.isDown) ax -= 1;
-    if (this.keys.D.isDown) ax += 1;
-    if (this.keys.W.isDown) ay -= 1;
-    if (this.keys.S.isDown) ay += 1;
-    
-    const drive = this.keys.SPACE.isDown; // Dash/drive mode
-    return { ax, ay, drive };
-  }
-
-  /**
-   * Send local player state to network for replication
-   */
-  private synchronizePlayerState(): void {    
-    if (!this.net.bus.localId || !this.playerActor) return;
-    
-    // Get input from keyboard
-    const input = this.getInputAcceleration();
-    
-    // Send input to PlayerSystem for server processing
-    this.net.players.setInput(this.net.bus.localId, input);
-    
-    // Get current player position and velocity for comparison
-    const worldPos = this.playerActor.getWorldPosition();
-    const velocity = this.playerActor.getVelocity();
-    
-    if (this.net.isHost) {
-      // Host: Update state directly - only sync if there are meaningful changes
-      const playerData = this.net.players.get(this.net.bus.localId);
-      if (playerData) {
-        const newState = { x: worldPos.x, y: worldPos.y, vx: velocity.x, vy: velocity.y };
-        
-        if (this.hasPlayerStateChanged(playerData, newState)) {
-          playerData.x = newState.x;
-          playerData.y = newState.y;
-          playerData.vx = newState.vx;
-          playerData.vy = newState.vy;
-          playerData.ts = Date.now();
-        }
-      }
-    } else {
-      // Client: Only send position to host if it changed meaningfully
-      const lastPos = this._lastClientPos || { x: 0, y: 0, vx: 0, vy: 0 };
-      const newState = { x: worldPos.x, y: worldPos.y, vx: velocity.x, vy: velocity.y };
-      
-      if (this.hasPlayerStateChanged(lastPos, newState)) {
-        this.net.players.updatePosition(
-          this.net.bus.localId,
-          newState.x,
-          newState.y,
-          newState.vx,
-          newState.vy
-        );
-        
-        this._lastClientPos = newState;
-      }
-    }
-  }
-
   // Hex Grid System
   private initializeHexGrid(): void {
+    console.log('Initializing hex grid...');
+    
+    // Task 1: Log species registry
+    console.log('Species Registry:');
+    const allSpecies = getAllSpecies();
+    allSpecies.forEach(species => {
+      console.log(`  ${species.id}: ${species.label} (diffusion: ${species.diffusionCoefficient})`);
+    });
+    console.log(`Total species: ${allSpecies.length}`);
+    
     // HOTFIX H5: Initialize hex grid with local coordinates (0,0) since it's now in cellRoot
     this.hexGrid = new HexGrid(this.hexSize, 0, 0);
     this.hexGrid.generateTiles(this.gridRadius);
@@ -913,6 +837,30 @@ export class GameScene extends Phaser.Scene {
     
     // Milestone 6 Task 1: Compute membrane tiles using local coordinates
     this.hexGrid.recomputeMembranes(0, 0, this.cellRadius);
+    
+    console.log(`Hex Grid initialized:
+      - Tiles: ${this.hexGrid.getTileCount()}
+      - Hex size: ${this.hexSize}
+      - Grid radius: ${this.gridRadius}
+      - Cell radius: ${this.cellRadius}
+      - Max distance: ${maxDistance}
+      - Cell center: (0, 0) [local coordinates in cellRoot]`);
+    
+    // Test coordinate conversion and neighbors
+    const testTiles = this.hexGrid.getAllTiles().slice(0, 3);
+    testTiles.forEach((tile, i) => {
+      const neighbors = this.hexGrid.getNeighbors(tile.coord);
+      console.log(`Tile ${i}: coord(${tile.coord.q},${tile.coord.r}) local(${Math.round(tile.worldPos.x)},${Math.round(tile.worldPos.y)}) neighbors: ${neighbors.length}`);
+    });
+    
+    // Test center tile conversion
+    const centerTile = this.hexGrid.getTile({ q: 0, r: 0 });
+    if (centerTile) {
+      const backToHex = this.hexGrid.worldToHex(centerTile.worldPos.x, centerTile.worldPos.y);
+      console.log(`Center tile test: original(0,0) -> local(${Math.round(centerTile.worldPos.x)}, ${Math.round(centerTile.worldPos.y)}) -> back to hex(${backToHex.q}, ${backToHex.r})`);
+    }
+    
+    console.log('Hex grid initialization complete!');
   }
 
   private initializeHexGraphics(): void {
@@ -927,18 +875,6 @@ export class GameScene extends Phaser.Scene {
     
     // Milestone 6: Initialize membrane debug graphics
     this.initializeMembraneGraphics();
-    
-    // Initialize pathfinding debug graphics
-    this.initializePathfindingGraphics();
-  }
-
-  private initializePathfindingGraphics(): void {
-    this.pathfindingGraphics = this.add.graphics();
-    this.pathfindingGraphics.setDepth(5.0); // Above everything for visibility
-    this.pathfindingGraphics.setVisible(this.showPathfindingDebug);
-    
-    // Add to cellRoot
-    this.cellRoot.add(this.pathfindingGraphics);
   }
 
   private initializeMembraneGraphics(): void {
@@ -950,35 +886,6 @@ export class GameScene extends Phaser.Scene {
     this.cellRoot.add(this.membraneGraphics);
     
     // Note: renderMembraneDebug() will be called after membrane exchange system is initialized
-  }
-
-  private testMembranePhysics(): void {
-    if (!this.membranePhysics) {
-      console.log("No membrane physics system available for testing");
-      return;
-    }
-
-    // Log debug info about membrane physics system
-    console.log(`🧬 Membrane Physics Debug: ${(this.membranePhysics as any).getDebugInfo?.()}`);
-
-    // Apply test impacts at random locations around the cell membrane
-    const numImpacts = 3;
-    for (let i = 0; i < numImpacts; i++) {
-      const angle = (Math.PI * 2 * i) / numImpacts + Math.random() * 0.5;
-      // Position impacts near the membrane radius (in cellRoot local coordinates)
-      const impactRadius = this.cellRadius * 0.8; // Just inside the membrane
-      const x = Math.cos(angle) * impactRadius;
-      const y = Math.sin(angle) * impactRadius;
-      const force = 50 + Math.random() * 100;
-      
-      // Create Vector2 objects for position and direction in cell-local coordinates
-      const position = new Phaser.Math.Vector2(x, y);
-      const direction = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
-      
-      this.membranePhysics.applyImpact(position, force, direction, 'external');
-    }
-
-    console.log("Applied test impacts to membrane physics system near cell membrane");
   }
 
   private renderMembraneDebug(): void {
@@ -1240,18 +1147,6 @@ export class GameScene extends Phaser.Scene {
     console.log(`Membrane debug ${this.showMembraneDebug ? 'shown' : 'hidden'}`);
   }
 
-  private togglePathfindingDebug(): void {
-    this.showPathfindingDebug = !this.showPathfindingDebug;
-    if (this.pathfindingGraphics) {
-      this.pathfindingGraphics.setVisible(this.showPathfindingDebug);
-      if (!this.showPathfindingDebug) {
-        this.clearPathfindingDebugPaths();
-      }
-    }
-    console.log(`Pathfinding debug ${this.showPathfindingDebug ? 'shown' : 'hidden'}`);
-    this.showToast(`Pathfinding debug ${this.showPathfindingDebug ? 'ON' : 'OFF'} (F3 to toggle)`);
-  }
-
   // Hex Interaction System
   private initializeHexInteraction(): void {
     this.hexInteractionGraphics = this.add.graphics();
@@ -1443,105 +1338,52 @@ export class GameScene extends Phaser.Scene {
         `World: (${Math.round(tile.worldPos.x)}, ${Math.round(tile.worldPos.y)})`
       ];
       
-      // Check for organelle on this tile (use original organelle system)
+      // Check for organelle on this tile
       const organelle = this.organelleSystem.getOrganelleAtTile(tile.coord);
       if (organelle) {
-        info.push(`🏭 Organelle: ${organelle.config.label}`);
-        info.push(`  Type: ${organelle.type}`);
-        info.push(`  Status: ${organelle.isActive ? 'Active' : 'Inactive'}`);
-        info.push(`  Throughput: ${organelle.currentThroughput || 0}`);
+        info.push(...this.organelleSystem.getOrganelleInfo(tile.coord));
         info.push(''); // Add spacing
       }
       
       // Milestone 13: Show cargo (transcripts/vesicles) at this tile
-      const cargoAtTile = this.cargoSystem.getCargoAtTile(tile.coord);
+      const cargoAtTile = this.getCargoAtTile(tile.coord);
       if (cargoAtTile.length > 0) {
         info.push(`📦 Cargo at this tile:`);
         for (const cargo of cargoAtTile) {
-          // Calculate real-time TTL like CargoHUD does
-          const elapsedSeconds = (Date.now() - cargo.createdAt) / 1000;
-          const remainingTTL = Math.max(0, cargo.ttlSecondsInitial - elapsedSeconds);
-          const stageInfo = cargo.itinerary 
-            ? `${cargo.itinerary.stageIndex + 1}/${cargo.itinerary.stages.length} (${cargo.itinerary.stages[cargo.itinerary.stageIndex]?.kind || 'unknown'})`
-            : 'stage info unavailable';
-          info.push(`  📝 ${cargo.currentType} ${cargo.proteinId} - Stage ${stageInfo}`);
-          info.push(`    TTL: ${remainingTTL.toFixed(1)}s, State: ${cargo.state}`);
+          if (cargo.type === 'transcript') {
+            const transcript = cargo.item as Transcript;
+            const stageInfo = transcript.itinerary 
+              ? `${transcript.itinerary.stageIndex + 1}/${transcript.itinerary.stages.length} (${transcript.itinerary.stages[transcript.itinerary.stageIndex]?.kind || 'unknown'})`
+              : 'legacy';
+            info.push(`  📝 Transcript ${transcript.proteinId} - Stage ${stageInfo}`);
+            info.push(`    TTL: ${transcript.ttlSeconds.toFixed(1)}s, State: ${transcript.state}`);
+          } else {
+            const vesicle = cargo.item as Vesicle;
+            const stageInfo = vesicle.itinerary 
+              ? `${vesicle.itinerary.stageIndex + 1}/${vesicle.itinerary.stages.length} (${vesicle.itinerary.stages[vesicle.itinerary.stageIndex]?.kind || 'unknown'})`
+              : 'legacy';
+            info.push(`  🧬 Vesicle ${vesicle.proteinId} - Stage ${stageInfo}`);
+            info.push(`    TTL: ${(vesicle.ttlMs / 1000).toFixed(1)}s, State: ${vesicle.state}`);
+          }
         }
         info.push(''); // Add spacing
       }
       
       // Check for blueprint on this tile
-      // Use original blueprint system
       const blueprint = this.blueprintSystem.getBlueprintAtTile(tile.coord.q, tile.coord.r);
-      
       if (blueprint) {
         const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
         info.push(`🔨 Blueprint: ${recipe?.label}`);
         
-        // Show progress using shared progress utilities
-        const progressRatio = BlueprintProgressUtils.calculateOverallProgress(blueprint);
-        const totalPercent = Math.round(progressRatio * 100);
-        const status = BlueprintProgressUtils.isComplete(blueprint) ? '✅' : '⏳';
-        info.push(`  ${status} Progress: ${totalPercent}%`);
-        
-        // Show detailed progress per species
+        // Show progress for each species requirement
         for (const [speciesId, requiredAmount] of Object.entries(recipe?.buildCost || {})) {
-          const currentProgress = blueprint.progress?.[speciesId as SpeciesId] || 0;
+          const currentProgress = blueprint.progress[speciesId as SpeciesId] || 0;
           const percent = Math.round((currentProgress / requiredAmount) * 100);
           const status = currentProgress >= requiredAmount ? '✅' : '⏳';
           info.push(`  ${status} ${speciesId}: ${currentProgress.toFixed(1)}/${requiredAmount} (${percent}%)`);
         }
         
         info.push(`Press X to cancel (50% refund)`);
-        info.push(''); // Add spacing
-      }
-      
-      // Milestone 13: Check for cytoskeleton blueprints at this tile
-      const cytoskeletonBlueprints = this.cytoskeletonSystem.getActiveBlueprints().filter(bp => 
-        (bp.fromHex.q === tile.coord.q && bp.fromHex.r === tile.coord.r) ||
-        (bp.toHex.q === tile.coord.q && bp.toHex.r === tile.coord.r)
-      );
-      
-      if (cytoskeletonBlueprints.length > 0) {
-        for (const blueprint of cytoskeletonBlueprints) {
-          const icon = blueprint.type === 'actin' ? '🕸️' : '🧬';
-          info.push(`${icon} ${blueprint.type} blueprint`);
-          
-          // Use shared progress utilities for consistency
-          const progressRatio = BlueprintProgressUtils.calculateOverallProgress(blueprint);
-          const totalPercent = Math.round(progressRatio * 100);
-          const status = BlueprintProgressUtils.isComplete(blueprint) ? '✅' : '⏳';
-          info.push(`  ${status} Progress: ${totalPercent}%`);
-          
-          // Show detailed progress per species using shared format
-          const aaCurrentProgress = blueprint.progress['AA'] || 0;
-          const aaRequiredAmount = blueprint.required['AA'];
-          const aaPercent = Math.round((aaCurrentProgress / aaRequiredAmount) * 100);
-          const aaStatus = aaCurrentProgress >= aaRequiredAmount ? '✅' : '⏳';
-          info.push(`  ${aaStatus} AA: ${aaCurrentProgress.toFixed(1)}/${aaRequiredAmount} (${aaPercent}%)`);
-          
-          const proteinCurrentProgress = blueprint.progress['PROTEIN'] || 0;
-          const proteinRequiredAmount = blueprint.required['PROTEIN'];
-          const proteinPercent = Math.round((proteinCurrentProgress / proteinRequiredAmount) * 100);
-          const proteinStatus = proteinCurrentProgress >= proteinRequiredAmount ? '✅' : '⏳';
-          info.push(`  ${proteinStatus} PROTEIN: ${proteinCurrentProgress.toFixed(1)}/${proteinRequiredAmount} (${proteinPercent}%)`);
-          
-          info.push(`  From: (${blueprint.fromHex.q},${blueprint.fromHex.r}) To: (${blueprint.toHex.q},${blueprint.toHex.r})`);
-        }
-        info.push(''); // Add spacing
-      }
-      
-      // Milestone 13: Check for existing cytoskeleton segments at this tile
-      const segments = this.cytoskeletonSystem.getSegmentsAtTile(tile.coord);
-      if (segments.length > 0) {
-        info.push(`🔗 Cytoskeleton segments:`);
-        for (const segment of segments) {
-          const icon = segment.type === 'actin' ? '🕸️' : '🧬';
-          
-          info.push(`  ${icon} ${segment.type} (${segment.id})`);
-          info.push(`    From: (${segment.fromHex.q},${segment.fromHex.r}) To: (${segment.toHex.q},${segment.toHex.r})`);
-          info.push(`    Network: ${segment.networkId}`);
-        }
         info.push(''); // Add spacing
       }
       
@@ -1595,77 +1437,24 @@ export class GameScene extends Phaser.Scene {
         info.push(''); // Add spacing
       }
       
-      // Pathfinding Debug: Show paths from player position to selected tile
-      if (this.playerActor && this.cytoskeletonSystem.graph && this.showPathfindingDebug) {
-        const playerTile = this.playerActor.getCurrentHex();
-        const playerWorldPos = this.playerActor.getWorldPosition();
-        const playerHexCoord = this.playerActor.getHexCoord();
-        
-        // Also test direct conversion for comparison
-        const worldToHexDirect = this.hexGrid.worldToHex(playerWorldPos.x, playerWorldPos.y);
-        
-        info.push(`👤 Player Debug:`);
-        info.push(`  World: (${playerWorldPos.x.toFixed(1)}, ${playerWorldPos.y.toFixed(1)})`);
-        info.push(`  Hex: ${playerHexCoord ? `(${playerHexCoord.q}, ${playerHexCoord.r})` : 'null'}`);
-        info.push(`  Direct: (${worldToHexDirect.q}, ${worldToHexDirect.r})`);
-        info.push(`  Tile: ${playerTile ? `(${playerTile.coord.q}, ${playerTile.coord.r})` : 'null'}`);
-        
-        if (playerTile && (playerTile.coord.q !== tile.coord.q || playerTile.coord.r !== tile.coord.r)) {
-          const debugResult = this.cytoskeletonSystem.graph.debugPathfinding(
-            playerTile.coord, 
-            tile.coord, 
-            'vesicle' // Default to vesicle for debugging
-          );
-          
-          info.push(`🗺️ Pathfinding Debug (Player → Selected):`);
-          info.push(`  From: (${playerTile.coord.q}, ${playerTile.coord.r}) → To: (${tile.coord.q}, ${tile.coord.r})`);
-          
-          if (debugResult.issues.length > 0) {
-            info.push(`  ❌ Issues: ${debugResult.issues.join(', ')}`);
-          }
-          
-          info.push(`  📊 Graph: ${debugResult.graphInfo.totalNodes} nodes, ${debugResult.graphInfo.totalEdges} edges`);
-          info.push(`  🏁 From nodes: ${debugResult.fromNodes.length > 0 ? debugResult.fromNodes.slice(0, 3).join(', ') : 'none'}`);
-          info.push(`  🎯 To nodes: ${debugResult.toNodes.length > 0 ? debugResult.toNodes.slice(0, 3).join(', ') : 'none'}`);
-          
-          // Show only the best path
-          const topPaths = debugResult.paths.slice(0, 1); // Only take the best path
-          if (topPaths.length > 0) {
-            info.push(`  🛤️ Best path:`);
-            
-            const path = topPaths[0];
-            if (path.success) {
-              info.push(`    ✅ Cost ${path.cost.toFixed(1)}`);
-              info.push(`       ${path.startNode} → ${path.endNode}`);
-              info.push(`       Path: ${path.path.slice(0, 4).join(' → ')}${path.path.length > 4 ? '...' : ''}`);
-            } else {
-              info.push(`    ❌ ${path.reason || 'Unknown'}`);
-              info.push(`       ${path.startNode} → ${path.endNode}`);
-            }
-            
-            // Render the top 3 paths visually
-            this.renderPathfindingDebugPaths(topPaths);
-          } else {
-            info.push(`  🛤️ No paths found`);
-            // Clear any existing path visualizations
-            this.clearPathfindingDebugPaths();
-          }
-          
-          info.push(''); // Add spacing
-        } else {
-          // Clear path visualizations when not debugging
-          this.clearPathfindingDebugPaths();
+      // Milestone 13: Show cytoskeleton segments at this tile
+      const cytoskeletonSegments = this.cytoskeletonSystem.getSegmentsAtTile(tile.coord);
+      if (cytoskeletonSegments.length > 0) {
+        info.push(`🚂 Cytoskeleton Rails:`);
+        for (const segment of cytoskeletonSegments) {
+          const utilization = Math.round(segment.utilization * 100);
+          const utilizationIcon = utilization > 70 ? '🔴' : utilization > 30 ? '🟡' : '🟢';
+          info.push(`  ${segment.type} - ${utilizationIcon} ${utilization}% utilization`);
+          info.push(`    Capacity: ${segment.capacity}/tick, Speed: ${segment.speed}x`);
         }
-      } else {
-        // Clear path visualizations when cytoskeleton system not available
-        this.clearPathfindingDebugPaths();
+        info.push(''); // Add spacing
       }
       
       info.push(`Species Concentrations:`);
       
       // Show all species concentrations with reduced precision to minimize flicker
       for (const speciesId in concentrations) {
-        const concentration = concentrations[speciesId as SpeciesId];
+        const concentration = concentrations[speciesId];
         if (concentration > 0.01) { // Only show meaningful amounts
           info.push(`  ${speciesId}: ${concentration.toFixed(1)}`); // Reduced to 1 decimal place
         }
@@ -1675,8 +1464,38 @@ export class GameScene extends Phaser.Scene {
       this.tileInfoPanel.setVisible(true);
     } else {
       this.tileInfoPanel.setVisible(false);
-      this.clearPathfindingDebugPaths(); // Clear paths when no tile selected
     }
+  }
+
+  /**
+   * Force an immediate tile info panel update (call when something significant changes)
+   */
+  private forceUpdateTileInfoPanel(): void {
+    this.lastInfoUpdateTime = 0; // Reset timer to force update
+    this.updateTileInfoPanel();
+  }
+
+  /**
+   * Milestone 13: Get cargo (transcripts/vesicles) at a specific tile
+   */
+  private getCargoAtTile(coord: HexCoord): Array<{type: 'transcript' | 'vesicle', item: Transcript | Vesicle}> {
+    const cargo: Array<{type: 'transcript' | 'vesicle', item: Transcript | Vesicle}> = [];
+    
+    // Check transcripts
+    for (const transcript of this.transcripts.values()) {
+      if (!transcript.isCarried && transcript.atHex.q === coord.q && transcript.atHex.r === coord.r) {
+        cargo.push({ type: 'transcript', item: transcript });
+      }
+    }
+    
+    // Check vesicles
+    for (const vesicle of this.vesicles.values()) {
+      if (!vesicle.isCarried && vesicle.atHex.q === coord.q && vesicle.atHex.r === coord.r) {
+        cargo.push({ type: 'vesicle', item: vesicle });
+      }
+    }
+    
+    return cargo;
   }
 
   // Debug Info Panel - Task 4
@@ -1695,7 +1514,6 @@ export class GameScene extends Phaser.Scene {
       "P - Toggle passive effects",
       "T - Pause/show conservation",
       "M - Toggle membrane debug",
-      "F3 - Toggle pathfinding debug",
       "F - Instant construction",
       "Click tile to inspect",
       "C - Clear selected tile"
@@ -1715,7 +1533,7 @@ export class GameScene extends Phaser.Scene {
     this.debugInfoPanel.setScrollFactor(0);
 
     // Milestone 6 Task 1: Initialize current tile label
-    this.currentTileLabel = this.add.text(600, 50, "Current Tile: none", {
+    this.currentTileLabel = this.add.text(600, 5, "Current Tile: none", {
       fontFamily: "monospace",
       fontSize: "12px",
       color: "#ffcc00",
@@ -1761,14 +1579,44 @@ export class GameScene extends Phaser.Scene {
     this.buildDateText.setDepth(1000);
     this.buildDateText.setScrollFactor(0);
   }
+
+  // Milestone 7 Task 1: Initialize transcript system
+  private initializeTranscriptSystem(): void {
+    // Graphics for rendering transcript dots
+    this.transcriptGraphics = this.add.graphics();
+    this.transcriptGraphics.setDepth(3.5); // Above organelles, below player
+    
+    // HOTFIX H2: Re-parent transcript graphics to cellRoot
+    this.cellRoot.add(this.transcriptGraphics);
+    
+    console.log('Transcript system initialized');
+  }
   
+  private initializeConservationTracker(): void {
+    this.conservationTracker = new ConservationTracker(this.hexGrid, this.passiveEffectsSystem);
+    
+    this.conservationPanel = this.add.text(14, 750, "", {
+      fontFamily: "monospace",
+      fontSize: "10px",
+      color: "#ffcc88",
+      backgroundColor: "#000000",
+      padding: { x: 6, y: 4 },
+      stroke: "#444444",
+      strokeThickness: 1,
+    });
+    
+    this.conservationPanel.setDepth(1001);
+    this.conservationPanel.setScrollFactor(0);
+    this.conservationPanel.setVisible(false);
+    
+    console.log('Conservation tracker initialized');
+  }
 
   // Organelle System - Milestone 3 Task 1
   
   private initializeOrganelleSystem(): void {
-    this.organelleSystem = new OrganelleSystem(this.net.bus, this.hexGrid);
-    this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize, this.cellRoot, this.worldRefsInstance);
-    console.log('Organelle renderer initialized');
+    this.organelleSystem = new OrganelleSystem(this.hexGrid);
+    this.organelleRenderer = new OrganelleRenderer(this, this.organelleSystem, this.hexSize, this.cellRoot);
     this.organelleSelection = new OrganelleSelectionSystem(this, this.organelleSystem, this.hexSize);
     
     // Set up selection callback
@@ -1796,20 +1644,13 @@ export class GameScene extends Phaser.Scene {
   // Blueprint System - Milestone 5
   
   private initializeBlueprintSystem(): void {
-    console.log(`Cytoskeleton system before blueprint init:`, this.cytoskeletonSystem);
     // Initialize blueprint system with reference to organelle occupied tiles and membrane exchange system
     this.blueprintSystem = new BlueprintSystem(
-      this,
-      this.net.bus,
       this.hexGrid, 
       () => this.organelleSystem.getOccupiedTiles(),
-      this.membraneExchangeSystem,
-      this.cytoskeletonSystem,
       (organelleType: OrganelleType, coord: HexCoord) => this.spawnOrganelleFromBlueprint(organelleType, coord),
+      this.membraneExchangeSystem
     );
-    
-    // Initialize blueprint renderer (now that blueprintSystem exists)
-    this.blueprintRenderer = new BlueprintRenderer(this, this.blueprintSystem, this.hexGrid, this.hexSize, this.cellRoot);
     
     // Initialize build palette UI
     this.buildPalette = new BuildPaletteUI(this, 350, 50);
@@ -1819,28 +1660,37 @@ export class GameScene extends Phaser.Scene {
       console.log(`Entered build mode with recipe: ${recipeId}`);
     };
     
+    // Initialize blueprint renderer
+    this.blueprintRenderer = new BlueprintRenderer(this, this.blueprintSystem, this.hexSize, this.cellRoot);
+    
     console.log('Blueprint system initialized');
   }
 
   private spawnOrganelleFromBlueprint(organelleType: OrganelleType, coord: HexCoord): void {
-    console.log(`🏭 Spawning organelle ${organelleType} at (${coord.q}, ${coord.r})`);
+    console.log(`🔧 spawnOrganelleFromBlueprint called: type="${organelleType}", coord=(${coord.q}, ${coord.r})`);
     
-    // Get the organelle definition from registry
+    // Use centralized organelle registry instead of hardcoded mapping
     const definition = getOrganelleDefinition(organelleType);
-    if (!definition) {
-      console.error(`Cannot spawn organelle: unknown type "${organelleType}"`);
-      return;
-    }
-    
-    // Convert definition to config format and generate unique instance ID
-    const config = definitionToConfig(definition, `${organelleType}-${Date.now()}`);
-    
-    // Create the organelle through the organelle system
-    const success = this.organelleSystem.createOrganelle(config, coord);
-    if (success) {
-      console.log(`✅ Successfully spawned ${organelleType} at (${coord.q}, ${coord.r})`);
+    if (definition) {
+      const config = definitionToConfig(definition);
+      console.log(`📍 Creating organelle with config:`, config);
+      const success = this.organelleSystem.createOrganelle(config, coord);
+      console.log(`🏗️ Organelle creation result: ${success}`);
+      console.log(`✅ Spawned ${config.label} at (${coord.q}, ${coord.r})`);
+      
+      // Force visual update to show the new organelle immediately
+      if (success && this.organelleRenderer) {
+        this.organelleRenderer.update();
+        console.log(`🎨 Organelle renderer updated after spawning ${config.label}`);
+      }
+      
+      // Force an update of the tile info panel if this tile is selected
+      if (this.selectedTile && this.selectedTile.coord.q === coord.q && this.selectedTile.coord.r === coord.r) {
+        console.log(`🔄 Selected tile matches spawned organelle, updating info panel`);
+        this.forceUpdateTileInfoPanel();
+      }
     } else {
-      console.error(`❌ Failed to spawn ${organelleType} at (${coord.q}, ${coord.r})`);
+      console.warn(`Unknown organelle type for blueprint completion: ${organelleType}`);
     }
   }
 
@@ -1860,13 +1710,13 @@ export class GameScene extends Phaser.Scene {
       blueprintStatus = ` | 🔨 Building: ${recipe?.label}`;
     }
     
-    // Milestone 7 Task 8: Transcript and order status (updated for networked cargo)
-    const carriedInventory = this.cargoSystem.getMyPlayerInventory();
-    const carriedCount = carriedInventory.length;
-    const carriedType = carriedInventory[0]?.currentType || 'none';
-    const totalCargo = this.cargoSystem?.getAllCargo().length || 0;
-    const pendingOrders = this.net.installOrders.getOrderCount();
-    const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalCargo} transcripts total | Orders: ${pendingOrders} pending`;
+    // Milestone 7 Task 8: Transcript and order status (updated for unified cargo)
+    const carriedCargo = this.unifiedCargoSystem.getCarriedCargo();
+    const carriedCount = carriedCargo ? 1 : 0;
+    const carriedType = carriedCargo ? carriedCargo.type : 'none';
+    const totalTranscripts = this.transcripts.size;
+    const pendingOrders = this.installOrders.size;
+    const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalTranscripts} transcripts total | Orders: ${pendingOrders} pending`;
     
     // Milestone 10: Updated control hints for motility modes
     // Milestone 7: Added transcript controls
@@ -1916,6 +1766,19 @@ export class GameScene extends Phaser.Scene {
     return '[' + '█'.repeat(filled) + '░'.repeat(empty) + ']';
   }
 
+  private updateConservationPanel(): void {
+    if (!this.conservationPanel || !this.conservationTracker) return;
+    
+    const isPaused = this.conservationTracker.isPausedState();
+    if (isPaused) {
+      const report = this.conservationTracker.getSummaryReport();
+      this.conservationPanel.setText(report.join('\n'));
+      this.conservationPanel.setVisible(true);
+    } else {
+      this.conservationPanel.setVisible(false);
+    }
+  }
+
   // Heatmap System - Task 5
   
   private initializeHeatmapSystem(): void {
@@ -1942,6 +1805,11 @@ export class GameScene extends Phaser.Scene {
     console.log('Diffusion system initialized');
   }
 
+  private initializeMembraneExchangeSystem(): void {
+    this.membraneExchangeSystem = new MembraneExchangeSystem(this.hexGrid);
+    this.membranePortSystem = new MembranePortSystem(); // Story 8.11: External interface
+    console.log('Membrane exchange system and port system initialized');
+  }
 
   private initializeCellLocomotionSystems(): void {
     // Initialize cell space system with current cell center
@@ -1960,104 +1828,111 @@ export class GameScene extends Phaser.Scene {
   private initializeNetworking(): void {
     console.log('Initializing networking systems...');
     
-    // Always-networked approach: Start with local loopback (no transport switching!)
-    const offline = new LoopbackTransport({ roomId: "offline", isHost: true });
-    this.initNetwork({ transport: offline, isHost: true, roomId: "offline" });
-
-    // F10 toggles Quick Join panel - simple scene restart approach
+    // Create network transport
+    this.networkTransport = new NetworkTransport();
+    
+    // Create room management UI
+    const view = this.scale.gameSize;
     this.roomUI = new RoomUI({
       scene: this,
-      connectQuick: async () => {
-        const transport = await makeQuickJoinTransport();
-        return { transport, isHost: transport.isHost, roomId: "CELL01" };
-      },
-      onConnected: ({ transport, roomId }) => {
-        // Clean approach: Restart scene with multiplayer (no complex switching!)
-        console.log(`🎮 Starting multiplayer session: ${transport.isHost ? 'HOST' : 'CLIENT'} in ${roomId}`);
-        this.scene.restart({ 
-          useMultiplayer: true, 
-          transport, 
-          isHost: transport.isHost, 
-          roomId 
-        });
-      },
+      x: view.width * 0.5,
+      y: view.height * 0.5
+    }, this.networkTransport);
+    
+    // Create network HUD (top-right corner)
+    this.netHUD = new NetHUD({
+      scene: this,
+      x: view.width - 120,
+      y: 80
+    }, this.networkTransport);
+    
+    // Set up event handlers for when networking is established
+    this.networkTransport.addEventListener('connection', (event: any) => {
+      const connectionEvent = event.detail;
+      if (connectionEvent.type === 'connected') {
+        this.initializeNetSyncSystem();
+      }
     });
     
     console.log('Networking systems initialized');
   }
   
-  // Always-networked initialization - create systems once, never switch transports
-  private initNetwork({ transport, isHost, roomId }: 
-    { transport: NetworkTransport; isHost: boolean; roomId: string }) {
-
-    const bus = new NetBus(transport);
+  // Initialize NetSyncSystem after connection is established
+  private initializeNetSyncSystem(): void {
+    if (this.netSyncSystem) return; // Already initialized
     
-    const players        = new PlayerSystem(bus);
-    const species        = new SpeciesSystem(bus, this.worldRefsInstance);
-    const installOrders  = new InstallOrderSystem(bus, { address: 'InstallOrderSystem' });
-    const cytoskeleton   = this.cytoskeletonSystem; // Use existing system
-    const emotes         = new EmoteSystem(bus, this, players, this.cellRoot);
+    const isHost = this.roomUI.isHostPlayer();
     
-    // Initialize networked membrane systems
-    const membraneExchange = new MembraneExchangeSystem(this, bus, this.hexGrid);
-    this.membraneExchangeSystem = membraneExchange;
+    console.log(`Initializing NetSyncSystem as ${isHost ? 'HOST' : 'CLIENT'}`);
     
-    // Initialize networked membrane physics system
-    const membranePhysics = new MembranePhysicsSystem(this, this.worldRefsInstance, bus);
-    this.membranePhysics = membranePhysics;
-
-    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes, membranePhysics].filter(c => c)) bus.registerInstance(c);
-
-    // Host initializes self in player roster
-    if (bus.isHost) {
-      players.join(bus.localId, 0, 0);
-    }
-
-    console.log(`🆔 Player ID: ${bus.localId})`);
-
-    this.net = { 
-      bus, 
-      isHost: bus.isHost, 
-      players,            // Direct PlayerSystem access
-      cargo: this.cargoSystem, 
-      species,
-      installOrders,
-      cytoskeleton, 
-      emotes,
-      membranePhysics     // Add membrane physics to network interface
+    this.netSyncSystem = new NetSyncSystem({
+      scene: this,
+      transport: this.networkTransport,
+      worldRefs: this.getWorldRefs(),
+      player: this.playerActor,
+      isHost: isHost
+    });
+    
+    // Connect NetHUD to NetSyncSystem for prediction stats
+    this.netHUD.setNetSyncSystem(this.netSyncSystem);
+  }
+  
+  /**
+   * Create test entities for multiplayer replication testing
+   */
+  private createTestEntities(): void {
+    const playerPos = this.getPlayerHexCoord();
+    if (!playerPos) return;
+    
+    // Create a test transcript near the player
+    const transcriptId = `transcript_${this.nextTranscriptId++}`;
+    const transcriptHex = { q: playerPos.q + 1, r: playerPos.r };
+    const transcript: Transcript = {
+      id: transcriptId,
+      proteinId: 'GLUT', // Test protein
+      atHex: transcriptHex,
+      ttlSeconds: 30, // 30 second TTL
+      worldPos: this.hexGrid.hexToWorld(transcriptHex),
+      isCarried: false,
+      moveAccumulator: 0,
+      state: 'traveling',
+      processingTimer: 0,
+      glycosylationState: 'none'
     };
-
-    // Add InstallOrderSystem to WorldRefs for CargoSystem access
-    this.worldRefsInstance.installOrderSystem = installOrders;
     
-    // Add networked MembraneExchangeSystem to WorldRefs
-    this.worldRefsInstance.membraneExchangeSystem = membraneExchange;
-
-    // Optional per-frame host flush (microtask batching also works):
-    const flush = () => {
-      if (bus.isHost) {
-        (players as any).flushState?.();
-        (this.cargoSystem as any).flushState?.();
-        (species as any).flushState?.();
-        (emotes as any).flushState?.();
-      }
-      requestAnimationFrame(flush);
+    this.transcripts.set(transcriptId, transcript);
+    
+    // Create a test vesicle near the player  
+    const vesicleId = `vesicle_${this.nextVesicleId++}`;
+    const vesicleHex = { q: playerPos.q - 1, r: playerPos.r };
+    const vesicle: Vesicle = {
+      id: vesicleId,
+      proteinId: 'GLUT',
+      atHex: vesicleHex,
+      ttlMs: 45000, // 45 second TTL
+      worldPos: this.hexGrid.hexToWorld(vesicleHex),
+      isCarried: false,
+      destHex: { q: playerPos.q, r: playerPos.r + 2 },
+      state: 'EN_ROUTE_GOLGI',
+      glyco: 'partial',
+      processingTimer: 0,
+      retryCounter: 0
     };
-    requestAnimationFrame(flush);
     
-    console.log(`Network initialized: ${isHost ? 'HOST' : 'CLIENT'} in room ${roomId}`);
+    this.vesicles.set(vesicleId, vesicle);
     
-    // Connect membrane physics to player now that it's initialized
-    (this.playerActor as any).membranePhysics = membranePhysics;
-    console.log('🧬 Dynamic membrane physics system initialized and connected to player');
-    
-    // CargoSystem now provides UI interface methods directly - no wrapper needed
-    console.log('CargoSystem provides UI interface methods directly');
+    this.showToast(`Created test entities: 1 transcript, 1 vesicle`);
+    console.log(`🧪 Created test entities for entity replication testing`);
+  }
+
+  // Helper to get current world refs
+  private getWorldRefs(): WorldRefs {
+    return this.worldRefsInstance;
   }
 
   
   private handleDebugControls(): void {
-    const playerCoord = this.playerActor.getHexCoord();
+    const playerCoord = this.getPlayerHexCoord();
     if (!playerCoord) return;
 
     // Clear all species on player's current tile
@@ -2103,33 +1978,47 @@ export class GameScene extends Phaser.Scene {
 
     // F key - Instantly complete construction on current tile
     if (Phaser.Input.Keyboard.JustDown(this.keys.F)) {
-      // Check for blueprint at current location
-      const blueprint = this.blueprintSystem.getBlueprintAtTile(playerCoord.q, playerCoord.r);
-      if (blueprint) {
-        // Instantly complete the blueprint
-        const result = this.blueprintSystem.instantlyComplete(blueprint.id);
-        
-        // Only check result if we're the host (clients get undefined from @RunOnServer methods)
-        if (this.net.bus.isHost) {
-          if (result && result.success) {
-            console.log(`🏁 Instantly completed construction: ${blueprint.recipeId}`);
-            this.showToast(`Completed ${blueprint.recipeId}!`);
-          } else {
-            console.warn(`❌ Failed to complete construction: ${result?.error}`);
-            this.showToast(result?.error || 'Failed to complete construction');
-          }
-        } else {
-          // Client: show optimistic feedback
-          console.log(`🏁 Requested instant completion: ${blueprint.recipeId}`);
-          this.showToast(`Completing ${blueprint.recipeId}...`);
-        }
+      // Network-aware construction completion
+      if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
+        // Client: request finish construction from host
+        this.requestFinishConstruction(playerCoord.q, playerCoord.r);
       } else {
-        console.log('No blueprint found at current location');
-        this.showToast('No blueprint found here');
+        // Host or single-player: instant complete directly
+        this.instantCompleteConstruction(playerCoord);
       }
     }
+
+    // Tile interactions - Tasks 2-9
+    this.handleTileInteractions();
   }
 
+  /**
+   * Debug function to instantly complete any blueprint construction on the given tile
+   */
+  private instantCompleteConstruction(coord: HexCoord): void {
+    const blueprint = this.blueprintSystem.getBlueprintAtTile(coord.q, coord.r);
+    if (!blueprint) {
+      console.log(`No blueprint found at (${coord.q}, ${coord.r})`);
+      return;
+    }
+
+    const recipe = CONSTRUCTION_RECIPES.getRecipe(blueprint.recipeId);
+    if (!recipe) {
+      console.warn(`Recipe not found for blueprint ${blueprint.id}`);
+      return;
+    }
+
+    // Fill all requirements instantly
+    for (const [speciesId, requiredAmount] of Object.entries(recipe.buildCost)) {
+      blueprint.progress[speciesId as SpeciesId] = requiredAmount;
+      blueprint.totalProgress += requiredAmount;
+    }
+
+    console.log(`🚀 Instantly completed ${recipe.label} construction at (${coord.q}, ${coord.r})`);
+  }
+
+  // Blueprint System Input Handling - Milestone 5
+  
   /**
    * Handle essential build input that was lost in modular refactor
    */
@@ -2137,14 +2026,7 @@ export class GameScene extends Phaser.Scene {
     // Toggle build palette with B key for non-membrane tiles
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
       // Check if standing on membrane tile for protein installation
-      const isMembraneCoord = this.currentTileRef && this.hexGrid.isMembraneCoord(this.currentTileRef.coord);
-      
-      // Also check if there's a transporter/receptor organelle at current location
-      const organelle = this.currentTileRef ? this.organelleSystem.getOrganelleAtTile(this.currentTileRef.coord) : null;
-      const hasTransporterOrReceptor = organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
-      
-      console.log(`Build key pressed. Membrane tile: ${isMembraneCoord}, Has transporter/receptor: ${hasTransporterOrReceptor}`);
-      if (isMembraneCoord || hasTransporterOrReceptor) {
+      if (this.currentTileRef && this.hexGrid.isMembraneCoord(this.currentTileRef.coord)) {
         this.handleMembraneProteinRequest();
         return;
       }
@@ -2181,19 +2063,8 @@ export class GameScene extends Phaser.Scene {
 
       if (blueprint) {
         const success = this.blueprintSystem.cancelBlueprint(blueprint.id, 0.5);
-        
-        // Only check result if we're the host (clients get undefined from @RunOnServer methods)
-        if (this.net.bus.isHost) {
-          if (success) {
-            console.log(`🗑️ Cancelled blueprint with 50% refund`);
-            this.showToast('Blueprint cancelled with 50% refund');
-          } else {
-            this.showToast('Failed to cancel blueprint');
-          }
-        } else {
-          // Client: show optimistic feedback
-          console.log(`🗑️ Requested blueprint cancellation`);
-          this.showToast('Cancelling blueprint...');
+        if (success) {
+          console.log(`🗑️ Cancelled blueprint with 50% refund`);
         }
       }
     }
@@ -2215,33 +2086,35 @@ export class GameScene extends Phaser.Scene {
         }
 
         // Check if we're in multiplayer and not the host
-        // Always use network call - it will route properly whether we're host or client
-        const result = this.blueprintSystem.placeBlueprint(
-          this.selectedRecipeId as OrganelleType,
-          this.currentTileRef.coord.q,
-          this.currentTileRef.coord.r
-        );
-        
-        // Only check result if we're the host (clients get undefined from @RunOnServer methods)
-        if (this.net.bus.isHost) {
-          if (result && result.success) {
-            console.log(`Placed ${this.selectedRecipeId} blueprint at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
-            this.showToast(`Placed ${this.selectedRecipeId} blueprint`);
-          } else {
-            this.showToast(result?.error || 'Failed to place blueprint');
-          }
+        if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
+          // Send network command to host for blueprint placement
+          this.requestBlueprintPlacement(
+            this.selectedRecipeId as OrganelleType,
+            this.currentTileRef.coord.q,
+            this.currentTileRef.coord.r
+          );
         } else {
-          // Client: just show optimistic feedback since we can't get immediate result
-          console.log(`Requested ${this.selectedRecipeId} blueprint placement at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
-          this.showToast(`Requesting ${this.selectedRecipeId} blueprint...`);
+          // Direct placement for host or single-player
+          const result = this.blueprintSystem.placeBlueprint(
+            this.selectedRecipeId as OrganelleType,
+            this.currentTileRef.coord.q,
+            this.currentTileRef.coord.r
+          );
+
+          if (result.success) {
+            console.log(`Placed ${this.selectedRecipeId} blueprint at (${this.currentTileRef.coord.q}, ${this.currentTileRef.coord.r})`);
+            
+            // Exit build mode after successful placement
+            this.isInBuildMode = false;
+            this.selectedRecipeId = null;
+            this.buildPalette.hide();
+            // Reset palette to show all recipes
+            this.buildPalette.rebuildPalette('all');
+          } else {
+            this.showToast(`Failed to place blueprint: ${result.error}`);
+            console.warn(`Failed to place blueprint: ${result.error}`);
+          }
         }
-        
-        // Exit build mode after placement request
-        this.isInBuildMode = false;
-        this.selectedRecipeId = null;
-        this.buildPalette.hide();
-        // Reset palette to show all recipes
-        this.buildPalette.rebuildPalette('all');
       }
     }
   }
@@ -2250,41 +2123,28 @@ export class GameScene extends Phaser.Scene {
    * Handle membrane protein request using the proper transcript workflow
    */
   private handleMembraneProteinRequest(): void {
-    console.log(`🔬 handleMembraneProteinRequest() called`);
-    if (!this.currentTileRef) {
-      console.log(`🔬 No currentTileRef, returning`);
-      return;
-    }
+    if (!this.currentTileRef) return;
     
     const coord = this.currentTileRef.coord;
-    console.log(`🔬 Current tile: (${coord.q}, ${coord.r})`);
     
-    // Check if this tile has a built transporter or receptor
+    // Check if this membrane tile has a built transporter or receptor
     const organelle = this.organelleSystem.getOrganelleAtTile(coord);
-    const hasBuiltStructure = organelle?.type === 'transporter' || organelle?.type === 'receptor';
-    console.log(`Membrane protein request at (${coord.q}, ${coord.r}). Has transporter/receptor: ${hasBuiltStructure}`);
-    console.log(`🔬 Organelle found:`, organelle ? `${organelle.type} (${organelle.id})` : 'none');
+    const hasBuiltStructure = organelle && (organelle.type === 'transporter' || organelle.type === 'receptor');
     
     if (!hasBuiltStructure) {
-      console.log(`🔬 No built structure, showing error toast`);
       this.showToast("No built transporter/receptor here. Build one first with ENTER key.");
       return;
     }
     
-    // Check if protein already installed (for membrane tiles only)
-    const isMembraneCoord = this.hexGrid.isMembraneCoord(coord);
-    console.log(`🔬 Is membrane coord: ${isMembraneCoord}`);
-    if (isMembraneCoord && this.membraneExchangeSystem.hasInstalledProtein(coord)) {
+    // Check if protein already installed
+    if (this.membraneExchangeSystem.hasInstalledProtein(coord)) {
       const installedProtein = this.membraneExchangeSystem.getInstalledProtein(coord);
-      console.log(`🔬 Protein already installed, showing toast`);
       this.showToast(`${installedProtein?.label || 'Unknown protein'} already installed`);
       return;
     }
     
     // Activate protein request mode directly
-    console.log(`🔬 About to activate protein request mode...`);
     this.tileActionController.activateProteinRequestMode();
-    console.log(`🔬 Protein request mode activation complete`);
   }
   
   /**
@@ -2294,23 +2154,62 @@ export class GameScene extends Phaser.Scene {
   private handleUnifiedCargoInput(): void {
     // R key: Pick up or drop cargo using unified cargo system
     if (Phaser.Input.Keyboard.JustDown(this.keys.R)) {
-      const playerHex = this.playerActor.getHexCoord();
+      const playerHex = this.getPlayerHexCoord();
       if (!playerHex) return;
 
-      const isCarrying = this.cargoSystem.getMyPlayerInventory();
-      
-      // TODO should only run on server - CargoSystem handles everything via @RunOnServer
-      if (isCarrying.length === 0) {
-        this.cargoSystem.pickup(playerHex, this.net.bus.localId);
-        console.log(`📦 Requested cargo pickup at (${playerHex.q}, ${playerHex.r})`);
+      // Check if we're in multiplayer mode and not the host
+      if (this.netSyncSystem && !(this.netSyncSystem as any).isHost) {
+        // Multiplayer client: Send command to host instead of executing locally
+        const isCarrying = this.unifiedCargoSystem.isCarrying();
+        if (!isCarrying) {
+          const commandId = this.netSyncSystem.requestAction('cargoPickup', { playerHex });
+          console.log(`📤 CLIENT: Requested cargo pickup at (${playerHex.q}, ${playerHex.r}), commandId: ${commandId}`);
+          this.showToast("Pickup request sent...");
+        } else {
+          const commandId = this.netSyncSystem.requestAction('cargoDrop', { playerHex });
+          console.log(`📤 CLIENT: Requested cargo drop at (${playerHex.q}, ${playerHex.r}), commandId: ${commandId}`);
+          this.showToast("Drop request sent...");
+        }
       } else {
-        // Try to drop cargo - CargoSystem handles everything via @RunOnServer
-        this.cargoSystem.drop(playerHex, this.net.bus.localId);
-        console.log(`📦 Requested cargo drop at (${playerHex.q}, ${playerHex.r})`);
+        // Single-player or host: Execute cargo action directly
+        if (!this.unifiedCargoSystem.isCarrying()) {
+          const result = this.unifiedCargoSystem.attemptPickup(playerHex);
+          this.showToast(result.message);
+        } else {
+          const result = this.unifiedCargoSystem.dropCargo(playerHex);
+          this.showToast(result.message);
+        }
       }
-      
-      // No complex timing logic needed - state sync will update UI automatically
     }
+  }
+
+  /**
+   * Request blueprint placement from the host (for multiplayer clients)
+   */
+  private requestBlueprintPlacement(recipeId: OrganelleType, q: number, r: number): void {
+    if (!this.netSyncSystem) return;
+
+    const commandId = this.netSyncSystem.requestAction('buildBlueprint', {
+      recipeId,
+      hex: { q, r }
+    });
+
+    console.log(`📤 CLIENT: Requested blueprint placement for ${recipeId} at (${q}, ${r}), commandId: ${commandId}`);
+    this.showToast("Blueprint placement request sent...");
+  }
+
+  /**
+   * Request finish construction from the host (for multiplayer clients)
+   */
+  private requestFinishConstruction(q: number, r: number): void {
+    if (!this.netSyncSystem) return;
+
+    const commandId = this.netSyncSystem.requestAction('finishConstruction', {
+      hex: { q, r }
+    });
+
+    console.log(`📤 CLIENT: Requested finish construction at (${q}, ${r}), commandId: ${commandId}`);
+    this.showToast("Construction completion request sent...");
   }
 
   /**
@@ -2319,7 +2218,7 @@ export class GameScene extends Phaser.Scene {
    */
   private updateBuildPaletteFilter(): void {
     if (!this.currentTileRef) {
-      // Player outside grid - show all recipes
+      // Player outside grid - show all recipes (legacy behavior)
       this.buildPalette.rebuildPalette('all');
       return;
     }
@@ -2395,13 +2294,35 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
+   * Get the hex coordinate of the tile the player is currently standing on
+   */
+  private getPlayerHexCoord(): { q: number; r: number } | null {
+    // NEW: Use player actor for position
+    return this.playerActor.getHexCoord();
+  }
+
+  /**
    * Milestone 6 Task 1: Get the player's current hex tile
    * Converts player world coords → axial/hex and returns the tile (or null if outside the grid)
    */
   private getPlayerHex(): HexTile | null {
-    const coord = this.playerActor.getHexCoord();
+    const coord = this.getPlayerHexCoord();
     if (!coord) return null;
     return this.hexGrid.getTile(coord) || null;
+  }
+
+  /**
+   * Milestone 6 Task 1: Get read-only access to current tile
+   */
+  public getCurrentTile(): HexTile | null {
+    return this.currentTileRef;
+  }
+
+  /**
+   * Public method to refresh membrane visuals (for network replication)
+   */
+  public refreshMembraneVisuals(): void {
+    this.renderMembraneDebug();
   }
 
   /**
@@ -2490,6 +2411,11 @@ export class GameScene extends Phaser.Scene {
       }
     }
     
+    // Check for manual vesicle installation on membrane tiles
+    if (this.tryManualVesicleInstallation(coord, currentSpecies)) {
+      return; // Installation handled
+    }
+    
     // Normal drop onto tile if no blueprint or contribution failed
     const result = this.playerInventory.dropOntoTile(this.hexGrid, coord, currentSpecies);
     
@@ -2500,35 +2426,101 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private injectSpecies(speciesId: SpeciesId, amount: number): void {
-    const playerCoord = this.playerActor.getHexCoord();
-    if (!playerCoord) return;
+  /**
+   * Try to manually install a vesicle on a membrane tile
+   * Returns true if installation was attempted (success or failure)
+   */
+  private tryManualVesicleInstallation(coord: HexCoord, speciesId: SpeciesId): boolean {
+    // Check if we're dropping on a membrane tile
+    if (!this.hexGrid.isMembraneCoord(coord)) {
+      return false; // Not a membrane tile
+    }
 
-    // Always use network call - it will route properly whether we're host or client
-    console.log(`📤 Requesting species injection: ${amount} ${speciesId} at (${playerCoord.q}, ${playerCoord.r})`);
+    // Check if the species is a vesicle (contains protein)
+    if (!speciesId.startsWith('VESICLE_')) {
+      return false; // Not a vesicle
+    }
+
+    // Extract protein ID from vesicle ID (e.g., "VESICLE_GLUT1" -> "GLUT1")
+    const proteinId = speciesId.replace('VESICLE_', '');
     
-    this.net.species.injectSpecies(speciesId, amount, { q: playerCoord.q, r: playerCoord.r });
+    // Check if player has any of this vesicle
+    const available = this.playerInventory.getAmount(speciesId);
+    if (available <= 0) {
+      console.log(`No ${speciesId} in inventory to install`);
+      return true; // We handled it (even if failed)
+    }
+
+    // Try to install the protein
+    const installed = this.membraneExchangeSystem.installMembraneProtein(coord, proteinId);
     
-    this.showToast(`Requesting injection of ${amount} ${speciesId}...`);
+    if (installed) {
+      // Consume one vesicle from inventory
+      const consumed = this.playerInventory.drop(speciesId, 1);
+      console.log(`Manually installed ${proteinId} protein from ${consumed} vesicle(s) at (${coord.q}, ${coord.r})`);
+      
+      // Refresh UI to show the newly installed protein
+      this.updateTileInfoPanel();
+    } else {
+      console.log(`Failed to install ${proteinId} protein at (${coord.q}, ${coord.r}) - tile may be occupied`);
+    }
+    
+    return true; // We handled the drop attempt
   }
 
+  private injectSpecies(speciesId: SpeciesId, amount: number): void {
+    const playerCoord = this.getPlayerHexCoord();
+    if (!playerCoord) return;
+
+    // Check if we're in a networked game and need to route through the network
+    if (this.netSyncSystem && !this.netSyncSystem.getIsHost()) {
+      // Client - send request to host
+      console.log(`📤 CLIENT: Requesting species injection: ${amount} ${speciesId} at (${playerCoord.q}, ${playerCoord.r})`);
+      
+      const commandId = this.netSyncSystem.requestAction('injectSpecies', {
+        speciesId,
+        amount,
+        hex: { q: playerCoord.q, r: playerCoord.r }
+      });
+      
+      if (commandId) {
+        this.showToast(`Requesting injection of ${amount} ${speciesId}...`);
+      } else {
+        this.showToast('Failed to send species injection request');
+      }
+      return;
+    }
+
+    // Host or single-player - inject directly
+    this.hexGrid.addConcentration(playerCoord, speciesId, amount);
+    console.log(`Injected ${amount} ${speciesId} into tile (${playerCoord.q}, ${playerCoord.r})`);
+  }
+
+
+  /**
+   * Get transcripts at a specific hex
   /**
    * Debug command: Print status of consolidated systems
    */
   private printSystemStatus(): void {
+    console.log("=== CONSOLIDATED SYSTEMS STATUS ===");
+    
     // MILESTONE 9: Drive mode and motility status
-    const driveStatus = this.cellDriveMode ? 'ON' : 'OFF';
+    console.log(`🚗 Cell Drive Mode: ${this.cellDriveMode ? 'ON' : 'OFF'}`);
     if (this.cellMotility) {
       const state = this.cellMotility.getState();
-      this.showToast(`Drive: ${driveStatus}, Speed: ${state.speed.toFixed(1)}, Polarity: ${state.polarity.magnitude.toFixed(1)}`);
-    } else {
-      this.showToast(`Drive Mode: ${driveStatus}`);
+      console.log(`🏃 Motility: ${state.mode}, Speed: ${state.speed.toFixed(2)}, Polarity: ${state.polarity.magnitude.toFixed(2)}`);
+      console.log(`📍 Cell Center: (${this.cellCenter.x.toFixed(1)}, ${this.cellCenter.y.toFixed(1)})`);
     }
     
-    // CargoSystem metrics
-    const totalCargo = this.cargoSystem?.getAllCargo().length || 0;
-    const orderCount = this.net.installOrders.getOrderCount();
-    console.log(`🔬 CargoSystem: ${totalCargo} cargo, ${orderCount} pending orders`);
+    // MILESTONE 12: Throw & Membrane systems
+    console.log(`📦 Unified Cargo: ${this.unifiedCargoSystem.isCarrying() ? 'Carrying cargo' : 'Empty'}`);
+    console.log(`🏀 Membrane Trampoline: ${this.membraneTrampoline.isOnCooldown() ? 'On cooldown' : 'Ready'}`);
+    
+    // CellProduction metrics
+    const transcriptCount = this.transcripts.size;
+    const orderCount = this.installOrders.size;
+    console.log(`🔬 CellProduction: ${transcriptCount} transcripts, ${orderCount} pending orders`);
     
     // CellTransport metrics  
     const organelleCount = this.organelleSystem.getAllOrganelles().length;
@@ -2551,253 +2543,5 @@ export class GameScene extends Phaser.Scene {
     this.showToast("System status logged to console (F12)");
   }
 
-  // Pathfinding debug visualization methods
-  private renderPathfindingDebugPaths(paths: Array<{
-    success: boolean;
-    path: string[];
-    cost: number;
-    reason?: string;
-    startNode: string;
-    endNode: string;
-  }>): void {
-    if (!this.pathfindingGraphics || !this.cytoskeletonSystem) return;
-    
-    this.clearPathfindingDebugPaths();
-    
-    // Render only the best path (simplified visualization)
-    const pathStyles = [
-      { 
-        color: 0x00ff00, 
-        alpha: 1.0, 
-        lineWidth: 6, 
-        offset: { x: 0, y: 0 }, 
-        glowColor: 0x88ff88,
-        name: 'Best Route'
-      } // Single green path for best route
-    ];
-    
-    // Only render the first/best path
-    if (paths.length > 0) {
-      const path = paths[0];
-      const style = pathStyles[0];
-      
-      if (path.success && path.path.length > 1) {
-        this.renderSinglePath(path.path, style, 1, path.startNode, path.endNode);
-      }
-    }
-  }
-
-  private renderSinglePath(path: string[], style: {
-    color: number;
-    alpha: number;
-    lineWidth: number;
-    offset: { x: number; y: number };
-    glowColor: number;
-    name: string;
-  }, pathNumber: number, startNodeId: string, endNodeId: string): void {
-    if (!this.pathfindingGraphics || !this.cytoskeletonSystem) return;
-    
-    // Handle organelle-to-organelle movement (path 0 case)
-    if (path.length === 2 && startNodeId.includes('organelle_') && endNodeId.includes('organelle_')) {
-      this.renderOrganelleToOrganelleMovement(startNodeId, endNodeId, style, pathNumber);
-      return;
-    }
-    
-    // Get node positions from the graph
-    const nodePositions: { x: number; y: number }[] = [];
-    
-    for (const nodeId of path) {
-      const nodeInfo = this.cytoskeletonSystem.graph.debugNode(nodeId);
-      if (nodeInfo.exists && nodeInfo.node) {
-        const worldPos = this.hexGrid.hexToWorld(nodeInfo.node.hex);
-        // Apply offset to separate overlapping paths
-        nodePositions.push({ 
-          x: worldPos.x + style.offset.x, 
-          y: worldPos.y + style.offset.y 
-        });
-      }
-    }
-    
-    if (nodePositions.length < 2) return;
-    
-    // Draw glow effect first (underneath main line)
-    this.pathfindingGraphics.lineStyle(style.lineWidth + 4, style.glowColor, style.alpha * 0.3);
-    this.pathfindingGraphics.beginPath();
-    this.pathfindingGraphics.moveTo(nodePositions[0].x, nodePositions[0].y);
-    for (let i = 1; i < nodePositions.length; i++) {
-      this.pathfindingGraphics.lineTo(nodePositions[i].x, nodePositions[i].y);
-    }
-    this.pathfindingGraphics.strokePath();
-    
-    // Draw the main path line
-    this.pathfindingGraphics.lineStyle(style.lineWidth, style.color, style.alpha);
-    this.pathfindingGraphics.beginPath();
-    this.pathfindingGraphics.moveTo(nodePositions[0].x, nodePositions[0].y);
-    
-    // Draw path segments
-    for (let i = 1; i < nodePositions.length; i++) {
-      this.pathfindingGraphics.lineTo(nodePositions[i].x, nodePositions[i].y);
-    }
-    this.pathfindingGraphics.strokePath();
-    
-    // Add path number labels at start and end with style name
-    this.addPathLabel(nodePositions[0], `${pathNumber}`, style.color, `${style.name} Start`);
-    if (nodePositions.length > 1) {
-      this.addPathLabel(nodePositions[nodePositions.length - 1], `${pathNumber}`, style.color, `${style.name} End`);
-    }
-    
-    // Add waypoint markers
-    for (let i = 1; i < nodePositions.length - 1; i++) {
-      this.pathfindingGraphics.fillStyle(style.color, style.alpha * 0.8);
-      this.pathfindingGraphics.fillCircle(nodePositions[i].x, nodePositions[i].y, 4);
-      
-      // Add a white border to waypoint
-      this.pathfindingGraphics.lineStyle(1, 0xffffff, 0.8);
-      this.pathfindingGraphics.strokeCircle(nodePositions[i].x, nodePositions[i].y, 4);
-    }
-  }
-
-  private renderOrganelleToOrganelleMovement(startNodeId: string, endNodeId: string, style: {
-    color: number;
-    alpha: number;
-    lineWidth: number;
-    offset: { x: number; y: number };
-    glowColor: number;
-    name: string;
-  }, pathNumber: number): void {
-    if (!this.pathfindingGraphics || !this.cytoskeletonSystem) return;
-    
-    // Get start and end organelle positions
-    const startNodeInfo = this.cytoskeletonSystem.graph.debugNode(startNodeId);
-    const endNodeInfo = this.cytoskeletonSystem.graph.debugNode(endNodeId);
-    
-    if (!startNodeInfo.exists || !endNodeInfo.exists || !startNodeInfo.node || !endNodeInfo.node) {
-      return;
-    }
-    
-    const startWorldPos = this.hexGrid.hexToWorld(startNodeInfo.node.hex);
-    const endWorldPos = this.hexGrid.hexToWorld(endNodeInfo.node.hex);
-    
-    // Apply offsets
-    const startPos = { 
-      x: startWorldPos.x + style.offset.x, 
-      y: startWorldPos.y + style.offset.y 
-    };
-    const endPos = { 
-      x: endWorldPos.x + style.offset.x, 
-      y: endWorldPos.y + style.offset.y 
-    };
-    
-    // Draw teleport arc (curved line to indicate special movement)
-    this.drawTeleportArc(startPos, endPos, style);
-    
-    // Add special labels for organelle-to-organelle movement
-    this.addPathLabel(startPos, `${pathNumber}`, style.color, `${style.name} Teleport Start`);
-    this.addPathLabel(endPos, `${pathNumber}`, style.color, `${style.name} Teleport End`);
-  }
-
-  private drawTeleportArc(startPos: { x: number; y: number }, endPos: { x: number; y: number }, style: {
-    color: number;
-    alpha: number;
-    lineWidth: number;
-    glowColor: number;
-  }): void {
-    if (!this.pathfindingGraphics) return;
-    
-    // Calculate control point for curved arc
-    const midX = (startPos.x + endPos.x) / 2;
-    const midY = (startPos.y + endPos.y) / 2;
-    const distance = Math.sqrt((endPos.x - startPos.x) ** 2 + (endPos.y - startPos.y) ** 2);
-    const arcHeight = Math.min(distance * 0.3, 50); // Arc height based on distance
-    
-    // Control point is perpendicular to the line between start and end
-    const controlX = midX;
-    const controlY = midY - arcHeight;
-    
-    // Draw glow effect using Bezier curve
-    this.pathfindingGraphics.lineStyle(style.lineWidth + 4, style.glowColor, style.alpha * 0.3);
-    const glowCurve = new Phaser.Curves.QuadraticBezier(
-      new Phaser.Math.Vector2(startPos.x, startPos.y),
-      new Phaser.Math.Vector2(controlX, controlY),
-      new Phaser.Math.Vector2(endPos.x, endPos.y)
-    );
-    glowCurve.draw(this.pathfindingGraphics, 32);
-    
-    // Draw main arc with dashed pattern for teleport using line segments
-    this.pathfindingGraphics.lineStyle(style.lineWidth, style.color, style.alpha);
-    
-    // Create dashed effect by drawing multiple small segments along the curve
-    const segments = 20;
-    for (let i = 0; i < segments; i++) {
-      if (i % 2 === 0) { // Only draw every other segment for dash effect
-        const t1 = i / segments;
-        const t2 = Math.min((i + 0.5) / segments, 1); // Half-length segments for dash effect
-        
-        // Calculate points using quadratic Bezier formula
-        const x1 = (1 - t1) * (1 - t1) * startPos.x + 2 * (1 - t1) * t1 * controlX + t1 * t1 * endPos.x;
-        const y1 = (1 - t1) * (1 - t1) * startPos.y + 2 * (1 - t1) * t1 * controlY + t1 * t1 * endPos.y;
-        const x2 = (1 - t2) * (1 - t2) * startPos.x + 2 * (1 - t2) * t2 * controlX + t2 * t2 * endPos.x;
-        const y2 = (1 - t2) * (1 - t2) * startPos.y + 2 * (1 - t2) * t2 * controlY + t2 * t2 * endPos.y;
-        
-        this.pathfindingGraphics.beginPath();
-        this.pathfindingGraphics.moveTo(x1, y1);
-        this.pathfindingGraphics.lineTo(x2, y2);
-        this.pathfindingGraphics.strokePath();
-      }
-    }
-  }
-
-  private addPathLabel(position: { x: number; y: number }, text: string, color: number, description?: string): void {
-    // Convert color to CSS hex string
-    const colorStr = `#${color.toString(16).padStart(6, '0')}`;
-    
-    // Create label text with optional description
-    const labelText = description ? `${text}\n${description}` : text;
-    
-    const label = this.add.text(position.x, position.y - 10, labelText, {
-      fontSize: description ? '12px' : '14px',
-      color: colorStr,
-      backgroundColor: '#000000',
-      padding: { x: 4, y: 2 },
-      align: 'center'
-    });
-    
-    label.setOrigin(0.5, 1);
-    label.setDepth(5.1); // Above the path lines
-    
-    // Add label to cellRoot to position it relative to the cell
-    this.cellRoot.add(label);
-    
-    // Store the label so we can clean it up later
-    if (!this.pathLabels) {
-      this.pathLabels = [];
-    }
-    this.pathLabels.push(label);
-  }
-
-  private pathLabels: Phaser.GameObjects.Text[] = [];
-
-  private clearPathfindingDebugPaths(): void {
-    if (this.pathfindingGraphics) {
-      this.pathfindingGraphics.clear();
-    }
-    
-    // Clean up path labels
-    if (this.pathLabels) {
-      for (const label of this.pathLabels) {
-        label.destroy();
-      }
-      this.pathLabels = [];
-    }
-  }
-
-}
-
-// Implement using WebRTC transport with signaling server
-// It should perform discover/join or host, resolve when data channels are open,
-// and return an object that matches NetworkTransport.
-async function makeQuickJoinTransport(): Promise<import("../network/transport").NetworkTransport> {
-  const { createQuickJoinWebRTC } = await import("../network/transport");
-  return createQuickJoinWebRTC("CELL01");
 }
 
