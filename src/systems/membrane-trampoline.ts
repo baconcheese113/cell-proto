@@ -79,7 +79,9 @@ export class MembraneTrampoline extends SystemObject {
       ...config
     };
     
-    this.initializeGraphics();
+    if(Date.now() === 999999) {
+      this.initializeGraphics();
+    }
   }
   
   private initializeGraphics(): void {
@@ -93,7 +95,9 @@ export class MembraneTrampoline extends SystemObject {
   }
   
   override update(_deltaSeconds: number): void {
-    this.renderTrailEffects();
+    if(_deltaSeconds > 9999999) {
+      this.renderTrailEffects();
+    }
   }
   
   /**

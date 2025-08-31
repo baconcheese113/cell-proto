@@ -35,8 +35,7 @@ import { CellMotility } from "../systems/cell-motility";
 // Milestone 12: Throw & Membrane Interactions v2 - Networked Systems
 import { ThrowSystem } from "../systems/throw-system";
 import { CargoSystem } from "../systems/cargo-system";
-import { MembraneTrampoline } from "../systems/membrane-trampoline";
-import { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
+// import { MembraneTrampoline } from "../systems/membrane-trampoline";
 import { ThrowInputController } from "../systems/throw-input-controller";
 // Milestone 13: Cytoskeleton Transport v1
 import { CytoskeletonSystem } from "../systems/cytoskeleton-system";
@@ -53,8 +52,10 @@ import { SpeciesSystem } from "../systems/species-system";
 import { PlayerSystem } from "../systems/player-system";
 import { EmoteSystem } from "../systems/emote-system";
 import { InstallOrderSystem } from "../systems/install-order-system";
+// Membrane Physics System
+import { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F4" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F4" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO" | "SHIFT", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -92,7 +93,7 @@ export class GameScene extends Phaser.Scene {
 
   // Milestone 6: Membrane debug visualization
   private membraneGraphics!: Phaser.GameObjects.Graphics;
-  private showMembraneDebug = false;
+  private showMembraneDebug = true;
   private transporterLabels: Phaser.GameObjects.Text[] = [];
   private proteinGlyphs: Phaser.GameObjects.Text[] = [];
   
@@ -165,8 +166,8 @@ export class GameScene extends Phaser.Scene {
   private throwSystem!: ThrowSystem;
   private cargoSystem!: CargoSystem;
   private cargoHUD?: CargoHUD; // CargoHUD instance
-  private membraneTrampoline!: MembraneTrampoline;
-  private membranePhysics!: MembranePhysicsSystem; // NEW: Dynamic membrane physics
+  // private membraneTrampoline!: MembraneTrampoline;
+  private membranePhysics!: MembranePhysicsSystem; // Constraint-based membrane physics
   
   // Milestone 13: Cytoskeleton Transport v1
   private cytoskeletonSystem!: CytoskeletonSystem;
@@ -246,7 +247,7 @@ export class GameScene extends Phaser.Scene {
       maxDashCooldown: 1.2,
       playerColor: this.col.player,
       ringColor: this.col.playerRing,
-      cellCenter: new Phaser.Math.Vector2(0, 0), // Relative to cellRoot
+      cellCenter: new Phaser.Math.Vector2(0, 0), // Should be (0,0) since we're in cellRoot
       cellRadius: this.playerBoundaryRadius, // Use smaller boundary for player movement
       cellRoot: this.cellRoot // HOTFIX H5: Pass cellRoot for membrane effects
     }, this.hexGrid);
@@ -362,7 +363,7 @@ export class GameScene extends Phaser.Scene {
       this.playerActor
     );
     
-    this.membraneTrampoline = new MembraneTrampoline(this, this.worldRefsInstance);
+    // this.membraneTrampoline = new MembraneTrampoline(this, this.worldRefsInstance);
     
     // Milestone 13: Initialize Cytoskeleton Transport v1
     this.cytoskeletonSystem = new CytoskeletonSystem(this, this.net.bus, this.worldRefsInstance);
@@ -425,6 +426,7 @@ export class GameScene extends Phaser.Scene {
       F12: this.input.keyboard!.addKey("F12"), // Toggle network logging
       ESC: this.input.keyboard!.addKey("ESC"), // Exit build mode
       ZERO: this.input.keyboard!.addKey("ZERO"), // Emote trigger
+      SHIFT: this.input.keyboard!.addKey("SHIFT"), // Modifier key for receptor rotation
     };
 
     // Initialize remaining UI systems
@@ -654,25 +656,25 @@ export class GameScene extends Phaser.Scene {
       this.cellMotility.updateInput(this.keys);
     } else {
       // Check for membrane trampoline control reduction
-      const controlReduction = this.membraneTrampoline.getControlReduction();
+      // const controlReduction = this.membraneTrampoline.getControlReduction();
       
-      if (controlReduction < 0.9) {
-        // Significantly reduce or disable control during strong trampoline lockout
-        const reducedKeys = {
-          W: { isDown: false, _justDown: false },
-          A: { isDown: false, _justDown: false },
-          S: { isDown: false, _justDown: false },
-          D: { isDown: false, _justDown: false },
-          SPACE: this.keys.SPACE // Allow dash input
-        } as any;
-        this.playerActor.update(deltaSeconds, reducedKeys);
-      } else {
+      // if (controlReduction < 0.9) {
+      //   // Significantly reduce or disable control during strong trampoline lockout
+      //   const reducedKeys = {
+      //     W: { isDown: false, _justDown: false },
+      //     A: { isDown: false, _justDown: false },
+      //     S: { isDown: false, _justDown: false },
+      //     D: { isDown: false, _justDown: false },
+      //     SPACE: this.keys.SPACE // Allow dash input
+      //   } as any;
+      //   this.playerActor.update(deltaSeconds, reducedKeys);
+      // } else {
         // Normal mode: player actor handles WASD, cellMotility ignores input
         this.playerActor.update(deltaSeconds, this.keys);
         
         // Send player input to network for replication
         this.synchronizePlayerState();
-      }
+      // }
     }
     
     // Milestone 6 Task 1: Update current tile tracking
@@ -701,6 +703,12 @@ export class GameScene extends Phaser.Scene {
     // Milestone 12: Update throw & membrane interaction systems
     this.throwInputController.update();
     this.cargoHUD?.update();
+    
+    // Endocytosis system update - DISABLED for baseline testing
+    // this.endocytosisInputController.update(1/60); // Approximate delta time
+    
+    // Membrane physics system update
+    this.membranePhysics.update(1/60); // Approximate delta time
     
     // Update player cargo indicator
     const carriedCargo = this.cargoSystem.getMyPlayerInventory()[0] || null;
@@ -954,12 +962,12 @@ export class GameScene extends Phaser.Scene {
 
   private testMembranePhysics(): void {
     if (!this.membranePhysics) {
-      console.log("No membrane physics system available for testing");
+      console.log("No Membrane physics system available for testing");
       return;
     }
 
-    // Log debug info about membrane physics system
-    console.log(`🧬 Membrane Physics Debug: ${(this.membranePhysics as any).getDebugInfo?.()}`);
+    // Log debug info about Membrane physics system
+    console.log(`🧬 Membrane physics Debug: ${this.membranePhysics.getParticleCount()} particles`);
 
     // Apply test impacts at random locations around the cell membrane
     const numImpacts = 3;
@@ -971,14 +979,14 @@ export class GameScene extends Phaser.Scene {
       const y = Math.sin(angle) * impactRadius;
       const force = 50 + Math.random() * 100;
       
-      // Create Vector2 objects for position and direction in cell-local coordinates
+      // Create Vector2 objects for position in cell-local coordinates
+      // Direction is now computed automatically using local membrane geometry
       const position = new Phaser.Math.Vector2(x, y);
-      const direction = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
       
-      this.membranePhysics.applyImpact(position, force, direction, 'external');
+      // this.membranePhysics.applyImpact(position, force);
     }
 
-    console.log("Applied test impacts to membrane physics system near cell membrane");
+    console.log("Applied test impacts to Membrane physics system near cell membrane");
   }
 
   private renderMembraneDebug(): void {
@@ -1832,8 +1840,9 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     
-    // Convert definition to config format and generate unique instance ID
-    const config = definitionToConfig(definition, `${organelleType}-${Date.now()}`);
+    // Convert definition to config format and generate clean sequential instance ID
+    const instanceId = this.organelleSystem.generateOrganelleId(organelleType);
+    const config = definitionToConfig(definition, instanceId);
     
     // Create the organelle through the organelle system
     const success = this.organelleSystem.createOrganelle(config, coord);
@@ -1867,9 +1876,7 @@ export class GameScene extends Phaser.Scene {
     const totalCargo = this.cargoSystem?.getAllCargo().length || 0;
     const pendingOrders = this.net.installOrders.getOrderCount();
     const transcriptStatus = `Cargo: ${carriedCount}/1 carried (${carriedType}), ${totalCargo} transcripts total | Orders: ${pendingOrders} pending`;
-    
-    // Milestone 10: Updated control hints for motility modes
-    // Milestone 7: Added transcript controls
+
     const controls = `B: Build/Request | ENTER: Confirm | X: Cancel/Protease | Q/E: Scoop/Drop | R: Pickup/Drop transcript | Z: Handbrake | TAB: Cycle Mode | L: Motility Course`;
     const message = `${heatmapStatus} | ${inventoryStatus}${blueprintStatus} | ${transcriptStatus} | ${controls}`;
     
@@ -2002,11 +2009,27 @@ export class GameScene extends Phaser.Scene {
     const membraneExchange = new MembraneExchangeSystem(this, bus, this.hexGrid);
     this.membraneExchangeSystem = membraneExchange;
     
-    // Initialize networked membrane physics system
-    const membranePhysics = new MembranePhysicsSystem(this, this.worldRefsInstance, bus);
+    // Initialize Membrane physics physics system
+    const cellRadius = 200; // Match the existing membrane radius
+    const particleCount = 32; // Number of membrane particles
+    const membraneParticles: Phaser.Math.Vector2[] = [];
+    
+    // Create circular membrane
+    for (let i = 0; i < particleCount; i++) {
+      const angle = (i / particleCount) * Math.PI * 2;
+      const x = Math.cos(angle) * cellRadius;
+      const y = Math.sin(angle) * cellRadius;
+      membraneParticles.push(new Phaser.Math.Vector2(x, y));
+    }
+    
+    const membranePhysics = new MembranePhysicsSystem(this, {
+      particles: membraneParticles,
+      timeStep: 1/60,
+      parent: this.cellRoot // Add graphics to cellRoot container
+    });
     this.membranePhysics = membranePhysics;
 
-    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes, membranePhysics].filter(c => c)) bus.registerInstance(c);
+    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes].filter(c => c)) bus.registerInstance(c);
 
     // Host initializes self in player roster
     if (bus.isHost) {
@@ -2018,7 +2041,7 @@ export class GameScene extends Phaser.Scene {
     this.net = { 
       bus, 
       isHost: bus.isHost, 
-      players,            // Direct PlayerSystem access
+      players,            // Direct access to PlayerSystem 
       cargo: this.cargoSystem, 
       species,
       installOrders,
