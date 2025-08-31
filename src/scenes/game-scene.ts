@@ -55,7 +55,7 @@ import { InstallOrderSystem } from "../systems/install-order-system";
 // Membrane Physics System
 import { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F4" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO" | "SHIFT", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO" | "SHIFT", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -419,7 +419,6 @@ export class GameScene extends Phaser.Scene {
       F1: this.input.keyboard!.addKey("F1"), // Build actin filaments
       F2: this.input.keyboard!.addKey("F2"), // Build microtubules
       F3: this.input.keyboard!.addKey("F3"), // Toggle pathfinding debug
-      F4: this.input.keyboard!.addKey("F4"), // Test membrane physics (NEW)
       F9: this.input.keyboard!.addKey("F9"), // Toggle network HUD
       F10: this.input.keyboard!.addKey("F10"), // Toggle room UI
       F11: this.input.keyboard!.addKey("F11"), // Simulate packet loss
@@ -536,11 +535,6 @@ export class GameScene extends Phaser.Scene {
     // Handle pathfinding debug toggle
     if (Phaser.Input.Keyboard.JustDown(this.keys.F3)) {
       this.togglePathfindingDebug();
-    }
-
-    // NEW: Test membrane physics impacts
-    if (Phaser.Input.Keyboard.JustDown(this.keys.F4)) {
-      this.testMembranePhysics();
     }
 
     // Handle heatmap controls - Task 5
@@ -958,35 +952,6 @@ export class GameScene extends Phaser.Scene {
     this.cellRoot.add(this.membraneGraphics);
     
     // Note: renderMembraneDebug() will be called after membrane exchange system is initialized
-  }
-
-  private testMembranePhysics(): void {
-    if (!this.membranePhysics) {
-      console.log("No Membrane physics system available for testing");
-      return;
-    }
-
-    // Log debug info about Membrane physics system
-    console.log(`🧬 Membrane physics Debug: ${this.membranePhysics.getParticleCount()} particles`);
-
-    // Apply test impacts at random locations around the cell membrane
-    const numImpacts = 3;
-    for (let i = 0; i < numImpacts; i++) {
-      const angle = (Math.PI * 2 * i) / numImpacts + Math.random() * 0.5;
-      // Position impacts near the membrane radius (in cellRoot local coordinates)
-      const impactRadius = this.cellRadius * 0.8; // Just inside the membrane
-      const x = Math.cos(angle) * impactRadius;
-      const y = Math.sin(angle) * impactRadius;
-      const force = 50 + Math.random() * 100;
-      
-      // Create Vector2 objects for position in cell-local coordinates
-      // Direction is now computed automatically using local membrane geometry
-      const position = new Phaser.Math.Vector2(x, y);
-      
-      // this.membranePhysics.applyImpact(position, force);
-    }
-
-    console.log("Applied test impacts to Membrane physics system near cell membrane");
   }
 
   private renderMembraneDebug(): void {
@@ -1841,8 +1806,7 @@ export class GameScene extends Phaser.Scene {
     }
     
     // Convert definition to config format and generate clean sequential instance ID
-    const instanceId = this.organelleSystem.generateOrganelleId(organelleType);
-    const config = definitionToConfig(definition, instanceId);
+    const config = definitionToConfig(definition);
     
     // Create the organelle through the organelle system
     const success = this.organelleSystem.createOrganelle(config, coord);
@@ -2011,7 +1975,7 @@ export class GameScene extends Phaser.Scene {
     
     // Initialize Membrane physics physics system
     const cellRadius = 200; // Match the existing membrane radius
-    const particleCount = 32; // Number of membrane particles
+    const particleCount = 96; // Number of membrane particles
     const membraneParticles: Phaser.Math.Vector2[] = [];
     
     // Create circular membrane
@@ -2028,6 +1992,13 @@ export class GameScene extends Phaser.Scene {
       parent: this.cellRoot // Add graphics to cellRoot container
     });
     this.membranePhysics = membranePhysics;
+
+    // Configure bounce-house membrane settings
+    // membranePhysics.setCenterAnchor(new Phaser.Math.Vector2(0, 0), 1e-3); // DISABLED: was pulling membrane to origin
+    membranePhysics.setAllowReset(false); // Disable hard reset to prevent flicker
+
+    // Wire player to use membrane physics for collision
+    this.playerActor.setMembranePhysics(membranePhysics);
 
     for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes].filter(c => c)) bus.registerInstance(c);
 
