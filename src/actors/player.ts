@@ -412,9 +412,18 @@ export class Player extends Phaser.GameObjects.Container {
 
   /**
    * Get world position of the player
+   * Note: Since player is added to cellRoot, this returns cell-local coordinates
    */
   getWorldPosition(): Phaser.Math.Vector2 {
     return new Phaser.Math.Vector2(this.x + this.sprite.x, this.y + this.sprite.y);
+  }
+
+  /**
+   * Get position relative to cell center (same as getWorldPosition since player is in cellRoot)
+   * TODO: Rename getWorldPosition to getCellLocalPosition for clarity
+   */
+  getCellLocalPosition(): Phaser.Math.Vector2 {
+    return this.getWorldPosition();
   }
 
   /**
