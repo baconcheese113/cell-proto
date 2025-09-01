@@ -163,7 +163,7 @@ export class EndocytosisSystem extends SystemObject {
    * Check if player can initiate endocytosis at current position
    */
   public canInitiateEndocytosis(): boolean {
-    const playerPos = this.player.getWorldPosition();
+    const playerPos = this.player.getCellLocalPosition();
     const distanceFromCenter = playerPos.length();
     const membraneRadius = this.getMembraneRadius();
     
@@ -181,7 +181,7 @@ export class EndocytosisSystem extends SystemObject {
       return false;
     }
     
-    const playerPos = this.player.getWorldPosition();
+    const playerPos = this.player.getCellLocalPosition();
     
     // Find the closest membrane point as pocket center
     const membraneRadius = this.getMembraneRadius();

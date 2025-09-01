@@ -466,7 +466,7 @@ export class ThrowInputController {
   
   private getPlayerPosition(): Phaser.Math.Vector2 {
     const player = this.playerActor;
-    return player ? player.getWorldPosition() : new Phaser.Math.Vector2(0, 0);
+    return player ? player.getCellLocalPosition() : new Phaser.Math.Vector2(0, 0);
   }
   
   /**

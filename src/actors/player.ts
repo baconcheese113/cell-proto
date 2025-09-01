@@ -362,7 +362,7 @@ export class Player extends Phaser.GameObjects.Container {
    * Update camera to smoothly follow player
    */
   private updateCameraSmoothing() {
-    const playerPos = this.getWorldPosition();
+    const playerPos = this.getCellLocalPosition();
     const camera = this.scene.cameras.main;
     
     const currentCenterX = camera.scrollX + camera.width / 2;
@@ -376,20 +376,13 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   /**
-   * Get world position of the player
-   * Note: Since player is added to cellRoot, this returns cell-local coordinates
+   * Get position relative to cell center
+   * Note: Player is added to cellRoot, so this returns cell-local coordinates
    */
-  getWorldPosition(): Phaser.Math.Vector2 {
+  getCellLocalPosition(): Phaser.Math.Vector2 {
     return new Phaser.Math.Vector2(this.x + this.sprite.x, this.y + this.sprite.y);
   }
 
-  /**
-   * Get position relative to cell center (same as getWorldPosition since player is in cellRoot)
-   * TODO: Rename getWorldPosition to getCellLocalPosition for clarity
-   */
-  getCellLocalPosition(): Phaser.Math.Vector2 {
-    return this.getWorldPosition();
-  }
 
   /**
    * Get current velocity from physics body
@@ -416,7 +409,7 @@ export class Player extends Phaser.GameObjects.Container {
    * Get the hex coordinate of the tile the player is currently standing on
    */
   getHexCoord(): HexCoord | null {
-    const worldPos = this.getWorldPosition();
+    const worldPos = this.getCellLocalPosition();
     return this.hexGrid.worldToHex(worldPos.x, worldPos.y);
   }
 
@@ -531,7 +524,7 @@ export class Player extends Phaser.GameObjects.Container {
    * Apply membrane boundary force to keep player inside cell
    */
   applyMembraneForce(cellCenter: Phaser.Math.Vector2, cellRadius: number, springForce: number): Phaser.Math.Vector2 {
-    const playerPos = this.getWorldPosition();
+    const playerPos = this.getCellLocalPosition();
     const distanceFromCenter = Phaser.Math.Distance.Between(
       playerPos.x, playerPos.y,
       cellCenter.x, cellCenter.y

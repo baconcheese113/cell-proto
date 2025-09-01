@@ -868,14 +868,14 @@ export class GameScene extends Phaser.Scene {
     this.net.players.setInput(this.net.bus.localId, input);
     
     // Get current player position and velocity for comparison
-    const worldPos = this.playerActor.getWorldPosition();
+    const cellPos = this.playerActor.getCellLocalPosition();
     const velocity = this.playerActor.getVelocity();
     
     if (this.net.isHost) {
       // Host: Update state directly - only sync if there are meaningful changes
       const playerData = this.net.players.get(this.net.bus.localId);
       if (playerData) {
-        const newState = { x: worldPos.x, y: worldPos.y, vx: velocity.x, vy: velocity.y };
+        const newState = { x: cellPos.x, y: cellPos.y, vx: velocity.x, vy: velocity.y };
         
         if (this.hasPlayerStateChanged(playerData, newState)) {
           playerData.x = newState.x;
@@ -888,7 +888,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       // Client: Only send position to host if it changed meaningfully
       const lastPos = this._lastClientPos || { x: 0, y: 0, vx: 0, vy: 0 };
-      const newState = { x: worldPos.x, y: worldPos.y, vx: velocity.x, vy: velocity.y };
+      const newState = { x: cellPos.x, y: cellPos.y, vx: velocity.x, vy: velocity.y };
       
       if (this.hasPlayerStateChanged(lastPos, newState)) {
         this.net.players.updatePosition(
@@ -1571,14 +1571,14 @@ export class GameScene extends Phaser.Scene {
       // Pathfinding Debug: Show paths from player position to selected tile
       if (this.playerActor && this.cytoskeletonSystem.graph && this.showPathfindingDebug) {
         const playerTile = this.playerActor.getCurrentHex();
-        const playerWorldPos = this.playerActor.getWorldPosition();
+        const playerCellPos = this.playerActor.getCellLocalPosition();
         const playerHexCoord = this.playerActor.getHexCoord();
         
         // Also test direct conversion for comparison
-        const worldToHexDirect = this.hexGrid.worldToHex(playerWorldPos.x, playerWorldPos.y);
+        const worldToHexDirect = this.hexGrid.worldToHex(playerCellPos.x, playerCellPos.y);
         
         info.push(`👤 Player Debug:`);
-        info.push(`  World: (${playerWorldPos.x.toFixed(1)}, ${playerWorldPos.y.toFixed(1)})`);
+        info.push(`  World: (${playerCellPos.x.toFixed(1)}, ${playerCellPos.y.toFixed(1)})`);
         info.push(`  Hex: ${playerHexCoord ? `(${playerHexCoord.q}, ${playerHexCoord.r})` : 'null'}`);
         info.push(`  Direct: (${worldToHexDirect.q}, ${worldToHexDirect.r})`);
         info.push(`  Tile: ${playerTile ? `(${playerTile.coord.q}, ${playerTile.coord.r})` : 'null'}`);

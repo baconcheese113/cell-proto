@@ -121,7 +121,7 @@ export class MembraneTrampoline extends SystemObject {
     if (timeSinceLastLaunch < this.config.baseCooldown * 1000) return;
     
     // Check if near membrane
-    const playerPos = player.getWorldPosition();
+    const playerPos = player.getCellLocalPosition();
     const nearestMembranePoint = this.findNearestMembranePoint(playerPos);
     
     if (!nearestMembranePoint) return;
@@ -351,7 +351,7 @@ export class MembraneTrampoline extends SystemObject {
     // Render launch trail if currently launched
     if (this.currentLaunch.isActive) {
       const player = this.worldRefs.player;
-      const playerPos = player.getWorldPosition();
+      const playerPos = player.getCellLocalPosition();
       const trailIntensity = this.currentLaunch.lockoutRemaining / this.config.airControlLockout;
       
       if (trailIntensity > 0) {
