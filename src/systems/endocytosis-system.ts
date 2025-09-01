@@ -436,8 +436,7 @@ export class EndocytosisSystem extends SystemObject {
     this.membranePhysics.applyImpact(
       compressionZone,
       compressionForce,
-      forceDirection,
-      'external'
+      forceDirection
     );
   }
   
@@ -548,7 +547,7 @@ export class EndocytosisSystem extends SystemObject {
     this.pocket.targetNodes = [];
     this.pocket.forcePattern = [];
     
-    const nodes = this.membranePhysics['nodes']; // Access private nodes array
+    const nodes = this.membranePhysics.getParticles(); // Access particles array
     if (!nodes) return;
     
     for (let i = 0; i < nodes.length; i++) {
@@ -592,8 +591,7 @@ export class EndocytosisSystem extends SystemObject {
       this.membranePhysics.applyImpact(
         this.pocket.centerPosition,
         impactForce,
-        this.pocket.direction,
-        'endocytosis' as any // Custom impact type for endocytosis
+        this.pocket.direction
       );
       
       if (DEBUG_ENDOCYTOSIS && Math.random() < 0.1) { // 10% chance to log
@@ -603,7 +601,7 @@ export class EndocytosisSystem extends SystemObject {
     }
     
     // Keep original direct node approach as backup/additional effect
-    const nodes = this.membranePhysics['nodes']; // Access private nodes array
+    const nodes = this.membranePhysics.getParticles(); // Access particles array
     if (!nodes) return;
     
     let appliedForces = 0;
@@ -624,8 +622,8 @@ export class EndocytosisSystem extends SystemObject {
         const scissionMultiplier = this.pocket.stage === 'scission' ? 1.5 : 1.0; // Extra force during scission
         const finalForce = baseForce.clone().scale(progressScale * depthScale * 0.5 * scissionMultiplier);
         
-        // Apply the force directly to membrane node
-        node.force.add(finalForce);
+        // Apply the force via the proper force application method
+        this.membranePhysics.applyForceToParticle(i, finalForce);
         
         // Track applied forces for debugging
         appliedForces++;
@@ -650,7 +648,7 @@ export class EndocytosisSystem extends SystemObject {
     // NEW APPROACH: Instead of fighting membrane physics, work WITH it
     // Modify the rest positions so the membrane naturally maintains the pocket shape
     // BUT only for nodes that are NOT near the neck area (to allow compression)
-    const nodes = this.membranePhysics['nodes'];
+    const nodes = this.membranePhysics.getParticles();
     if (!nodes) return;
     
     let modifiedNodes = 0;
@@ -679,28 +677,13 @@ export class EndocytosisSystem extends SystemObject {
           console.log(`🫧 DEBUG: Node ${nodeIndex} at (${node.position.x.toFixed(1)}, ${node.position.y.toFixed(1)}), distance from neck: ${distanceFromNeck.toFixed(1)}, isNear: ${isNearNeck}`);
         }
         
+        // Note: restPosition/restRadius manipulation not supported in current membrane physics API
+        // The endocytosis system would need significant refactoring to work with the current
+        // ConstraintParticle interface which doesn't have restPosition/restRadius properties
+        
         if (isNearNeck) {
-          // Keep neck area flexible - restore original rest position for this node
-          if (this.pocket.originalRestPositions.has(nodeIndex)) {
-            const original = this.pocket.originalRestPositions.get(nodeIndex)!;
-            node.restPosition.copy(original.position);
-            node.restRadius = original.radius;
-            skippedNeckNodes++;
-          }
+          skippedNeckNodes++;
         } else {
-          // Store original rest position on first call (for restoration later)
-          if (!this.pocket.originalRestPositions.has(nodeIndex)) {
-            this.pocket.originalRestPositions.set(nodeIndex, {
-              position: node.restPosition.clone(),
-              radius: node.restRadius
-            });
-          }
-          
-          // Update the rest position to the current deformed position for pocket walls
-          // This makes the membrane physics system think THIS is the equilibrium state
-          node.restPosition.copy(node.position);
-          node.restRadius = node.position.length();
-          
           modifiedNodes++;
         }
       }
@@ -717,22 +700,18 @@ export class EndocytosisSystem extends SystemObject {
   private restoreOriginalRestPositions(): void {
     if (!this.membranePhysics || !this.pocket.originalRestPositions.size) return;
     
-    const nodes = this.membranePhysics['nodes'];
+    const nodes = this.membranePhysics.getParticles();
     if (!nodes) return;
     
     let restoredNodes = 0;
     
     // Restore all backed up rest positions
-    for (const [nodeIndex, original] of this.pocket.originalRestPositions) {
-      if (nodeIndex < nodes.length) {
-        const node = nodes[nodeIndex];
-        node.restPosition.copy(original.position);
-        node.restRadius = original.radius;
-        restoredNodes++;
-      }
-    }
+    // Note: restPosition/restRadius properties don't exist on current ConstraintParticle
+    // Endocytosis system needs to be redesigned for current membrane physics API
+    console.warn("Endocytosis: rest position restoration not supported in current membrane physics version");
     
     // Clear the backup
+    this.pocket.originalRestPositions.clear();
     this.pocket.originalRestPositions.clear();
     
     if (DEBUG_ENDOCYTOSIS) {
@@ -972,8 +951,8 @@ export class EndocytosisSystem extends SystemObject {
    * Get current membrane radius (approximate)
    */
   private getMembraneRadius(): number {
-    // Use the membrane physics system's configuration
-    return this.membranePhysics['config']?.radius || 300;
+    // Use the membrane physics system's radius
+    return this.membranePhysics.getApproximateRadius();
   }
   
   /**
@@ -1108,8 +1087,7 @@ export class EndocytosisSystem extends SystemObject {
     this.membranePhysics.applyImpact(
       this.pocket.centerPosition,
       restoreForce,
-      outwardDirection,
-      'external'
+      outwardDirection
     );
     
     // Additional restoration at neck position if it exists
@@ -1118,8 +1096,7 @@ export class EndocytosisSystem extends SystemObject {
       this.membranePhysics.applyImpact(
         this.pocket.neckPosition,
         restoreForce * 1.5,
-        inwardDirection,
-        'external'
+        inwardDirection
       );
     }
   }

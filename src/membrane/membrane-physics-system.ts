@@ -542,6 +542,23 @@ export class MembranePhysicsSystem {
   }
 
   /**
+   * Get particles for endocytosis system (proper getter)
+   */
+  public getParticles() {
+    return this.particles;
+  }
+
+  /**
+   * Apply force to a specific particle by index
+   */
+  public applyForceToParticle(particleIndex: number, force: Phaser.Math.Vector2) {
+    if (!this.pendingForces.has(particleIndex)) {
+      this.pendingForces.set(particleIndex, new Phaser.Math.Vector2());
+    }
+    this.pendingForces.get(particleIndex)!.add(force);
+  }
+
+  /**
    * Get membrane radius at a specific angle (compatibility method)
    */
   public getMembraneRadiusAt(angle: number): number {
@@ -570,6 +587,19 @@ export class MembranePhysicsSystem {
     const particle = this.particles[closestParticle];
     return particle.position.distance(this.centerPosition);
   }
+
+  /**
+   * Get approximate membrane radius (average distance from center)
+   */
+  public getApproximateRadius(): number {
+    this.updateCenter();
+    let avgRadius = 0;
+    for (const particle of this.particles) {
+      avgRadius += particle.position.distance(this.centerPosition);
+    }
+    return avgRadius / this.particles.length;
+  }
+
 
   /**
    * Apply impact force (compatibility method for endocytosis)
