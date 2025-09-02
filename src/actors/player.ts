@@ -15,7 +15,6 @@ interface PlayerConfig {
   ringColor: number;
   cellCenter: Phaser.Math.Vector2;
   cellRadius: number;
-  cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Add cellRoot for membrane effects
   membranePhysics?: MembranePhysicsSystem; // NEW: Dynamic membrane physics
 }
 
@@ -285,7 +284,7 @@ export class Player extends Phaser.GameObjects.Container {
     const correctionFactor = 0.5; // Reduced from 1.0 to prevent position oscillation
     const corr = n.clone().scale(-penetration * correctionFactor); // negative → move inward
     this.x += corr.x;
-    this.y += corr.y; // player is parented to cellRoot
+    this.y += corr.y;
     
     // Step 4: Velocity bounce
     const v = new Phaser.Math.Vector2(body.velocity.x, body.velocity.y);
@@ -377,7 +376,6 @@ export class Player extends Phaser.GameObjects.Container {
 
   /**
    * Get position relative to cell center
-   * Note: Player is added to cellRoot, so this returns cell-local coordinates
    */
   getCellLocalPosition(): Phaser.Math.Vector2 {
     return new Phaser.Math.Vector2(this.x + this.sprite.x, this.y + this.sprite.y);

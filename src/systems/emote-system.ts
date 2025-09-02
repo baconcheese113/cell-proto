@@ -2,6 +2,7 @@ import { NetComponent } from '../network/net-entity';
 import { Multicast, RunOnServer } from '../network/decorators';
 import type { NetBus } from '../network/net-bus';
 import type { PlayerSystem } from './player-system';
+import type { GameScene } from '../scenes/game-scene';
 
 export interface EmotePayload {
   peerId: string;
@@ -22,9 +23,8 @@ export class EmoteSystem extends NetComponent {
 
   constructor(
     bus: NetBus, 
-    private scene: Phaser.Scene, 
-    private players: PlayerSystem,
-    private cellRoot: Phaser.GameObjects.Container
+    private scene: GameScene, 
+    private players: PlayerSystem
   ) {
     super(bus, { address: 'EmoteSystem' });
     console.log('🎭 EmoteSystem initialized');
@@ -69,8 +69,13 @@ export class EmoteSystem extends NetComponent {
   private spawnEmoji({ emoji, x, y, peerId }: EmotePayload): void {
     console.log(`🎭 Spawning ${emoji} emote for ${peerId} at (${x}, ${y})`);
 
-    // Create emoji text at player position (relative to cell)
-    const emoteText = this.scene.add.text(x, y - 30, emoji, {
+    // Get physics center from the scene to convert cell-local to world coordinates
+    const physicsCenter = this.scene.getPhysicsCenter() || { x: 0, y: 0 };
+    const worldX = physicsCenter.x + x;
+    const worldY = physicsCenter.y + y;
+
+    // Create emoji text at world position
+    const emoteText = this.scene.add.text(worldX, worldY - 30, emoji, {
       fontFamily: 'Arial',
       fontSize: '24px',
       color: '#ffffff',
@@ -78,14 +83,12 @@ export class EmoteSystem extends NetComponent {
       strokeThickness: 4,
     }).setOrigin(0.5);
 
-    // Add to cellRoot so it follows the cell's coordinate system
-    this.cellRoot.add(emoteText);
     emoteText.setDepth(1000); // Above most other objects
 
     // Tween up and fade
     this.scene.tweens.add({
       targets: emoteText,
-      y: y - 60, // Float higher
+      y: worldY - 60, // Float higher
       alpha: 0,
       scaleX: { from: 1, to: 1.2 },
       scaleY: { from: 1, to: 1.2 },

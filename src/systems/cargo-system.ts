@@ -95,8 +95,10 @@ export class CargoSystem extends System {
     this.graphics.setDepth(2.5); // Above organelles so cargo is visible
     this.graphics.setVisible(true);
     
-    // Re-parent cargo graphics to cellRoot
-    this.worldRefs.cellRoot.add(this.graphics);
+    // Position graphics using physics-based positioning
+    if (this.worldRefs.scene) {
+      this.worldRefs.scene.positionVisualElement(this.graphics, 0, 0);
+    }
   }
 
   /**
@@ -726,6 +728,16 @@ export class CargoSystem extends System {
       // For regular cargo, skip if no valid hex position
       if (!cargo.isThrown && !cargo.atHex) continue;
 
+      // Calculate world position in real-time to follow hex grid center changes
+      let worldPos: { x: number; y: number };
+      if (cargo.atHex) {
+        // Recalculate world position from hex coordinates
+        worldPos = this.worldRefs.hexGrid.hexToWorld(cargo.atHex);
+      } else {
+        // Use stored worldPos for thrown cargo
+        worldPos = cargo.worldPos;
+      }
+
       // Different colors for different cargo types
       let color: number;
       let size: number = 6;
@@ -749,7 +761,7 @@ export class CargoSystem extends System {
       }
       
       this.graphics.fillStyle(color, 0.8);
-      this.graphics.fillCircle(cargo.worldPos.x, cargo.worldPos.y, size);
+      this.graphics.fillCircle(worldPos.x, worldPos.y, size);
     }
   }
 

@@ -83,15 +83,30 @@ export class MembraneTrampoline extends SystemObject {
       this.initializeGraphics();
     }
   }
-  
+
+  /**
+   * Position a graphics element using physics-based positioning
+   */
+  private positionGraphicsElement(element: Phaser.GameObjects.GameObject) {
+    if (this.worldRefs.scene) {
+      this.worldRefs.scene.positionVisualElement(element, 0, 0);
+    }
+  }
+
   private initializeGraphics(): void {
     this.rippleGraphics = this.scene.add.graphics();
     this.rippleGraphics.setDepth(3);
-    this.worldRefs.cellRoot.add(this.rippleGraphics);
+    // Position graphics using physics-based positioning
+    if (this.worldRefs.scene) {
+      this.worldRefs.scene.positionVisualElement(this.rippleGraphics, 0, 0);
+    }
     
     this.trailGraphics = this.scene.add.graphics();
     this.trailGraphics.setDepth(3);
-    this.worldRefs.cellRoot.add(this.trailGraphics);
+    // Position graphics using physics-based positioning
+    if (this.worldRefs.scene) {
+      this.worldRefs.scene.positionVisualElement(this.trailGraphics, 0, 0);
+    }
   }
   
   override update(_deltaSeconds: number): void {
@@ -267,7 +282,7 @@ export class MembraneTrampoline extends SystemObject {
       const delay = i * 100;
       const ripple = this.scene.add.circle(position.x, position.y, 5 + i * 3, 0x66ccff, 0.8 - i * 0.2);
       ripple.setDepth(4);
-      this.worldRefs.cellRoot.add(ripple);
+      this.positionGraphicsElement(ripple);
       
       const maxScale = 4 + tension * 1.5 + i; // Much bigger ripples
       
@@ -286,7 +301,7 @@ export class MembraneTrampoline extends SystemObject {
     // Add a bright flash at impact point
     const flash = this.scene.add.circle(position.x, position.y, 15, 0xffffff, 1.0);
     flash.setDepth(5);
-    this.worldRefs.cellRoot.add(flash);
+    this.positionGraphicsElement(flash);
     
     this.scene.tweens.add({
       targets: flash,
@@ -310,7 +325,7 @@ export class MembraneTrampoline extends SystemObject {
     const trail = this.scene.add.line(0, 0, startPos.x, startPos.y, endPos.x, endPos.y, 0xffffff, 0.8);
     trail.setLineWidth(3);
     trail.setDepth(4);
-    this.worldRefs.cellRoot.add(trail);
+    this.positionGraphicsElement(trail);
     
     this.scene.tweens.add({
       targets: trail,
@@ -327,7 +342,7 @@ export class MembraneTrampoline extends SystemObject {
   private createPerfectTimingVFX(position: Phaser.Math.Vector2): void {
     const flash = this.scene.add.circle(position.x, position.y, 20, 0xffff44, 0.9);
     flash.setDepth(5);
-    this.worldRefs.cellRoot.add(flash);
+    this.positionGraphicsElement(flash);
     
     this.scene.tweens.add({
       targets: flash,

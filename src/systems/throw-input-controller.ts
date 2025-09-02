@@ -99,7 +99,7 @@ export class ThrowInputController {
       });
     }
   }
-  
+
   /**
    * Main update method - call this from the game scene update loop
    */
@@ -125,16 +125,12 @@ export class ThrowInputController {
     let targetPosition: Phaser.Math.Vector2;
     
     if (this.config.mouseAiming && this.scene.input.activePointer) {
-      // Use stored mouse coordinates and convert to cell-local coordinates
+      // Use stored mouse world coordinates directly
       const worldX = this.lastMousePos.x;
       const worldY = this.lastMousePos.y;
       
-      // Convert world coordinates to cell-local coordinates
-      const cellRoot = this.worldRefs.cellRoot;
-      const localX = worldX - cellRoot.x;
-      const localY = worldY - cellRoot.y;
-      
-      targetPosition = new Phaser.Math.Vector2(localX, localY);
+      // Use world coordinates directly (no conversion needed)
+      targetPosition = new Phaser.Math.Vector2(worldX, worldY);
     } else {
       // Use gamepad or default position
       const playerPos = this.getPlayerPosition();
@@ -319,7 +315,7 @@ export class ThrowInputController {
     let initialTarget: Phaser.Math.Vector2;
     
     if (this.config.mouseAiming && this.scene.input.activePointer) {
-      // Use current mouse position and convert to cellRoot coordinates
+      // Use current mouse position and convert to cell-local coordinates
       const pointer = this.scene.input.activePointer;
       const worldX = pointer.worldX;
       const worldY = pointer.worldY;
@@ -327,12 +323,8 @@ export class ThrowInputController {
       // Store initial mouse position
       this.lastMousePos.set(worldX, worldY);
       
-      // Convert to cellRoot-relative coordinates
-      const cellRoot = this.worldRefs.cellRoot;
-      const localX = worldX - cellRoot.x;
-      const localY = worldY - cellRoot.y;
-      
-      initialTarget = new Phaser.Math.Vector2(localX, localY);
+      // Convert to cell-local coordinates using WorldRefs utilities
+      initialTarget = this.worldRefs.worldToCell(worldX, worldY);
     } else {
       // Use position in front of player
       const playerPos = this.getPlayerPosition();

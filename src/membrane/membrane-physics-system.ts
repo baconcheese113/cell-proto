@@ -1,3 +1,7 @@
+import { System } from '../systems/system';
+import type { NetBus } from '../network/net-bus';
+import { RunOnServer } from '../network/decorators';
+
 interface ConstraintParticle {
   position: Phaser.Math.Vector2;
   prevPosition: Phaser.Math.Vector2;
@@ -10,9 +14,23 @@ interface ConstraintParticle {
   isFrozen: boolean;
 }
 
-export class MembranePhysicsSystem {
+/**
+ * Membrane state for network replication
+ */
+interface MembraneState {
+  particles: Array<{ position: { x: number; y: number }; velocity: { x: number; y: number } }>;
+  center: { x: number; y: number };
+  timestamp: number;
+  [key: string]: any; // For JSON compatibility
+}
+
+export class MembranePhysicsSystem extends System {
   private particles: ConstraintParticle[] = [];
   private graphics: Phaser.GameObjects.Graphics;
+  
+  // Missing properties that were removed during conversion
+  private pendingForces: Map<number, Phaser.Math.Vector2> = new Map();
+  private recentImpacts: Map<number, number> = new Map(); // particle index -> frames remaining
   
   // === XPBD PHYSICS PARAMETERS ===
   // Main membrane control knobs - adjust these to tune behavior
@@ -44,15 +62,27 @@ export class MembranePhysicsSystem {
   private centerAnchorCompliance: number = 2e-3;
   
   // Force accumulation and impact tracking
-  private pendingForces: Map<number, Phaser.Math.Vector2> = new Map();
-  private recentImpacts: Map<number, number> = new Map(); // particle index -> frames remaining
+  // Network replication
+  private readonly membraneState = this.stateChannel<MembraneState>('membrane', {
+    particles: [],
+    center: { x: 0, y: 0 },
+    timestamp: 0
+  });
 
-  constructor(scene: Phaser.Scene, config: {
+  constructor(scene: Phaser.Scene, bus: NetBus, config: {
     particles: Phaser.Math.Vector2[];
     restArea?: number;
     timeStep?: number;
     parent?: Phaser.GameObjects.Container;
   }) {
+    super(
+      scene,
+      bus,
+      'MembranePhysics',
+      (deltaTime) => this.update(deltaTime),
+      { address: 'MembranePhysics' }
+    );
+    
     this.graphics = scene.add.graphics();
     this.graphics.setDepth(1);
     
@@ -107,7 +137,10 @@ export class MembranePhysicsSystem {
   /**
    * Main XPBD physics simulation step
    */
-  public update(deltaTime: number) {
+  public override update(deltaTime: number) {
+    // Sync from network state if we're a client
+    this.syncFromNetworkState();
+    
     // 1) Apply pending impulses to velocities
     for (const [i, imp] of this.pendingForces.entries()) {
       const p = this.particles[i];
@@ -127,6 +160,18 @@ export class MembranePhysicsSystem {
       }
     }
 
+    // Only run physics simulation on the host
+    if (this._netBus.isHost) {
+      this.runPhysicsSimulation(deltaTime);
+    }
+    
+    this.render();
+    
+    // Broadcast state if we're the host
+    this.broadcastStateIfHost();
+  }
+
+  private runPhysicsSimulation(deltaTime: number) {
     // 3) XPBD substeps
     const h = deltaTime / this.substeps;
     for (let s = 0; s < this.substeps; s++) {
@@ -184,8 +229,46 @@ export class MembranePhysicsSystem {
         }
       }
     }
+  }
 
-    this.render();
+  /**
+   * SERVER ONLY: Update membrane state for network replication
+   */
+  @RunOnServer()
+  private broadcastStateIfHost() {
+    const state: MembraneState = {
+      particles: this.particles.map(p => ({
+        position: { x: p.position.x, y: p.position.y },
+        velocity: { x: p.velocity.x, y: p.velocity.y }
+      })),
+      center: this.getCenter(),
+      timestamp: Date.now()
+    };
+    
+    // Update the state channel directly (following CargoSystem pattern)
+    Object.assign(this.membraneState, state);
+  }
+
+  /**
+   * Apply received network state to local particles (for non-host clients)
+   */
+  private syncFromNetworkState() {
+    // Only sync if we're not the host
+    if (this._netBus.isHost) return;
+    
+    const state = this.membraneState;
+    if (!state.particles || state.particles.length !== this.particles.length) return;
+    
+    // Apply network state to local particles
+    for (let i = 0; i < this.particles.length; i++) {
+      const particle = this.particles[i];
+      const networkParticle = state.particles[i];
+      
+      particle.position.set(networkParticle.position.x, networkParticle.position.y);
+      particle.velocity.set(networkParticle.velocity.x, networkParticle.velocity.y);
+    }
+    
+    // No need for center movement detection here - handled by @Multicast
   }
 
   // === XPBD CONSTRAINT SOLVERS ===
@@ -342,9 +425,14 @@ export class MembranePhysicsSystem {
   /**
    * Apply impulse at a specific point on the membrane
    */
+  @RunOnServer()
   public applyImpulseAt(cellLocalPoint: Phaser.Math.Vector2, impulse: Phaser.Math.Vector2): void {
+    // Reconstruct Vector2 objects since they get serialized as plain objects over network
+    const localPoint = new Phaser.Math.Vector2(cellLocalPoint.x, cellLocalPoint.y);
+    const impulseVec = new Phaser.Math.Vector2(impulse.x, impulse.y);
+    
     this.updateCenter();
-    const rel = cellLocalPoint.clone().subtract(this.centerPosition);
+    const rel = localPoint.clone().subtract(this.centerPosition);
     const dist = rel.length();
     
     if (dist < 0.001) return;
@@ -371,7 +459,7 @@ export class MembranePhysicsSystem {
       }
     }
     
-    // Apply impulse to closest particle and neighbors
+    // Apply impulse to closest particle and neighbors (for local deformation)
     const particleIndices = [
       (closestIndex - 1 + this.particles.length) % this.particles.length,
       closestIndex,
@@ -386,12 +474,12 @@ export class MembranePhysicsSystem {
       if (particle.invMass === 0) continue;
       
       const weight = (i === 1 ? 1.0 : 0.5) / totalWeight;
-      const weightedImpulse = impulse.clone().scale(weight);
+      const weightedImpulse = impulseVec.clone().scale(weight);
       
       particle.velocity.add(weightedImpulse.scale(particle.invMass));
       
       // Track for adaptive compliance
-      if (impulse.length() > 50) {
+      if (impulseVec.length() > 50) {
         this.recentImpacts.set(particleIndex, this.impactSofteningFrames);
       }
       
@@ -703,7 +791,7 @@ export class MembranePhysicsSystem {
     }
   }
 
-  public destroy() {
+  public override destroy() {
     this.graphics.destroy();
   }
 }

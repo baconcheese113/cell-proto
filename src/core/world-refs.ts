@@ -120,15 +120,22 @@ export interface Cargo {
   isNetworkControlled?: boolean; // Network multiplayer flag for state synchronization
 }
 
+import type { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
+
 export interface WorldRefs {
   // Core spatial system
   hexGrid: HexGrid;
   
-  // HOTFIX: Root container for all cell visuals
-  cellRoot: Phaser.GameObjects.Container;
+  // PHYSICS-BASED POSITIONING: New physics-driven coordinate system
+  membranePhysics: MembranePhysicsSystem; // Primary physics system for cell positioning
   
   // Scene reference for visual updates
   scene?: GameScene; // Game scene reference for membrane visual refreshes
+  
+  // PHYSICS-BASED POSITIONING: Coordinate conversion utilities
+  getPhysicsCenter(): Phaser.Math.Vector2; // Get current physics-based cell center
+  worldToCell(worldX: number, worldY: number): Phaser.Math.Vector2; // Convert world to cell-local coordinates
+  cellToWorld(cellX: number, cellY: number): Phaser.Math.Vector2; // Convert cell-local to world coordinates
   
   // Player and inventory
   playerInventory: PlayerInventorySystem;
@@ -179,4 +186,20 @@ export interface WorldRefs {
   // UI methods
   showToast(message: string): void;
   refreshTileInfo(): void; // Force refresh of tile info panel
+  
+  // PHYSICS-BASED COORDINATE UTILITIES
+  /**
+   * Get the current physics-based cell center position
+   */
+  getPhysicsCenter(): Phaser.Math.Vector2;
+  
+  /**
+   * Convert world coordinates to cell-local coordinates using physics center
+   */
+  worldToCell(worldX: number, worldY: number): Phaser.Math.Vector2;
+  
+  /**
+   * Convert cell-local coordinates to world coordinates using physics center
+   */
+  cellToWorld(cellX: number, cellY: number): Phaser.Math.Vector2;
 }

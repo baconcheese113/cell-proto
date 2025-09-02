@@ -161,7 +161,11 @@ export class FilamentBuilder extends SystemObject {
     this.previewGraphics = this.scene.add.graphics();
     this.previewGraphics.setDepth(20); // Above everything
     this.previewGraphics.setVisible(false);
-    this.worldRefs.cellRoot.add(this.previewGraphics);
+    
+    // Position graphics using physics-based positioning
+    if (this.worldRefs.scene) {
+      this.worldRefs.scene.positionVisualElement(this.previewGraphics, 0, 0);
+    }
   }
 
   /**
@@ -172,13 +176,13 @@ export class FilamentBuilder extends SystemObject {
     this.scene.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (!this.isEnabled) return;
       
-      this.startPlacement(pointer.worldX - this.worldRefs.cellRoot.x, pointer.worldY - this.worldRefs.cellRoot.y);
+      this.startPlacement(pointer.worldX, pointer.worldY);
     });
     
     this.scene.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
       if (!this.isEnabled || !this.placementState.isPlacing) return;
       
-      this.updatePlacement(pointer.worldX - this.worldRefs.cellRoot.x, pointer.worldY - this.worldRefs.cellRoot.y);
+      this.updatePlacement(pointer.worldX, pointer.worldY);
     });
     
     this.scene.input.on('pointerup', () => {

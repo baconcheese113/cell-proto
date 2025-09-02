@@ -19,14 +19,12 @@ export class OrganelleRenderer {
   // Visual elements
   private graphics!: Phaser.GameObjects.Graphics;
   private labelGroup!: Phaser.GameObjects.Group;
-  private parentContainer?: Phaser.GameObjects.Container; // HOTFIX: Support for cellRoot parenting
 
-  constructor(scene: Phaser.Scene, organelleSystem: OrganelleSystem, hexSize: number, parentContainer?: Phaser.GameObjects.Container, worldRefs?: WorldRefs) {
+  constructor(scene: Phaser.Scene, organelleSystem: OrganelleSystem, hexSize: number, worldRefs?: WorldRefs) {
     this.scene = scene;
     this.organelleSystem = organelleSystem;
     this.worldRefs = worldRefs;
     this.hexSize = hexSize;
-    this.parentContainer = parentContainer;
     this.initializeGraphics();
   }
 
@@ -38,9 +36,9 @@ export class OrganelleRenderer {
     this.graphics = this.scene.add.graphics();
     this.graphics.setDepth(1.7); // Above hex grid, below UI
     
-    // HOTFIX H2: Re-parent to cellRoot if provided
-    if (this.parentContainer) {
-      this.parentContainer.add(this.graphics);
+    // Position graphics using physics-based positioning
+    if (this.worldRefs?.scene) {
+      this.worldRefs.scene.positionVisualElement(this.graphics, 0, 0);
     }
     
     // Group for text labels
@@ -135,10 +133,7 @@ export class OrganelleRenderer {
     label.setDepth(1.8);
     this.labelGroup.add(label);
     
-    // HOTFIX H5: Add label to cellRoot if we have a parent container
-    if (this.parentContainer) {
-      this.parentContainer.add(label);
-    }
+    // Label positioning is handled by hexToWorld returning correct world coordinates
     
     // Add footprint size indicator
     const sizeLabel = this.scene.add.text(centerPos.x, centerPos.y + this.hexSize + 8, 
@@ -156,10 +151,7 @@ export class OrganelleRenderer {
     sizeLabel.setAlpha(0.7);
     this.labelGroup.add(sizeLabel);
     
-    // HOTFIX H5: Add size label to cellRoot if we have a parent container
-    if (this.parentContainer) {
-      this.parentContainer.add(sizeLabel);
-    }
+    // Size label positioning is handled by hexToWorld returning correct world coordinates
   }
 
   /**
@@ -177,17 +169,26 @@ export class OrganelleRenderer {
   }
 
   /**
-   * Convert hex coordinate to local position relative to cellRoot
-   * HOTFIX H5: Now uses local coordinates (0,0 center) since we're in cellRoot
+   * Convert hex coordinate to world position using physics center
    */
   private hexToWorld(coord: { q: number, r: number }): { x: number, y: number } {
-    // Use local coordinates (0,0 at center) since we're now in cellRoot container
-    const x = this.hexSize * (3/2 * coord.q);
-    const y = this.hexSize * (Math.sqrt(3)/2 * coord.q + Math.sqrt(3) * coord.r);
+    // Calculate local hex position relative to (0,0)
+    const localX = this.hexSize * (3/2 * coord.q);
+    const localY = this.hexSize * (Math.sqrt(3)/2 * coord.q + Math.sqrt(3) * coord.r);
     
+    // Get current physics center and add local offset
+    if (this.worldRefs?.scene) {
+      const physicsCenter = this.worldRefs.scene.getPhysicsCenter();
+      return {
+        x: physicsCenter.x + localX,
+        y: physicsCenter.y + localY
+      };
+    }
+    
+    // Fallback to local coordinates if no worldRefs
     return {
-      x: x,
-      y: y
+      x: localX,
+      y: localY
     };
   }
 

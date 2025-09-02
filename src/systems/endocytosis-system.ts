@@ -152,7 +152,10 @@ export class EndocytosisSystem extends SystemObject {
   private initializeGraphics(): void {
     this.pocketGraphics = this.scene.add.graphics();
     this.pocketGraphics.setDepth(3); // Above membrane but below UI
-    this.worldRefs.cellRoot.add(this.pocketGraphics);
+    // Position graphics using physics-based positioning
+    if (this.worldRefs.scene) {
+      this.worldRefs.scene.positionVisualElement(this.pocketGraphics, 0, 0);
+    }
     
     if (DEBUG_ENDOCYTOSIS) {
       console.log('🫧 Endocytosis graphics initialized');
@@ -1005,8 +1008,10 @@ export class EndocytosisSystem extends SystemObject {
       0.6
     );
     
-    // Add vesicle to cell container
-    this.worldRefs.cellRoot.add(vesicle);
+    // Position vesicle using physics-based positioning
+    if (this.worldRefs.scene) {
+      this.worldRefs.scene.positionVisualElement(vesicle, 0, 0);
+    }
     
     // Add border
     vesicle.setStrokeStyle(2, this.config.vesicleColor || 0x4CAF50, 0.8);

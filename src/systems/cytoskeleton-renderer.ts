@@ -47,7 +47,6 @@ interface RenderConfig {
   
   // Performance
   maxSegmentsPerFrame: number;
-  redrawThrottle: number; // ms between full redraws
 }
 
 export class CytoskeletonRenderer extends SystemObject {
@@ -63,14 +62,13 @@ export class CytoskeletonRenderer extends SystemObject {
   // State
   private infrastructureOverlayEnabled = false;
   private pathVisualizationEnabled = true; // Task 6: Cargo path visualization
-  private lastFullRedraw = 0;
   
   // Milestone 13 Part B: Animation state for chevrons
   private animationTime = 0; // Accumulated time for chevron animation
   
   // Configuration
   private config: RenderConfig = {
-    railsLayerDepth: -5,      // Behind organelles
+    railsLayerDepth: 1,       // Above background grid, behind organelles
     overlayLayerDepth: 15,    // Above everything when active
     
     actinColor: 0xff6b6b,     // Red-ish
@@ -96,8 +94,7 @@ export class CytoskeletonRenderer extends SystemObject {
       showDirection: true   // Show microtubule polarity
     },
     
-    maxSegmentsPerFrame: 50,
-    redrawThrottle: 100  // 10 FPS max redraw rate
+    maxSegmentsPerFrame: 50
   };
 
   constructor(
@@ -120,7 +117,6 @@ export class CytoskeletonRenderer extends SystemObject {
     // Rails layer - behind organelles and players
     this.railsLayer = this.scene.add.container(0, 0);
     this.railsLayer.setDepth(this.config.railsLayerDepth);
-    this.worldRefs.cellRoot.add(this.railsLayer);
     
     this.railsGraphics = this.scene.add.graphics();
     this.railsLayer.add(this.railsGraphics);
@@ -129,7 +125,6 @@ export class CytoskeletonRenderer extends SystemObject {
     this.overlayLayer = this.scene.add.container(0, 0);
     this.overlayLayer.setDepth(this.config.overlayLayerDepth);
     this.overlayLayer.setVisible(false); // Hidden by default
-    this.worldRefs.cellRoot.add(this.overlayLayer);
     
     this.overlayGraphics = this.scene.add.graphics();
     this.overlayLayer.add(this.overlayGraphics);
@@ -138,16 +133,11 @@ export class CytoskeletonRenderer extends SystemObject {
   }
 
   override update(deltaSeconds: number): void {
-    const now = Date.now();
-    
     // Milestone 13 Part B: Update animation time for chevrons
     this.animationTime += deltaSeconds;
     
-    // Throttle full redraws for performance
-    if (now - this.lastFullRedraw > this.config.redrawThrottle) {
-      this.renderAll();
-      this.lastFullRedraw = now;
-    }
+    // Render every frame for smooth movement with the cell
+    this.renderAll();
   }
 
   /**
