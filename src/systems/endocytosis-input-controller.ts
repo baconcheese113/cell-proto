@@ -127,6 +127,8 @@ export class EndocytosisInputController {
   private startPocketFormation(): void {
     // Check if player can start endocytosis
     if (!this.endocytosisSystem.canInitiateEndocytosis()) {
+      const debugInfo = this.endocytosisSystem.getActivationDebugInfo();
+      console.log(`🫧 Cannot initiate endocytosis: ${debugInfo}`);
       this.worldRefs.showToast("Move closer to membrane for endocytosis");
       return;
     }
@@ -137,8 +139,8 @@ export class EndocytosisInputController {
     // Get initial directional input
     const initialDirection = this.getCurrentDirectionInput();
     
-    // Start the endocytosis system
-    const success = this.endocytosisSystem.startPocketFormation(initialDirection);
+    // UPDATED: Use the new public API for starting pocket formation
+    const success = this.endocytosisSystem.handlePocketFormationStart(initialDirection);
     
     if (success) {
       if (DEBUG_ENDOCYTOSIS_INPUT) {
@@ -158,7 +160,8 @@ export class EndocytosisInputController {
       this.worldRefs.showToast(`Hold ${this.config.activationKey} longer to form pocket`);
     }
     
-    this.endocytosisSystem.stopPocketFormation();
+    // UPDATED: Use the new public API for stopping pocket formation
+    this.endocytosisSystem.handlePocketFormationStop();
     this.isFormingPocket = false;
     
     if (DEBUG_ENDOCYTOSIS_INPUT) {

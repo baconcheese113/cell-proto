@@ -191,6 +191,7 @@ export class Player extends Phaser.GameObjects.Container {
     // Apply membrane collision before arcade physics integration
     if (this.membranePhysics) {
       this.handleMembraneCollision();
+      this.handleAdditionalMembraneCollisions();
     }
 
     // DISABLED: Old elastic forces system - replaced by bounce-house collision
@@ -308,11 +309,36 @@ export class Player extends Phaser.GameObjects.Container {
       const impulseMag = (1 + this.bounceRestitution) * vn;
       const j = n.clone().scale(impulseMag * this.impactImpulseScale);
       this.membranePhysics.applyImpulseAt(pLocal, j); // in cell-local coords
-      
-      // Debug log occasionally
-      if (Math.random() < 0.05) {
-        console.log(`🏀 BOUNCE-HOUSE: penetration=${penetration.toFixed(1)}, vn=${vn.toFixed(1)}, impulse=${j.length().toFixed(1)}`);
-      }
+    }
+  }
+
+  /**
+   * Handle collisions with additional membranes (neighbor cells)
+   */
+  private handleAdditionalMembraneCollisions(): void {
+    if (!this.membranePhysics) return;
+    
+    const body = this.sprite.body;
+    if (!body) return;
+    
+    // Use world coordinates for neighbor cell collisions
+    const playerPos = new Phaser.Math.Vector2(this.x, this.y);
+    const playerVelocity = new Phaser.Math.Vector2(body.velocity.x, body.velocity.y);
+    
+    // Check collision with all additional membranes (legacy player-to-membrane collision)
+    // Note: The real membrane-to-membrane collision happens in the physics system
+    const collision = this.membranePhysics.checkAdditionalMembraneCollisions({
+      center: playerPos,
+      radius: this.bodyRadius,
+      inOutVelocity: playerVelocity,
+      restitution: this.bounceRestitution,
+      friction: this.bounceFrictionTangent,
+      impulseScale: this.impactImpulseScale
+    });
+    
+    if (collision.collided && collision.contactPoint && collision.normal) {
+      // Apply the modified velocity back to the player
+      body.setVelocity(playerVelocity.x, playerVelocity.y);
     }
   }
 
@@ -379,6 +405,22 @@ export class Player extends Phaser.GameObjects.Container {
    */
   getCellLocalPosition(): Phaser.Math.Vector2 {
     return new Phaser.Math.Vector2(this.x + this.sprite.x, this.y + this.sprite.y);
+  }
+
+  /**
+   * Get position in cell-local coordinates (relative to membrane center)
+   */
+  getCellLocalCoordinates(): Phaser.Math.Vector2 {
+    const worldPos = new Phaser.Math.Vector2(this.x + this.sprite.x, this.y + this.sprite.y);
+    if (!this.membranePhysics) {
+      // Fallback to world position if no membrane physics
+      return worldPos;
+    }
+    const cellCenter = this.membranePhysics.getCenter();
+    return new Phaser.Math.Vector2(
+      worldPos.x - cellCenter.x,
+      worldPos.y - cellCenter.y
+    );
   }
 
 

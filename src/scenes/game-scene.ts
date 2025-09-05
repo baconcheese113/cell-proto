@@ -54,6 +54,13 @@ import { EmoteSystem } from "../systems/emote-system";
 import { InstallOrderSystem } from "../systems/install-order-system";
 // Membrane Physics System
 import { MembranePhysicsSystem } from "../membrane/membrane-physics-system";
+// Endocytosis System
+import { EndocytosisSystem } from "../systems/endocytosis-system";
+import { EndocytosisInputController } from "../systems/endocytosis-input-controller";
+// Membrane Tuning UI
+import { MembraneTuningUI } from "../ui/membrane-tuning-ui";
+// Neighbor Cell System
+import { NeighborCellSystem } from "../systems/neighbor-cell-system";
 
 type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO" | "SHIFT", Phaser.Input.Keyboard.Key>;
 
@@ -142,6 +149,9 @@ export class GameScene extends Phaser.Scene {
   // Milestone 6: Toast system - Task 2
   private toastText!: Phaser.GameObjects.Text;
 
+  // Neighbor cell system
+  private neighborCellSystem!: NeighborCellSystem;
+
   // Milestone 7: Orders system
   private installOrders: Map<string, InstallOrder> = new Map(); // keyed by order.id
   private nextOrderId = 1;
@@ -171,6 +181,13 @@ export class GameScene extends Phaser.Scene {
   private cargoHUD?: CargoHUD; // CargoHUD instance
   // private membraneTrampoline!: MembraneTrampoline;
   private membranePhysics!: MembranePhysicsSystem; // Constraint-based membrane physics
+  
+  // Endocytosis System - Membrane budding and vesicle formation
+  private endocytosisSystem!: EndocytosisSystem;
+  private endocytosisInputController!: EndocytosisInputController;
+  
+  // Membrane Tuning UI for real-time parameter adjustment
+  private membraneTuningUI!: MembraneTuningUI;
   
   // Milestone 13: Cytoskeleton Transport v1
   private cytoskeletonSystem!: CytoskeletonSystem;
@@ -578,6 +595,10 @@ export class GameScene extends Phaser.Scene {
         this.cellSpaceSystem.setPosition(this.cellCenter.x, this.cellCenter.y);
       }
     }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.U)) {
+      // Toggle membrane tuning UI
+      this.membraneTuningUI.toggle();
+    }
     if (Phaser.Input.Keyboard.JustDown(this.keys.Y)) {
       // System status debug - show consolidated system info
       this.printSystemStatus();
@@ -713,11 +734,17 @@ export class GameScene extends Phaser.Scene {
     this.throwInputController.update();
     this.cargoHUD?.update();
     
-    // Endocytosis system update - DISABLED for baseline testing
-    // this.endocytosisInputController.update(1/60); // Approximate delta time
+    // Endocytosis system update - ENABLED for testing
+    this.endocytosisInputController.update(1/60); // Approximate delta time
     
     // Membrane physics system update
     this.membranePhysics.update(1/60); // Approximate delta time
+    
+    // Update additional membranes (neighbor cells) through main physics system
+    this.membranePhysics.updateAdditionalMembranes(1/60);
+    
+    // Update neighbor cell network state for replication
+    this.neighborCellSystem.updatePhysicsState();
     
     // Update hex grid center to track physics center
     this.updateHexGridPosition();
@@ -2112,7 +2139,8 @@ export class GameScene extends Phaser.Scene {
     const membranePhysics = new MembranePhysicsSystem(this, bus, {
       particles: membraneParticles,
       timeStep: 1/60,
-      parent: undefined // Graphics added directly to scene
+      parent: undefined, // Graphics added directly to scene
+      id: 'player' // Unique identifier for main player membrane
     });
     this.membranePhysics = membranePhysics;
     
@@ -2126,7 +2154,25 @@ export class GameScene extends Phaser.Scene {
     // Wire player to use membrane physics for collision
     this.playerActor.setMembranePhysics(membranePhysics);
 
-    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes, membranePhysics].filter(c => c)) bus.registerInstance(c);
+    // Initialize Endocytosis System
+    console.log('🧬 Initializing Endocytosis System...');
+    this.endocytosisSystem = new EndocytosisSystem(this, this.worldRefsInstance, membranePhysics, this.playerActor);
+    this.endocytosisInputController = new EndocytosisInputController(this, this.worldRefsInstance, this.endocytosisSystem, this.playerActor);
+    console.log('🧬 Endocytosis System initialized successfully!');
+
+    // Initialize Membrane Tuning UI for real-time parameter adjustment
+    console.log('🔧 Initializing Membrane Tuning UI...');
+    this.membraneTuningUI = new MembraneTuningUI(membranePhysics);
+    console.log('🔧 Membrane Tuning UI initialized! Press T to toggle. Parameters are synced via state channels.');
+
+    // Initialize Neighbor Cell System for server-authoritative neighbor spawning
+    console.log('🏘️ Initializing Neighbor Cell System...');
+    this.neighborCellSystem = new NeighborCellSystem(this, bus, membranePhysics);
+    console.log('🏘️ Neighbor Cell System initialized!');
+
+    for (const c of [players, this.cargoSystem, species, installOrders, cytoskeleton, emotes, membranePhysics, this.neighborCellSystem].filter(c => c)) bus.registerInstance(c);
+    
+    // GameScene no longer needs network registration since neighbor logic is in NeighborCellSystem
 
     // Host initializes self in player roster
     if (bus.isHost) {
@@ -2173,6 +2219,9 @@ export class GameScene extends Phaser.Scene {
     
     // CargoSystem now provides UI interface methods directly - no wrapper needed
     console.log('CargoSystem provides UI interface methods directly');
+    
+    // Generate random neighbor cells for visual interest (after networking is fully set up)
+    this.neighborCellSystem.generateNeighborCells();
   }
 
   
@@ -2180,19 +2229,21 @@ export class GameScene extends Phaser.Scene {
     const playerCoord = this.playerActor.getHexCoord();
     if (!playerCoord) return;
 
-    // Clear all species on player's current tile
-    if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
-      this.hexGrid.clearConcentrations(playerCoord);
-      console.log(`Cleared all species on tile (${playerCoord.q}, ${playerCoord.r})`);
-    }
-
+    // NOTE: C key handling is now managed by EndocytosisInputController
     // Inject species using SHIFT + number keys 1-6 (to avoid conflict with protein installation)
+    // Clear all species on player's current tile (SHIFT + C to avoid endocytosis conflict)
     const injectionAmount = 20; // Modest amount to inject
     
     // Species injection now requires holding SHIFT to avoid conflicts
     const shiftHeld = this.input.keyboard?.checkDown(this.input.keyboard.addKey('SHIFT'), 0);
     
     if (shiftHeld) {
+      // SHIFT + C clears species (to avoid conflict with endocytosis C key)
+      if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
+        this.hexGrid.clearConcentrations(playerCoord);
+        console.log(`🧹 Cleared all species on tile (${playerCoord.q}, ${playerCoord.r}) - SHIFT+C used`);
+      }
+      
       if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) {
         this.injectSpecies('ATP', injectionAmount);
       }

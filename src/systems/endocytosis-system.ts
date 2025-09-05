@@ -80,6 +80,9 @@ export class EndocytosisSystem extends SystemObject {
   private config: EndocytosisConfig;
   private pocket: EndocytosisPocket;
   
+  // Input integration
+  private lastDirectionInput = new Phaser.Math.Vector2(0, 0);
+  
   // Visual feedback
   private pocketGraphics!: Phaser.GameObjects.Graphics;
   private createdVesicles: Phaser.GameObjects.Arc[] = [];
@@ -94,27 +97,27 @@ export class EndocytosisSystem extends SystemObject {
     super(scene, 'EndocytosisSystem', (deltaSeconds: number) => this.updateSystem(deltaSeconds));
     
     this.config = {
-      // Stage 1: Invagination
-      maxPocketDepth: 80,
-      pocketFormationSpeed: 25, // Slower formation - was 120, now 25 pixels per second (3+ seconds to complete)
-      pocketWidth: 60,
+      // Stage 1: Invagination - Localized pocket for teardrop effect
+      maxPocketDepth: 150, // Reduced from 400 - more reasonable for localized effect
+      pocketFormationSpeed: 20, // Reduced from 40 - more controlled
+      pocketWidth: 25, // Smaller working area for localized effect
       
       // Stage 2: Scission
-      scissionThreshold: 60, // 75% of max depth to start scission
-      scissionWindowTime: 2000, // 2 seconds to complete scission
-      minNeckDiameter: 10, // Minimum neck width for pinch-off
-      compressionForce: 30,
+      scissionThreshold: 999, // Very high threshold to disable scission for testing
+      scissionWindowTime: 3000,
+      minNeckDiameter: 8,
+      compressionForce: 20,
       
-      // Physics
-      invaginationForce: 50, // Increased force for more visible deformation
-      membraneStiffness: 0.8,
-      pocketTension: 15,
-      neckElasticity: 0.6,
+      // Physics - Localized compliant membrane for teardrop effect
+      invaginationForce: 40, // Reduced from 80 - more controlled pulling
+      membraneStiffness: 0.6, // Increased from 0.2 - prevent whole membrane distortion
+      pocketTension: 8, // Increased from 2 - maintain membrane integrity
+      neckElasticity: 0.8,
       
       // Interaction
-      activationDistance: 40,
-      directionSensitivity: 0.8,
-      cooperativeDistance: 25,
+      activationDistance: 30,
+      directionSensitivity: 1.2,
+      cooperativeDistance: 20,
       
       // Visual
       showPocketOutline: true,
@@ -124,8 +127,8 @@ export class EndocytosisSystem extends SystemObject {
       vesicleColor: 0x4CAF50,
       
       // Debug options
-      debugFreezeScission: true,  // Enable freeze for single-player testing
-      debugExtendedScissionTime: 30000, // 30 seconds for testing
+      debugFreezeScission: false,
+      debugExtendedScissionTime: 30000,
       ...config
     };
     
@@ -166,14 +169,26 @@ export class EndocytosisSystem extends SystemObject {
    * Check if player can initiate endocytosis at current position
    */
   public canInitiateEndocytosis(): boolean {
-    const playerPos = this.player.getCellLocalPosition();
+    const playerPos = this.player.getCellLocalCoordinates();
     const distanceFromCenter = playerPos.length();
     const membraneRadius = this.getMembraneRadius();
     
     // Player must be near the membrane but not outside
     const distanceFromMembrane = Math.abs(distanceFromCenter - membraneRadius);
     // console.log(`Player distance from membrane: ${distanceFromMembrane.toFixed(1)} (activation threshold: ${this.config.activationDistance}), playerPos: (${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}), membraneRadius: ${membraneRadius.toFixed(1)}`);
-    return distanceFromMembrane <= this.config.activationDistance;
+    return distanceFromMembrane <= this.config.activationDistance; // && !this.pocket.isActive;
+  }
+  
+  /**
+   * Get debug info for activation issues
+   */
+  public getActivationDebugInfo(): string {
+    const playerPos = this.player.getCellLocalCoordinates();
+    const distanceFromCenter = playerPos.length();
+    const membraneRadius = this.getMembraneRadius();
+    const distanceFromMembrane = Math.abs(distanceFromCenter - membraneRadius);
+    
+    return `playerPos ${JSON.stringify(playerPos)} - ${membraneRadius.toFixed(1)} distance ${distanceFromMembrane.toFixed(1)} > ${this.config.activationDistance}, pocket active: ${this.pocket.isActive}`;
   }
   
   /**
@@ -184,7 +199,7 @@ export class EndocytosisSystem extends SystemObject {
       return false;
     }
     
-    const playerPos = this.player.getCellLocalPosition();
+    const playerPos = this.player.getCellLocalCoordinates();
     
     // Find the closest membrane point as pocket center
     const membraneRadius = this.getMembraneRadius();
@@ -234,6 +249,12 @@ export class EndocytosisSystem extends SystemObject {
   public updatePocketFormation(inputDirection: Phaser.Math.Vector2, deltaSeconds: number): void {
     if (!this.pocket.isActive) return;
     
+    // EMERGENCY BRAKE: If debug freeze is active, stop all force application
+    if (this.config.debugFreezeScission) {
+      console.log('🛑 Debug freeze active - skipping force application');
+      return;
+    }
+    
     if (this.pocket.stage === 'invagination') {
       this.updateInvaginationStage(inputDirection, deltaSeconds);
     } else if (this.pocket.stage === 'scission') {
@@ -243,31 +264,49 @@ export class EndocytosisSystem extends SystemObject {
   
   /**
    * Update invagination stage (pocket formation)
+   * FIXED: Only progress when player is actively pulling
    */
   private updateInvaginationStage(inputDirection: Phaser.Math.Vector2, deltaSeconds: number): void {
-    // Update pocket direction based on input
-    if (inputDirection.lengthSq() > 0.1) {
-      const inputInfluence = inputDirection.clone().normalize().scale(this.config.directionSensitivity * deltaSeconds);
-      this.pocket.direction.add(inputInfluence).normalize();
-      
-      if (DEBUG_ENDOCYTOSIS && Math.random() < 0.05) { // 5% chance to log direction changes
-        console.log(`🫧 Updated pocket direction: (${this.pocket.direction.x.toFixed(2)}, ${this.pocket.direction.y.toFixed(2)})`);
+    // CRITICAL FIX: Only progress if player is actively providing directional input
+    const hasActiveInput = inputDirection.lengthSq() > 0.01; // Threshold for "active" input
+    
+    if (!hasActiveInput) {
+      // Player not actively pulling - pause formation but maintain state
+      if (DEBUG_ENDOCYTOSIS && Math.random() < 0.02) {
+        console.log(`🫧 No active input - pocket formation PAUSED at ${(this.pocket.formationProgress * 100).toFixed(1)}%`);
       }
+      // Don't apply forces, don't progress - just maintain current pocket
+      return;
     }
     
-    // Increase pocket depth
-    const depthIncrease = this.config.pocketFormationSpeed * deltaSeconds;
+    // Update pocket direction based on input (only when actively pulling)
+    // DISABLED: Since we use inward forces, we don't need direction updates that cause spinning
+    // if (inputDirection.lengthSq() > 0.1) {
+    //   const inputInfluence = inputDirection.clone().normalize().scale(this.config.directionSensitivity * deltaSeconds);
+    //   this.pocket.direction.add(inputInfluence).normalize();
+    //   
+    //   if (DEBUG_ENDOCYTOSIS && Math.random() < 0.05) {
+    //     console.log(`🫧 Updated pocket direction: (${this.pocket.direction.x.toFixed(2)}, ${this.pocket.direction.y.toFixed(2)})`);
+    //   }
+    // }
+    
+    // PLAYER-CONTROLLED PROGRESSION: Scale speed by input intensity
+    const inputIntensity = Math.min(inputDirection.length(), 1.0);
+    const baseSpeed = this.config.pocketFormationSpeed;
+    const actualSpeed = baseSpeed * inputIntensity; // Stronger input = faster pulling
+    
+    const depthIncrease = actualSpeed * deltaSeconds;
     const oldProgress = this.pocket.formationProgress;
     this.pocket.depth = Math.min(this.pocket.depth + depthIncrease, this.config.maxPocketDepth);
     this.pocket.formationProgress = this.pocket.depth / this.config.maxPocketDepth;
     
-    // Log progress at significant milestones
+    // Log progress at significant milestones (only when actually progressing)
     if (DEBUG_ENDOCYTOSIS && Math.floor(oldProgress * 10) !== Math.floor(this.pocket.formationProgress * 10)) {
-      console.log(`🫧 Pocket formation progress: ${(this.pocket.formationProgress * 100).toFixed(0)}%`);
+      console.log(`🫧 Active pulling progress: ${(this.pocket.formationProgress * 100).toFixed(0)}% (intensity: ${inputIntensity.toFixed(2)})`);
     }
     
-    // Apply forces to membrane nodes
-    this.applyPocketForces();
+    // Apply forces to membrane nodes (only when actively pulling)
+    this.applyPocketForces(deltaSeconds);
     
     // Check if ready for scission stage
     if (this.pocket.depth >= this.config.scissionThreshold) {
@@ -281,7 +320,7 @@ export class EndocytosisSystem extends SystemObject {
   }
   
   /**
-   * Transition from invagination to scission stage
+   * Transition from invagination to scission stage - TEMPORARILY DISABLED
    */
   private transitionToScissionStage(): void {
     this.pocket.stage = 'scission';
@@ -327,7 +366,7 @@ export class EndocytosisSystem extends SystemObject {
     }
     
     // CRITICAL: Continue applying primary pocket forces to maintain shape
-    this.applyPocketForces();
+    this.applyPocketForces(deltaSeconds);
     
     // Additional holding forces for extra stability
     this.applyHoldingForces();
@@ -384,7 +423,7 @@ export class EndocytosisSystem extends SystemObject {
    */
   private checkForNeckCompression(): void {
     // Get player position in cell-local coordinates
-    const playerPos = this.player.getCellLocalPosition();
+    const playerPos = this.player.getCellLocalCoordinates();
     const playerVelocity = this.player.getVelocity();
     const dashState = this.player.getDashState();
     
@@ -445,18 +484,33 @@ export class EndocytosisSystem extends SystemObject {
   
   /**
    * Complete successful scission (vesicle formation)
+   * UPDATED: Now uses proper XPBD membrane scission
    */
   private completeScission(): void {
-    console.log('Endocytosis scission completed - creating vesicle');
+    console.log('Endocytosis scission completed - creating vesicle with XPBD membrane physics');
     
-    // Create vesicle at pocket center
-    this.createVesicle();
+    // Perform actual membrane scission using membrane physics
+    const vesicleRadius = this.config.pocketWidth * 0.4;
+    const scissionSuccess = this.membranePhysics.performMembraneScission(
+      this.pocket.centerPosition,
+      vesicleRadius
+    );
     
-    // Clean up membrane modifications
-    this.restoreMembraneIntegrity();
+    if (scissionSuccess) {
+      // Create visual vesicle to represent the separated membrane
+      this.createVesicle();
+      
+      console.log(`🫧 XPBD membrane scission successful - vesicle formed at (${this.pocket.centerPosition.x.toFixed(1)}, ${this.pocket.centerPosition.y.toFixed(1)})`);
+      this.worldRefs.showToast("Endocytosis successful! Membrane vesicle formed!");
+    } else {
+      console.warn('🫧 XPBD membrane scission failed - insufficient particles');
+      this.worldRefs.showToast("Scission failed - pocket not deep enough!");
+      this.failScission();
+      return;
+    }
     
-    // Restore original membrane rest positions
-    this.restoreOriginalRestPositions();
+    // Clean up membrane modifications (this is now handled by membrane physics)
+    // No need to restore manually since membrane physics manages the scission
     
     // Reset pocket state
     this.pocket.isActive = false;
@@ -471,10 +525,8 @@ export class EndocytosisSystem extends SystemObject {
     // Clear visuals
     this.pocketGraphics.clear();
     
-    // Notify other systems (simplified without eventBus)
-    console.log('Endocytosis vesicle created at:', this.pocket.centerPosition);
-    
-    this.worldRefs.showToast("Endocytosis successful! Vesicle formed and captured!");
+    // Notify other systems
+    console.log('Endocytosis vesicle created successfully with membrane separation');
   }
   
   /**
@@ -485,10 +537,8 @@ export class EndocytosisSystem extends SystemObject {
       console.log(`🫧 Scission failed! Pocket will collapse back to membrane.`);
     }
     
-    this.worldRefs.showToast("Scission failed! Pocket collapsing...");
-    
-    // Gradually return pocket to normal membrane state
-    this.stopPocketFormation();
+    // Use the new membrane physics-based restoration
+    this.handleScissionFailure();
   }
   
   /**
@@ -545,70 +595,104 @@ export class EndocytosisSystem extends SystemObject {
   
   /**
    * Calculate which membrane nodes will be affected by the pocket
+   * UPDATED: Select only 3 closest nodes within small radius for localized inward pocket
    */
   private calculateTargetNodes(): void {
     this.pocket.targetNodes = [];
     this.pocket.forcePattern = [];
     
-    const nodes = this.membranePhysics.getParticles(); // Access particles array
+    const nodes = this.membranePhysics.getParticles();
     if (!nodes) return;
+    
+    // Convert pocket center from cell-local to world coordinates for distance calculations
+    const cellCenter = this.membranePhysics.getCenter();
+    const worldPocketCenter = new Phaser.Math.Vector2(
+      this.pocket.centerPosition.x + cellCenter.x,
+      this.pocket.centerPosition.y + cellCenter.y
+    );
+    
+    // Only consider nodes within a small radius for localized effect
+    const localRadius = 25; // Small radius for localized teardrop
+    const nodeDistances: Array<{index: number, distance: number}> = [];
     
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
-      const distance = node.position.distance(this.pocket.centerPosition);
+      const distance = node.position.distance(worldPocketCenter);
+      if (distance <= localRadius) { // Only nodes within small radius
+        nodeDistances.push({index: i, distance});
+      }
+    }
+    
+    // Sort by distance and take only the closest 3 nodes for very localized effect
+    nodeDistances.sort((a, b) => a.distance - b.distance);
+    const targetCount = Math.min(3, nodeDistances.length); // Only 3 nodes for localized teardrop
+    
+    for (let i = 0; i < targetCount; i++) {
+      const nodeData = nodeDistances[i];
+      const node = nodes[nodeData.index];
+      this.pocket.targetNodes.push(nodeData.index);
       
-      if (distance <= this.config.pocketWidth) {
-        this.pocket.targetNodes.push(i);
-        
-        // Calculate force vector for this node
-        const forceDirection = this.pocket.direction.clone();
-        const falloff = 1 - (distance / this.config.pocketWidth);
-        const forceMagnitude = this.config.invaginationForce * falloff;
-        
-        this.pocket.forcePattern.push(forceDirection.scale(forceMagnitude));
+      // Calculate INWARD force toward cell center (using world coordinates)
+      const inwardDirection = cellCenter.clone().subtract(node.position).normalize();
+      
+      // Localized force pattern with quadratic falloff for teardrop shape
+      const distanceFactor = 1.0 - (nodeData.distance / localRadius);
+      const proximityBonus = Math.pow(distanceFactor, 1.5); // Stronger falloff for teardrop
+      const forceMagnitude = this.config.invaginationForce * proximityBonus;
+      
+      this.pocket.forcePattern.push(inwardDirection.scale(forceMagnitude));
+      
+      if (DEBUG_ENDOCYTOSIS && i < 3) { // Log all nodes since we only have 3
+        console.log(`🫧 Inward node ${i+1}: distance=${nodeData.distance.toFixed(1)}px, force=${forceMagnitude.toFixed(1)}, inward=true`);
       }
     }
     
     if (DEBUG_ENDOCYTOSIS) {
-      console.log(`🫧 Calculated ${this.pocket.targetNodes.length} target nodes for pocket`);
+      console.log(`🫧 Selected ${this.pocket.targetNodes.length} nodes for inward pocket formation`);
     }
   }
   
   /**
    * Apply forces to membrane nodes to create pocket invagination
+   * UPDATED: Much stronger forces for compliant nodes to enable deep pulling
    */
-  private applyPocketForces(): void {
-    // Alternative approach: Use membrane physics impact system for better integration
-    // Apply forces during formation OR scission stages
-    const shouldApplyForces = this.pocket.formationProgress > 0.1 || this.pocket.stage === 'scission';
+  private applyPocketForces(deltaSeconds: number = 1/60): void {
+    if (!this.membranePhysics) return;
     
-    if (shouldApplyForces) {
-      // Use formation progress for scaling, but ensure minimum force during scission
-      const progressForScaling = this.pocket.stage === 'scission' 
-        ? Math.max(this.pocket.formationProgress, 0.8) // Ensure strong force during scission
-        : this.pocket.formationProgress;
+    // Primary approach: Use membrane physics built-in invagination with stronger scaling
+    if (this.pocket.formationProgress > 0.02) { // Start sooner for immediate feedback
+      const currentDepth = this.pocket.depth;
       
-      const impactForce = this.config.invaginationForce * progressForScaling;
+      // Moderate depth scaling for localized teardrop effect
+      const scaledDepth = currentDepth * 0.3; // Reduced from 0.8 for localized effect
       
-      // Apply impact at pocket center with inward direction
-      this.membranePhysics.applyImpact(
+      this.membranePhysics.createMembraneInvagination(
         this.pocket.centerPosition,
-        impactForce,
-        this.pocket.direction
+        this.pocket.direction,
+        this.config.pocketWidth * 0.4, // Smaller radius for localized effect - was 0.8
+        scaledDepth
       );
       
-      if (DEBUG_ENDOCYTOSIS && Math.random() < 0.1) { // 10% chance to log
-        const stage = this.pocket.stage === 'scission' ? ' [SCISSION]' : '';
-        console.log(`🫧 Applied membrane impact${stage}: force=${impactForce.toFixed(1)}, progress=${(progressForScaling * 100).toFixed(1)}%`);
+      if (DEBUG_ENDOCYTOSIS && Math.random() < 0.1) {
+        console.log(`🫧 Strong XPBD invagination: depth=${currentDepth.toFixed(1)}, applied=${scaledDepth.toFixed(1)}, progress=${(this.pocket.formationProgress * 100).toFixed(1)}%`);
       }
     }
     
-    // Keep original direct node approach as backup/additional effect
-    const nodes = this.membranePhysics.getParticles(); // Access particles array
+    // Apply stronger backup forces for the compliant nodes
+    this.applyBackupForces(deltaSeconds);
+  }
+  
+  /**
+   * Backup force application method (stronger for compliant nodes)
+   */
+  private applyBackupForces(deltaSeconds: number): void {
+    const nodes = this.membranePhysics.getParticles();
     if (!nodes) return;
     
     let appliedForces = 0;
     let totalForceMagnitude = 0;
+    const MAX_TOTAL_FORCE = 80.0; // Reduced from 200 for localized effect
+    const MAX_INDIVIDUAL_FORCE = 25.0; // Reduced from 50 for controlled pulling
     
     for (let i = 0; i < this.pocket.targetNodes.length; i++) {
       const nodeIndex = this.pocket.targetNodes[i];
@@ -616,28 +700,46 @@ export class EndocytosisSystem extends SystemObject {
       const baseForce = this.pocket.forcePattern[i];
       
       if (node && baseForce) {
-        // Scale force by formation progress and depth
+        // Ultra strong force scaling for super stretchy nodes
+        // Give closest nodes dramatically stronger forces for extreme stretching
+        const proximityBonus = Math.max(0.3, 1.0 - (i * 0.05)); // Much stronger bonus gradient
+        
         const progressScale = this.pocket.stage === 'scission'
-          ? Math.max(Math.sin(this.pocket.formationProgress * Math.PI), 0.8) // Maintain strong force during scission
-          : Math.sin(this.pocket.formationProgress * Math.PI); // Smooth ramping during formation
+          ? 0.4 * proximityBonus // Stronger during scission too
+          : Math.sin(this.pocket.formationProgress * Math.PI * 0.5) * 0.5 * proximityBonus; // Much stronger backup forces
         
-        const depthScale = this.pocket.depth / this.config.maxPocketDepth;
-        const scissionMultiplier = this.pocket.stage === 'scission' ? 1.5 : 1.0; // Extra force during scission
-        const finalForce = baseForce.clone().scale(progressScale * depthScale * 0.5 * scissionMultiplier);
+        const timeDecay = Math.max(0.6, 1.0 - (this.pocket.formationProgress * 0.1)); // Less decay
+        const dampening = Math.min(deltaSeconds * 60, 1.0);
         
-        // Apply the force via the proper force application method
-        this.membranePhysics.applyForceToParticle(i, finalForce);
+        const forceMultiplier = progressScale * timeDecay * dampening;
+        const finalForce = baseForce.clone().scale(forceMultiplier);
         
-        // Track applied forces for debugging
+        // Less strict force limiting to allow stronger pulling
+        const forceMagnitude = finalForce.length();
+        if (forceMagnitude > MAX_INDIVIDUAL_FORCE) {
+          finalForce.normalize().scale(MAX_INDIVIDUAL_FORCE);
+        }
+        
+        if (totalForceMagnitude + forceMagnitude > MAX_TOTAL_FORCE) {
+          break; // Stop applying more forces
+        }
+        
+        // Apply the stronger force
+        const particleIndex = this.pocket.targetNodes[i];
+        this.membranePhysics.applyForceToParticle(particleIndex, finalForce);
+        
         appliedForces++;
         totalForceMagnitude += finalForce.length();
+        
+        if (DEBUG_ENDOCYTOSIS && i < 3 && Math.random() < 0.05) {
+          console.log(`🫧 Strong force on node ${i+1}: ${finalForce.length().toFixed(1)}, bonus=${proximityBonus.toFixed(2)}`);
+        }
       }
     }
     
-    // Debug logging for direct force application
-    if (DEBUG_ENDOCYTOSIS && appliedForces > 0 && Math.random() < 0.1) { // 10% chance to log
-      const stage = this.pocket.stage === 'scission' ? ' [SCISSION]' : '';
-      console.log(`🫧 Applied direct forces${stage} to ${appliedForces} nodes, total magnitude: ${totalForceMagnitude.toFixed(1)}`);
+    // More frequent logging for stronger forces
+    if (DEBUG_ENDOCYTOSIS && appliedForces > 0 && Math.random() < 0.05) {
+      console.log(`🫧 Applied ${appliedForces} strong forces, total: ${totalForceMagnitude.toFixed(1)}`);
     }
   }
   
@@ -745,12 +847,17 @@ export class EndocytosisSystem extends SystemObject {
     const baseRadius = this.config.pocketWidth * 0.5;
     const currentRadius = baseRadius * (0.8 + 0.4 * this.pocket.formationProgress); // Grows with progress
     
+    // Convert cell-local coordinates to world coordinates for rendering
+    const cellCenter = this.membranePhysics.getCenter();
+    const worldX = this.pocket.centerPosition.x + cellCenter.x;
+    const worldY = this.pocket.centerPosition.y + cellCenter.y;
+    
     // Draw pocket outline with thickness based on progress
     const lineWidth = 2 + 3 * this.pocket.formationProgress;
     this.pocketGraphics.lineStyle(lineWidth, this.config.pocketColor, alpha);
     this.pocketGraphics.strokeCircle(
-      this.pocket.centerPosition.x,
-      this.pocket.centerPosition.y,
+      worldX,
+      worldY,
       currentRadius
     );
     
@@ -758,8 +865,8 @@ export class EndocytosisSystem extends SystemObject {
     if (this.pocket.formationProgress > 0.1) {
       this.pocketGraphics.fillStyle(this.config.pocketColor, alpha * 0.3);
       this.pocketGraphics.fillCircle(
-        this.pocket.centerPosition.x,
-        this.pocket.centerPosition.y,
+        worldX,
+        worldY,
         currentRadius * this.pocket.formationProgress
       );
     }
@@ -776,20 +883,27 @@ export class EndocytosisSystem extends SystemObject {
   private renderScissionStage(): void {
     const alpha = 0.8;
     
+    // Convert cell-local coordinates to world coordinates for rendering
+    const cellCenter = this.membranePhysics.getCenter();
+    const worldCenterX = this.pocket.centerPosition.x + cellCenter.x;
+    const worldCenterY = this.pocket.centerPosition.y + cellCenter.y;
+    const worldNeckX = this.pocket.neckPosition.x + cellCenter.x;
+    const worldNeckY = this.pocket.neckPosition.y + cellCenter.y;
+    
     // Draw pocket (faded)
     const baseRadius = this.config.pocketWidth * 0.5;
     this.pocketGraphics.lineStyle(2, this.config.pocketColor, alpha * 0.5);
     this.pocketGraphics.strokeCircle(
-      this.pocket.centerPosition.x,
-      this.pocket.centerPosition.y,
+      worldCenterX,
+      worldCenterY,
       baseRadius
     );
     
     // Draw neck area
     this.pocketGraphics.lineStyle(3, this.config.scissionColor, alpha);
     this.pocketGraphics.strokeCircle(
-      this.pocket.neckPosition.x,
-      this.pocket.neckPosition.y,
+      worldNeckX,
+      worldNeckY,
       this.pocket.neckDiameter * 0.5
     );
     
@@ -803,8 +917,8 @@ export class EndocytosisSystem extends SystemObject {
       const progressRadius = (this.pocket.neckDiameter * 0.5) * (1 - this.pocket.scissionProgress);
       this.pocketGraphics.fillStyle(this.config.scissionColor, alpha * 0.4);
       this.pocketGraphics.fillCircle(
-        this.pocket.neckPosition.x,
-        this.pocket.neckPosition.y,
+        worldNeckX,
+        worldNeckY,
         progressRadius
       );
     }
@@ -817,7 +931,8 @@ export class EndocytosisSystem extends SystemObject {
    * Render compression zones for cooperative gameplay
    */
   private renderCompressionZones(alpha: number): void {
-    const playerPos = this.player.getCellLocalPosition();
+    const playerPos = this.player.getCellLocalCoordinates();
+    const cellCenter = this.membranePhysics.getCenter();
     
     for (const zone of this.pocket.compressionZones) {
       const distanceToPlayer = playerPos.distance(zone);
@@ -831,14 +946,18 @@ export class EndocytosisSystem extends SystemObject {
       const zoneColor = isPlayerNearby ? 0xffff00 : this.config.scissionColor; // Yellow when active
       const zoneRadius = this.config.cooperativeDistance * (isPlayerNearby ? 0.4 : 0.3);
       
+      // Convert cell-local coordinates to world coordinates for rendering
+      const worldZoneX = zone.x + cellCenter.x;
+      const worldZoneY = zone.y + cellCenter.y;
+      
       // Draw compression zone circle
       this.pocketGraphics.lineStyle(isPlayerNearby ? 4 : 2, zoneColor, zoneAlpha);
-      this.pocketGraphics.strokeCircle(zone.x, zone.y, zoneRadius);
+      this.pocketGraphics.strokeCircle(worldZoneX, worldZoneY, zoneRadius);
       
       // Fill zone if player is nearby
       if (isPlayerNearby) {
         this.pocketGraphics.fillStyle(zoneColor, alpha * 0.2);
-        this.pocketGraphics.fillCircle(zone.x, zone.y, zoneRadius);
+        this.pocketGraphics.fillCircle(worldZoneX, worldZoneY, zoneRadius);
       }
       
       // Add arrow pointing toward neck
@@ -918,34 +1037,41 @@ export class EndocytosisSystem extends SystemObject {
    * Render direction arrow for invagination stage
    */
   private renderDirectionArrow(alpha: number): void {
+    const cellCenter = this.membranePhysics.getCenter();
     const arrowLength = 30 + 40 * this.pocket.formationProgress;
     const arrowEnd = this.pocket.centerPosition.clone().add(
       this.pocket.direction.clone().scale(arrowLength)
     );
     
+    // Convert to world coordinates
+    const worldStartX = this.pocket.centerPosition.x + cellCenter.x;
+    const worldStartY = this.pocket.centerPosition.y + cellCenter.y;
+    const worldEndX = arrowEnd.x + cellCenter.x;
+    const worldEndY = arrowEnd.y + cellCenter.y;
+    
     // Arrow line
     this.pocketGraphics.lineStyle(3, this.config.pocketColor, alpha * 0.8);
     this.pocketGraphics.beginPath();
-    this.pocketGraphics.moveTo(this.pocket.centerPosition.x, this.pocket.centerPosition.y);
-    this.pocketGraphics.lineTo(arrowEnd.x, arrowEnd.y);
+    this.pocketGraphics.moveTo(worldStartX, worldStartY);
+    this.pocketGraphics.lineTo(worldEndX, worldEndY);
     this.pocketGraphics.strokePath();
     
     // Arrowhead
     const arrowHeadSize = 8;
     const angle = Math.atan2(this.pocket.direction.y, this.pocket.direction.x);
     const leftPoint = new Phaser.Math.Vector2(
-      arrowEnd.x - arrowHeadSize * Math.cos(angle - Math.PI/6),
-      arrowEnd.y - arrowHeadSize * Math.sin(angle - Math.PI/6)
+      worldEndX - arrowHeadSize * Math.cos(angle - Math.PI/6),
+      worldEndY - arrowHeadSize * Math.sin(angle - Math.PI/6)
     );
     const rightPoint = new Phaser.Math.Vector2(
-      arrowEnd.x - arrowHeadSize * Math.cos(angle + Math.PI/6),
-      arrowEnd.y - arrowHeadSize * Math.sin(angle + Math.PI/6)
+      worldEndX - arrowHeadSize * Math.cos(angle + Math.PI/6),
+      worldEndY - arrowHeadSize * Math.sin(angle + Math.PI/6)
     );
     
     this.pocketGraphics.beginPath();
-    this.pocketGraphics.moveTo(arrowEnd.x, arrowEnd.y);
+    this.pocketGraphics.moveTo(worldEndX, worldEndY);
     this.pocketGraphics.lineTo(leftPoint.x, leftPoint.y);
-    this.pocketGraphics.moveTo(arrowEnd.x, arrowEnd.y);
+    this.pocketGraphics.moveTo(worldEndX, worldEndY);
     this.pocketGraphics.lineTo(rightPoint.x, rightPoint.y);
     this.pocketGraphics.strokePath();
   }
@@ -968,10 +1094,58 @@ export class EndocytosisSystem extends SystemObject {
   /**
    * Main update loop
    */
-  private updateSystem(_deltaSeconds: number): void {
+  private updateSystem(deltaSeconds: number): void {
     if (this.pocket.isActive) {
+      // CRITICAL FIX: Actually call the pocket formation update logic
+      // This was missing and is why endocytosis never progressed
+      const inputDirection = this.getLastDirectionInput(); // Get from input controller
+      this.updatePocketFormation(inputDirection, deltaSeconds);
+      
       // Render visual feedback
       this.renderPocketVisualization();
+    }
+  }
+  
+  /**
+   * Get the last direction input for pocket formation
+   * This receives input from the input controller
+   */
+  private getLastDirectionInput(): Phaser.Math.Vector2 {
+    return this.lastDirectionInput.clone();
+  }
+  
+  /**
+   * PUBLIC API: Update direction input from input controller
+   * This method is called by the EndocytosisInputController
+   */
+  public updateDirectionInput(direction: Phaser.Math.Vector2): void {
+    this.lastDirectionInput.copy(direction);
+  }
+  
+  /**
+   * PUBLIC API: Handle pocket formation start from input controller
+   */
+  public handlePocketFormationStart(inputDirection: Phaser.Math.Vector2): boolean {
+    const success = this.startPocketFormation(inputDirection);
+    
+    if (success && DEBUG_ENDOCYTOSIS) {
+      console.log(`🫧 Input controller started pocket formation with direction: (${inputDirection.x.toFixed(2)}, ${inputDirection.y.toFixed(2)})`);
+      
+      // Provide clear instructions to the player
+      this.worldRefs.showToast("Hold C and use WASD to pull membrane at your own pace!");
+    }
+    
+    return success;
+  }
+  
+  /**
+   * PUBLIC API: Handle pocket formation stop from input controller
+   */
+  public handlePocketFormationStop(): void {
+    this.stopPocketFormation();
+    
+    if (DEBUG_ENDOCYTOSIS) {
+      console.log(`🫧 Input controller stopped pocket formation`);
     }
   }
   
@@ -1079,12 +1253,13 @@ export class EndocytosisSystem extends SystemObject {
   }
   
   /**
-   * Restore membrane integrity after scission
+   * Restore membrane integrity after scission (legacy method - now handled by membrane physics)
    */
   private restoreMembraneIntegrity(): void {
     if (!this.membranePhysics) return;
     
-    // Gradually restore normal membrane forces
+    // Legacy approach kept for backward compatibility
+    // Modern approach uses membrane physics scission methods
     const restoreForce = this.config.invaginationForce * 0.3;
     
     // Apply gentle outward forces to close the gap
@@ -1104,5 +1279,20 @@ export class EndocytosisSystem extends SystemObject {
         inwardDirection
       );
     }
+  }
+  
+  /**
+   * Handle scission failure using membrane physics restoration
+   */
+  private handleScissionFailure(): void {
+    // Use the restoration method when scission fails
+    this.restoreMembraneIntegrity();
+    
+    if (DEBUG_ENDOCYTOSIS) {
+      console.log(`🫧 Scission failed! Using membrane physics to restore integrity.`);
+    }
+    
+    this.worldRefs.showToast("Scission failed! Membrane restoring...");
+    this.stopPocketFormation();
   }
 }

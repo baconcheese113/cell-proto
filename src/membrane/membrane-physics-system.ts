@@ -20,9 +20,43 @@ interface ConstraintParticle {
 interface MembraneState {
   particles: Array<{ position: { x: number; y: number }; velocity: { x: number; y: number } }>;
   center: { x: number; y: number };
-  timestamp: number;
   [key: string]: any; // For JSON compatibility
 }
+
+/**
+ * Default membrane physics parameters - serves as both type definition and default values
+ * These control the XPBD physics simulation behavior
+ */
+export const DEFAULT_MEMBRANE_PARAMETERS = {
+  // === MAIN MEMBRANE CONTROL KNOBS ===
+  // Adjust these to tune behavior - your primary controls!
+  alphaEdge: 3e-4,              // Lower = stretchier membrane (your main control!)
+  alphaArea: 1e-4,              // Lower = more volume flexibility  
+  alphaBend: 2e-4,              // Lower = softer bending
+  
+  // === SIMULATION PARAMETERS ===
+  substeps: 2,                  // Number of physics substeps per frame (performance optimized)
+  solverIterations: 8,          // Constraint solver iterations per substep (performance optimized)
+  damping: 0.998,               // Velocity damping (0.97-0.99 range)
+  maxVelocity: 150,             // Velocity clamp to prevent instability
+  
+  // === COLLISION RESPONSE ===
+  impactImpulseScale: 120,      // Impulse strength for collisions
+  
+  // === ADAPTIVE COMPLIANCE FOR MEMBRANE EXTRUSION ===
+  impactSofteningFrames: 10,    // How long to soften after impact (frames)
+  impactSofteningFactor: 3.0,   // How much to soften (multiplier)
+  
+  // === ENDOCYTOSIS-SPECIFIC PARAMETERS ===
+  endocytosisCompliance: 0.15,  // Special compliance for endocytosis
+  endocytosisRadius: 25,        // Radius of endocytosis effect
+  endocytosisDepthScale: 0.15,  // Depth scaling factor
+  
+  // === CENTER ANCHORING ===
+  centerAnchorCompliance: 2e-3  // Center anchor strength
+};
+
+export type MembraneParameters = typeof DEFAULT_MEMBRANE_PARAMETERS;
 
 export class MembranePhysicsSystem extends System {
   private particles: ConstraintParticle[] = [];
@@ -32,25 +66,6 @@ export class MembranePhysicsSystem extends System {
   private pendingForces: Map<number, Phaser.Math.Vector2> = new Map();
   private recentImpacts: Map<number, number> = new Map(); // particle index -> frames remaining
   
-  // === XPBD PHYSICS PARAMETERS ===
-  // Main membrane control knobs - adjust these to tune behavior
-  private readonly alphaEdge = 3e-4;     // Lower = stretchier membrane (your main control!)
-  private readonly alphaArea = 1e-4;     // Lower = more volume flexibility
-  private readonly alphaBend = 2e-4;     // Lower = softer bending
-  
-  // Simulation parameters
-  private readonly substeps = 2;         // Number of physics substeps per frame
-  private readonly solverIterations = 8; // Constraint solver iterations per substep
-  private readonly damping = 0.985;      // Velocity damping (0.97-0.99)
-  private readonly maxVelocity = 250;    // Velocity clamp to prevent instability
-  
-  // Collision response parameters
-  private readonly impactImpulseScale = 120; // Impulse strength for collisions
-  
-  // Adaptive compliance for membrane extrusion
-  private readonly impactSofteningFrames = 10; // How long to soften after impact
-  private readonly impactSofteningFactor = 3.0; // How much to soften (multiplier)
-  
   // Internal simulation state
   private _dt: number = 1/60;
   private restEdge: number[] = [];
@@ -59,21 +74,20 @@ export class MembranePhysicsSystem extends System {
   // Center-of-mass tracking
   private centerPosition: Phaser.Math.Vector2 = new Phaser.Math.Vector2(0, 0);
   private centerAnchor: Phaser.Math.Vector2 | null = null;
-  private centerAnchorCompliance: number = 2e-3;
   
   // Force accumulation and impact tracking
-  // Network replication
-  private readonly membraneState = this.stateChannel<MembraneState>('membrane', {
-    particles: [],
-    center: { x: 0, y: 0 },
-    timestamp: 0
-  });
-
+  // Additional membranes for collision detection
+  private additionalMembranes: MembranePhysicsSystem[] = [];
+  
+  // Network replication - will be initialized in constructor
+  private readonly membraneState: MembraneState;
+  private readonly membraneParameters: MembraneParameters;
   constructor(scene: Phaser.Scene, bus: NetBus, config: {
     particles: Phaser.Math.Vector2[];
     restArea?: number;
     timeStep?: number;
     parent?: Phaser.GameObjects.Container;
+    id?: string; // Unique identifier for state channel keys
   }) {
     super(
       scene,
@@ -82,6 +96,14 @@ export class MembranePhysicsSystem extends System {
       (deltaTime) => this.update(deltaTime),
       { address: 'MembranePhysics' }
     );
+    
+    // Initialize state channels with unique keys based on id
+    const instanceId = config.id || 'default';
+    this.membraneState = this.stateChannel<MembraneState>(`membrane-${instanceId}`, {
+      particles: [],
+      center: { x: 0, y: 0 }
+    });
+    this.membraneParameters = this.stateChannel<MembraneParameters>(`membraneParameters-${instanceId}`, DEFAULT_MEMBRANE_PARAMETERS);
     
     this.graphics = scene.add.graphics();
     this.graphics.setDepth(1);
@@ -103,6 +125,13 @@ export class MembranePhysicsSystem extends System {
     this.restArea = config.restArea || this.calculateCurrentArea();
     
     console.log(`🧬 XPBD Membrane initialized: ${this.particles.length} particles, rest area: ${this.restArea.toFixed(1)}`);
+  }
+
+  /**
+   * Get the parameters state channel for direct UI access
+   */
+  public getParametersStateChannel() {
+    return this.membraneParameters;
   }
 
   private initializeParticles(positions: Phaser.Math.Vector2[]) {
@@ -173,8 +202,8 @@ export class MembranePhysicsSystem extends System {
 
   private runPhysicsSimulation(deltaTime: number) {
     // 3) XPBD substeps
-    const h = deltaTime / this.substeps;
-    for (let s = 0; s < this.substeps; s++) {
+    const h = deltaTime / this.membraneParameters.substeps;
+    for (let s = 0; s < this.membraneParameters.substeps; s++) {
       // Predict positions
       for (const p of this.particles) {
         p.prevPosition.set(p.position.x, p.position.y);
@@ -183,14 +212,14 @@ export class MembranePhysicsSystem extends System {
       }
 
       // Solve constraints
-      for (let k = 0; k < this.solverIterations; k++) {
+      for (let k = 0; k < this.membraneParameters.solverIterations; k++) {
         // Distance constraints (edges) with adaptive compliance
         for (let i = 0; i < this.particles.length; i++) {
           const j = (i + 1) % this.particles.length;
           
-          let adaptiveAlpha = this.alphaEdge;
+          let adaptiveAlpha = this.membraneParameters.alphaEdge;
           if (this.recentImpacts.has(i) || this.recentImpacts.has(j)) {
-            adaptiveAlpha *= this.impactSofteningFactor;
+            adaptiveAlpha *= this.membraneParameters.impactSofteningFactor;
           }
           
           this.solveDistanceXPBD(this.particles[i], this.particles[j], this.restEdge[i], adaptiveAlpha, h);
@@ -200,11 +229,16 @@ export class MembranePhysicsSystem extends System {
         const N = this.particles.length;
         for (let i = 0; i < N; i++) {
           const a = (i - 1 + N) % N, b = i, c = (i + 1) % N;
-          this.solveBendSmoothing(this.particles[a], this.particles[b], this.particles[c], this.alphaBend, h);
+          this.solveBendSmoothing(this.particles[a], this.particles[b], this.particles[c], this.membraneParameters.alphaBend, h);
         }
 
         // Area constraint (volume preservation)
-        this.solveAreaXPBD(this.particles, this.restArea, this.alphaArea, h);
+        this.solveAreaXPBD(this.particles, this.restArea, this.membraneParameters.alphaArea, h);
+      }
+
+      // Check for membrane-to-membrane collisions only occasionally to avoid excessive force application
+      if (s === this.membraneParameters.substeps - 1) { // Only on the last substep
+        this.checkMembraneToMembraneCollisions();
       }
 
       // Update center and solve center anchor if set
@@ -217,13 +251,13 @@ export class MembranePhysicsSystem extends System {
       for (const p of this.particles) {
         p.velocity.x = (p.position.x - p.prevPosition.x) / h;
         p.velocity.y = (p.position.y - p.prevPosition.y) / h;
-        p.velocity.x *= this.damping;
-        p.velocity.y *= this.damping;
+        p.velocity.x *= this.membraneParameters.damping;
+        p.velocity.y *= this.membraneParameters.damping;
         
         // Velocity clamping
         const speed = Math.sqrt(p.velocity.x * p.velocity.x + p.velocity.y * p.velocity.y);
-        if (speed > this.maxVelocity) {
-          const scale = this.maxVelocity / speed;
+        if (speed > this.membraneParameters.maxVelocity) {
+          const scale = this.membraneParameters.maxVelocity / speed;
           p.velocity.x *= scale;
           p.velocity.y *= scale;
         }
@@ -236,21 +270,21 @@ export class MembranePhysicsSystem extends System {
    */
   @RunOnServer()
   private broadcastStateIfHost() {
-    const state: MembraneState = {
+    // Create current state snapshot
+    const currentState: MembraneState = {
       particles: this.particles.map(p => ({
         position: { x: p.position.x, y: p.position.y },
         velocity: { x: p.velocity.x, y: p.velocity.y }
       })),
-      center: this.getCenter(),
-      timestamp: Date.now()
+      center: this.getCenter()
     };
     
-    // Update the state channel directly (following CargoSystem pattern)
-    Object.assign(this.membraneState, state);
+    // Update the state channel - let the networking layer handle change detection
+    Object.assign(this.membraneState, currentState);
   }
-
   /**
    * Apply received network state to local particles (for non-host clients)
+   * Uses gentle reconciliation to avoid overriding client predictions
    */
   private syncFromNetworkState() {
     // Only sync if we're not the host
@@ -259,13 +293,40 @@ export class MembranePhysicsSystem extends System {
     const state = this.membraneState;
     if (!state.particles || state.particles.length !== this.particles.length) return;
     
-    // Apply network state to local particles
+    // Gentle reconciliation: only sync when positions differ significantly
+    const threshold = 5.0; // pixels - adjust as needed
+    let needsSync = false;
+    
     for (let i = 0; i < this.particles.length; i++) {
       const particle = this.particles[i];
       const networkParticle = state.particles[i];
       
-      particle.position.set(networkParticle.position.x, networkParticle.position.y);
-      particle.velocity.set(networkParticle.velocity.x, networkParticle.velocity.y);
+      const dx = networkParticle.position.x - particle.position.x;
+      const dy = networkParticle.position.y - particle.position.y;
+      const distanceSquared = dx * dx + dy * dy;
+      
+      if (distanceSquared > threshold * threshold) {
+        needsSync = true;
+        break;
+      }
+    }
+    
+    // If positions are significantly different, interpolate toward network state
+    if (needsSync) {
+      const lerpFactor = 0.3; // Adjust for smoother/snappier reconciliation
+      
+      for (let i = 0; i < this.particles.length; i++) {
+        const particle = this.particles[i];
+        const networkParticle = state.particles[i];
+        
+        // Interpolate position
+        particle.position.x = Phaser.Math.Linear(particle.position.x, networkParticle.position.x, lerpFactor);
+        particle.position.y = Phaser.Math.Linear(particle.position.y, networkParticle.position.y, lerpFactor);
+        
+        // Interpolate velocity more gently
+        particle.velocity.x = Phaser.Math.Linear(particle.velocity.x, networkParticle.velocity.x, lerpFactor * 0.5);
+        particle.velocity.y = Phaser.Math.Linear(particle.velocity.y, networkParticle.velocity.y, lerpFactor * 0.5);
+      }
     }
     
     // No need for center movement detection here - handled by @Multicast
@@ -480,7 +541,7 @@ export class MembranePhysicsSystem extends System {
       
       // Track for adaptive compliance
       if (impulseVec.length() > 50) {
-        this.recentImpacts.set(particleIndex, this.impactSofteningFrames);
+        this.recentImpacts.set(particleIndex, this.membraneParameters.impactSofteningFrames);
       }
       
       // Clamp velocity
@@ -567,7 +628,7 @@ export class MembranePhysicsSystem extends System {
   
   public setCenterAnchor(anchor: Phaser.Math.Vector2 | null, compliance = 1e-3) {
     this.centerAnchor = anchor ? anchor.clone() : null;
-    this.centerAnchorCompliance = compliance;
+    this.membraneParameters.centerAnchorCompliance = compliance;
   }
   
   private updateCenter() {
@@ -608,7 +669,7 @@ export class MembranePhysicsSystem extends System {
     
     if (totalInvMass <= EPS) return;
     
-    const denom = totalInvMass + this.centerAnchorCompliance / dt2;
+    const denom = totalInvMass + this.membraneParameters.centerAnchorCompliance / dt2;
     const dLambda = -dist / denom;
     
     const correction = dir.scale(dLambda);
@@ -644,6 +705,32 @@ export class MembranePhysicsSystem extends System {
       this.pendingForces.set(particleIndex, new Phaser.Math.Vector2());
     }
     this.pendingForces.get(particleIndex)!.add(force);
+  }
+
+  /**
+   * Find nearest point on the membrane to a given position
+   */
+  public findNearestPoint(position: Phaser.Math.Vector2): Phaser.Math.Vector2 | null {
+    const sample = this.getNearestSurfaceSample(position);
+    return sample.pos;
+  }
+
+  /**
+   * Find particles within a radius of a given position
+   */
+  public findParticlesInRadius(position: Phaser.Math.Vector2, radius: number): number[] {
+    const result: number[] = [];
+    
+    for (let i = 0; i < this.particles.length; i++) {
+      const particle = this.particles[i];
+      const distance = particle.position.distance(position);
+      if (distance <= radius) {
+        result.push(i);
+      }
+    }
+    
+    console.log(`🧬 MembranePhysics: Found ${result.length} particles within ${radius}px of (${position.x.toFixed(1)}, ${position.y.toFixed(1)})`);
+    return result;
   }
 
   /**
@@ -695,7 +782,7 @@ export class MembranePhysicsSystem extends System {
   public applyImpact(contactPoint: Phaser.Math.Vector2, force: number, explicitDirection: Phaser.Math.Vector2 | null) {
     // Convert force to impulse and apply
     const dampedForce = force * 0.05;
-    const impulseMag = Math.min(dampedForce * this.impactImpulseScale, 600);
+    const impulseMag = Math.min(dampedForce * this.membraneParameters.impactImpulseScale, 600);
     
     const impulseDirection = explicitDirection ? 
       explicitDirection.clone().normalize() : 
@@ -712,6 +799,155 @@ export class MembranePhysicsSystem extends System {
     // This was used to prevent membrane resets during testing
     // For now, just store the setting without implementing full reset logic
     console.log(`Membrane reset ${allow ? 'enabled' : 'disabled'}`);
+  }
+
+  /**
+   * XPBD Endocytosis Support: Create localized membrane invagination
+   * This creates a true inward pocket by pulling nodes toward cell center, not along surface
+   */
+  public createMembraneInvagination(centerPoint: Phaser.Math.Vector2, _direction: Phaser.Math.Vector2, 
+                                   radius: number, depth: number): number[] {
+    const affectedParticles: number[] = [];
+    
+    // Much smaller affected area for localized teardrop effect (now tunable!)
+    const localRadius = Math.min(radius * 0.3, this.membraneParameters.endocytosisRadius); // Now uses tunable parameter!
+    
+    // Calculate cell center (assuming membrane is roughly circular)
+    const cellCenter = new Phaser.Math.Vector2(0, 0); // Assume center at origin
+    
+    // Find only particles within the small local area
+    const nodeDistances: Array<{index: number, distance: number}> = [];
+    
+    for (let i = 0; i < this.particles.length; i++) {
+      const particle = this.particles[i];
+      const distance = particle.position.distance(centerPoint);
+      if (distance <= localRadius) { // Only consider particles within small radius
+        nodeDistances.push({index: i, distance});
+      }
+    }
+    
+    // Sort by distance and take only closest 3 for very localized effect
+    nodeDistances.sort((a, b) => a.distance - b.distance);
+    const targetCount = Math.min(3, nodeDistances.length); // Only 3 nodes max
+    
+    for (let i = 0; i < targetCount; i++) {
+      const nodeData = nodeDistances[i];
+      const particle = this.particles[nodeData.index];
+      affectedParticles.push(nodeData.index);
+      
+      // Calculate INWARD direction toward cell center (not along surface)
+      const toCenter = cellCenter.clone().subtract(particle.position).normalize();
+      
+      // Create localized teardrop shape with quadratic falloff
+      const distanceFactor = 1.0 - (nodeData.distance / localRadius);
+      const complianceMultiplier = Math.pow(distanceFactor, 2); // Quadratic falloff for teardrop
+      
+      // Pull nodes INWARD to create true pocket (now using tunable parameters!)
+      const inwardStrength = this.membraneParameters.endocytosisCompliance * complianceMultiplier; // Now tunable!
+      const inwardDisplacement = toCenter.clone().scale(depth * inwardStrength);
+      
+      // Apply controlled inward displacement for true pocket formation (tunable scaling!)
+      const currentDisplacement = inwardDisplacement.clone().scale(this.membraneParameters.endocytosisDepthScale); // Now tunable!
+      particle.position.add(currentDisplacement);
+      
+      // Minimal velocity influence to prevent whole-cell movement
+      const velocityInfluence = inwardDisplacement.clone().scale(0.02); // Minimal velocity change
+      particle.velocity.add(velocityInfluence);
+      
+      // Only slightly reduce mass for the center node
+      if (i === 0) { // Only the closest node gets slight mass reduction
+        particle.invMass = Math.min(particle.invMass * 1.1, 1.2); // Very conservative
+      }
+    }
+    
+    return affectedParticles;
+  }
+
+  /**
+   * XPBD Endocytosis Support: Apply neck compression forces for scission
+   * This concentrates forces at the neck area to create the pinch-off effect
+   */
+  public compressMembraneNeck(neckCenter: Phaser.Math.Vector2, compressionRadius: number, 
+                             compressionForce: number): void {
+    for (let i = 0; i < this.particles.length; i++) {
+      const particle = this.particles[i];
+      const distance = particle.position.distance(neckCenter);
+      
+      if (distance <= compressionRadius) {
+        // Apply inward compression force toward neck center
+        const forceDirection = neckCenter.clone().subtract(particle.position).normalize();
+        const falloff = 1 - (distance / compressionRadius);
+        const force = forceDirection.scale(compressionForce * falloff);
+        
+        // Apply force through the pending forces system
+        if (!this.pendingForces.has(i)) {
+          this.pendingForces.set(i, new Phaser.Math.Vector2());
+        }
+        this.pendingForces.get(i)!.add(force);
+      }
+    }
+  }
+
+  /**
+   * XPBD Endocytosis Support: Check if membrane neck is thin enough for scission
+   * Returns the minimum neck diameter found in the specified region
+   */
+  public measureNeckDiameter(neckCenter: Phaser.Math.Vector2, searchRadius: number): number {
+    const particlesInRegion: ConstraintParticle[] = [];
+    
+    // Find all particles in the neck region
+    for (const particle of this.particles) {
+      const distance = particle.position.distance(neckCenter);
+      if (distance <= searchRadius) {
+        particlesInRegion.push(particle);
+      }
+    }
+    
+    if (particlesInRegion.length < 2) return searchRadius * 2; // No neck formed yet
+    
+    // Find the minimum distance between particles (neck width)
+    let minDistance = Infinity;
+    for (let i = 0; i < particlesInRegion.length; i++) {
+      for (let j = i + 1; j < particlesInRegion.length; j++) {
+        const distance = particlesInRegion[i].position.distance(particlesInRegion[j].position);
+        minDistance = Math.min(minDistance, distance);
+      }
+    }
+    
+    return minDistance;
+  }
+
+  /**
+   * XPBD Endocytosis Support: Create vesicle after successful scission
+   * This removes a section of membrane and creates an independent vesicle
+   */
+  public performMembraneScission(scissionCenter: Phaser.Math.Vector2, vesicleRadius: number): boolean {
+    const particlesToRemove: number[] = [];
+    
+    // Find particles that will become part of the vesicle
+    for (let i = 0; i < this.particles.length; i++) {
+      const particle = this.particles[i];
+      const distance = particle.position.distance(scissionCenter);
+      
+      if (distance <= vesicleRadius) {
+        particlesToRemove.push(i);
+      }
+    }
+    
+    if (particlesToRemove.length < 3) {
+      console.warn("🧬 Scission failed: insufficient particles for vesicle formation");
+      return false;
+    }
+    
+    // For now, just mark particles as frozen to simulate vesicle separation
+    // In a full implementation, you'd create a separate vesicle object
+    for (const index of particlesToRemove) {
+      this.particles[index].isFrozen = true;
+      this.particles[index].invMass = 0; // Make immovable
+    }
+    
+    console.log(`🧬 Membrane scission performed: ${particlesToRemove.length} particles converted to vesicle`);
+    return true;
   }
 
   private computeLocalNormalAtPoint(contactPoint: Phaser.Math.Vector2): Phaser.Math.Vector2 {
@@ -788,6 +1024,156 @@ export class MembranePhysicsSystem extends System {
         this.graphics.fillStyle(0x00ff00, 0.6);
       }
       this.graphics.fillCircle(particle.position.x, particle.position.y, particle.radius);
+    }
+  }
+
+  // === MULTIPLE MEMBRANE MANAGEMENT ===
+  
+  /**
+   * Register an additional membrane for collision detection
+   */
+  public registerAdditionalMembrane(membrane: MembranePhysicsSystem): void {
+    if (!this.additionalMembranes.includes(membrane)) {
+      this.additionalMembranes.push(membrane);
+      console.log(`🧬 Registered additional membrane for collision detection`);
+    }
+  }
+  
+  /**
+   * Unregister an additional membrane
+   */
+  public unregisterAdditionalMembrane(membrane: MembranePhysicsSystem): void {
+    const index = this.additionalMembranes.indexOf(membrane);
+    if (index !== -1) {
+      this.additionalMembranes.splice(index, 1);
+      console.log(`🧬 Unregistered additional membrane`);
+    }
+  }
+  
+  /**
+   * Check collisions with all registered additional membranes
+   * Returns the first collision found
+   */
+  public checkAdditionalMembraneCollisions(opts: {
+    center: Phaser.Math.Vector2;
+    radius: number;
+    inOutVelocity: Phaser.Math.Vector2;
+    restitution?: number;
+    friction?: number;
+    impulseScale?: number;
+  }): { collided: boolean; contactPoint?: Phaser.Math.Vector2; normal?: Phaser.Math.Vector2; membrane?: MembranePhysicsSystem } {
+    
+    for (let i = 0; i < this.additionalMembranes.length; i++) {
+      const membrane = this.additionalMembranes[i];
+      
+      const collision = membrane.collideCircleAndBounce(opts);
+      if (collision.collided) {
+        return {
+          ...collision,
+          membrane: membrane
+        };
+      }
+    }
+    
+    return { collided: false };
+  }
+  
+  /**
+   * Check membrane-to-membrane collision (this is what we really need!)
+   */
+  @RunOnServer()
+  public checkMembraneToMembraneCollisions(): { collided: boolean; contactPoint?: Phaser.Math.Vector2; normal?: Phaser.Math.Vector2; membrane?: MembranePhysicsSystem } {
+    
+    for (let i = 0; i < this.additionalMembranes.length; i++) {
+      const otherMembrane = this.additionalMembranes[i];
+      
+      // Check if our membrane particles are colliding with the other membrane
+      const thisCenter = this.getCenter();
+      const otherCenter = otherMembrane.getCenter();
+      const centerDistance = thisCenter.distance(otherCenter);
+      
+      // Quick distance check - if centers are too far apart, skip detailed check
+      const thisRadius = this.getApproximateRadius();
+      const otherRadius = otherMembrane.getApproximateRadius();
+      const maxCollisionDistance = thisRadius + otherRadius + 50; // Small buffer
+      
+      if (centerDistance > maxCollisionDistance) {
+        continue;
+      }
+      
+      // Detailed check: see if any of our particles penetrate the other membrane
+      for (let j = 0; j < this.particles.length; j++) {
+        const particle = this.particles[j];
+        const sample = otherMembrane.getNearestSurfaceSample(particle.position);
+        const distanceToSurface = particle.position.distance(sample.pos);
+        const penetration = particle.radius - distanceToSurface;
+        
+        // Only handle significant penetrations to avoid micro-collision oscillations
+        if (penetration > 0.5) {  // Minimum threshold to avoid noise
+          
+          // Calculate separation direction: from contact point toward our particle (repelling)
+          const separationDirection = particle.position.clone().subtract(sample.pos).normalize();
+          
+          // Much stronger separation force that scales with penetration depth
+          const baseSeparationForce = 500; // Much stronger base force
+          const penetrationScale = Math.min(penetration * 200, 1000); // Cap at 1000
+          const separationMagnitude = baseSeparationForce + penetrationScale;
+          const separationForce = separationDirection.scale(separationMagnitude);
+          
+          // Apply strong impulse to our particle to push it away decisively
+          this.applyForceToParticle(j, separationForce);
+          
+          // Apply weaker counter-force to several particles on the other membrane
+          const closestParticleIndex = otherMembrane.findClosestParticleIndex(sample.pos);
+          if (closestParticleIndex !== -1) {
+            const oppositeSeparationForce = separationForce.clone().scale(-0.3); // Weaker counter-force
+            
+            // Apply to closest particle and its neighbors for more stable separation
+            for (let k = -2; k <= 2; k++) {
+              const targetIndex = (closestParticleIndex + k + otherMembrane.particles.length) % otherMembrane.particles.length;
+              const falloff = 1.0 - Math.abs(k) * 0.2; // Reduce force for farther neighbors
+              const neighborForce = oppositeSeparationForce.clone().scale(falloff);
+              otherMembrane.applyForceToParticle(targetIndex, neighborForce);
+            }
+          }
+          
+          return {
+            collided: true,
+            contactPoint: sample.pos.clone(),
+            normal: separationDirection.clone(),
+            membrane: otherMembrane
+          };
+        }
+      }
+    }
+    
+    return { collided: false };
+  }
+  
+  /**
+   * Find the closest particle to a given position
+   */
+  private findClosestParticleIndex(position: Phaser.Math.Vector2): number {
+    let closestIndex = -1;
+    let closestDistance = Infinity;
+    
+    for (let i = 0; i < this.particles.length; i++) {
+      const distance = this.particles[i].position.distance(position);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closestIndex = i;
+      }
+    }
+    
+    return closestIndex;
+  }
+  
+  /**
+   * Update all registered additional membranes
+   */
+  public updateAdditionalMembranes(deltaTime: number): void {
+    for (const membrane of this.additionalMembranes) {
+      membrane.update(deltaTime);
     }
   }
 

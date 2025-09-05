@@ -55,16 +55,14 @@ export class NetBus {
   sendMulticast(address: string, method: string, args: unknown[]): void {
     const msg = { t: 'multicast', key: address, method, args };
     
-    // Send to all other peers
+    // Send to all other peers (no self-loopback - caller handles local application)
     for (const pid of this.transport.peers()) {
       if (pid === this.transport.localId) continue;
       this.transport.send(pid, msg, true);
     }
     
-    // Apply locally (self-loopback)
-    const targetKey = this.makeTargetKey(address, method);
-    const handler = this.handlers.get(targetKey);
-    if (handler) handler(args);
+    // No self-loopback - this allows for immediate local application
+    // followed by network replication to others
   }
 
   /** Send an RPC to the host to invoke the target method on its instance. */
