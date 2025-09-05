@@ -93,6 +93,12 @@ Core loop: **gather substrates → transcribe mRNA in nucleus → translate prot
 - Document new systems following these established patterns
 * Rendering/Input: Phaser 3, **Arcade** physics (not Matter).
 
+Always try to break out large pieces of work into several tasks/todos
+
+Remember that we have System, NetComponent, and SystemObject base classes available depending on what the class needs. Also we have decorators and stateChannels for replication. Please try to start with just the basics of each task, just what you are pretty sure that we need from our discussion. In the past when we've done this we've added too many random features that we didn't actually need. 
+
+Also, please be considerate of where we add code, always search to see if there is existing code that does what you want or if there are existing files which should contain the new logic you want to add. Keep in mind that the best code is no code (although we still want to add new features). After you finish laying out a working prototype of all of these phases and ideas discussed, then we can always add more if something is lacking.
+
 ## Naming & style
 
 * **Folders and files**: kebab-case (e.g., `game-scene.ts`, `cell-machine.ts`, `textures.ts`).

@@ -4,11 +4,13 @@ export function makeGridTexture(
   scene: Phaser.Scene, w: number, h: number, bg: number, minor: number, major: number
 ): string {
   const key = `grid-${w}x${h}-${bg}-${minor}-${major}`;
-  console.log(`🎨 Creating grid texture: ${key} (${w}x${h} = ${(w*h*4/1024/1024).toFixed(1)}MB)`);
+  
   if (scene.textures.exists(key)) {
-    console.log(`♻️ Grid texture ${key} already exists, reusing`);
+    // Texture already exists, just return the key without logging
     return key;
   }
+  
+  console.log(`🎨 Creating grid texture: ${key} (${w}x${h} = ${(w*h*4/1024/1024).toFixed(1)}MB)`);
   const tex = scene.textures.createCanvas(key, w, h);
   if (!tex) return key;
   if (!tex) return key;

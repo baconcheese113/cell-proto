@@ -15,7 +15,6 @@ interface PlayerConfig {
   ringColor: number;
   cellCenter: Phaser.Math.Vector2;
   cellRadius: number;
-  cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Add cellRoot for membrane effects
   membranePhysics?: MembranePhysicsSystem; // NEW: Dynamic membrane physics
 }
 
@@ -35,11 +34,16 @@ export class Player extends Phaser.GameObjects.Container {
   private dashTimer = 0;
   
   // Cell boundary properties
-  private cellCenter: Phaser.Math.Vector2;
-  private cellRadius: number;
-  private lastMembraneHit = 0;
-  private cellRoot?: Phaser.GameObjects.Container; // HOTFIX H5: Store cellRoot for membrane effects
+  // private lastMembraneHit = 0; // REMOVED: Only used by old elastic forces system
   private membranePhysics?: MembranePhysicsSystem; // NEW: Dynamic membrane physics reference
+  
+  // Bounce-house collision parameters
+  private bounceRestitution = .9; // Reduced from 0.55 for more stable bounce
+  private bounceFrictionTangent = 0.001; // Increased from 0.10 for more damping
+  private impactImpulseScale = 60; // Reduced from 0.75 for gentler membrane response
+  private minImpactSpeed = 0; // Increased from 20 to reduce micro-bounces
+  private bodyRadius = 4; // Player collision radius
+  private lastBounceFrame = -1; // Prevent multiple bounces per frame
   
   // Current position tracking
   private currentTileRef: HexTile | null = null;
@@ -55,9 +59,6 @@ export class Player extends Phaser.GameObjects.Container {
     this.dashSpeed = config.dashSpeed;
     this.dashDuration = config.dashDuration;
     this.maxDashCooldown = config.maxDashCooldown;
-    this.cellCenter = config.cellCenter;
-    this.cellRadius = config.cellRadius;
-    this.cellRoot = config.cellRoot; // HOTFIX H5: Store cellRoot reference
     this.membranePhysics = config.membranePhysics; // NEW: Store membrane physics reference
 
     // Create sprite with physics body
@@ -169,7 +170,7 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   /**
-   * Update player movement based on input forces (ORIGINAL MECHANICS RESTORED)
+   * Update player movement based on input forces with XPBD membrane collision
    */
   updateMovement(inputDirection: Phaser.Math.Vector2, delta: number) {
     // Update dash cooldown
@@ -187,8 +188,14 @@ export class Player extends Phaser.GameObjects.Container {
       }
     }
 
-    // Calculate membrane boundary forces
-    const elasticForce = this.calculateElasticForces();
+    // Apply membrane collision before arcade physics integration
+    if (this.membranePhysics) {
+      this.handleMembraneCollision();
+      this.handleAdditionalMembraneCollisions();
+    }
+
+    // DISABLED: Old elastic forces system - replaced by bounce-house collision
+    // const elasticForce = this.calculateElasticForces();
     
     // Apply movement force (ORIGINAL LOGIC)
     if (inputDirection.lengthSq() > 0) {
@@ -207,14 +214,15 @@ export class Player extends Phaser.GameObjects.Container {
       }
       
       const inputForce = inputDirection.scale(baseAcceleration);
-      const totalForce = inputForce.add(elasticForce);
-      this.sprite.setAcceleration(totalForce.x, totalForce.y);
+      // Note: Elastic forces now handled by bounce-house collision system
+      this.sprite.setAcceleration(inputForce.x, inputForce.y);
     } else {
       // ORIGINAL: Proper deceleration when no input
       const currentVel = this.sprite.body.velocity;
       const deceleration = 600;
       
-      let totalForce = elasticForce.clone();
+      // Note: Elastic forces now handled by bounce-house collision system
+      let totalForce = new Phaser.Math.Vector2(0, 0);
       
       if (currentVel.lengthSq() > 0) {
         const decelDir = currentVel.clone().normalize().scale(-deceleration);
@@ -239,6 +247,99 @@ export class Player extends Phaser.GameObjects.Container {
     
     // Update current tile tracking
     this.updateCurrentTile();
+  }
+
+  /**
+   * Handle bounce-house membrane collision with proper recoil and membrane squish
+   */
+  private handleMembraneCollision(): void {
+    if (!this.membranePhysics) return;
+    
+    // Throttle to one collision per frame to prevent jitter
+    const currentFrame = this.scene.game.loop.frame;
+    if (this.lastBounceFrame === currentFrame) return;
+
+    const body = this.sprite.body;
+    if (!body) return;
+
+    // Step 1: Get positions and calculate collision geometry
+    const pLocal = this.getCellLocalPosition();
+    const c = this.membranePhysics.getCenter(); // center-of-mass
+    const rel = pLocal.clone().subtract(c);
+    const dist = rel.length();
+    
+    if (dist < 0.001) return; // Too close to center
+    
+    const angle = Math.atan2(rel.y, rel.x);
+    const r = this.membranePhysics.getMembraneRadiusAt(angle); // uses center-of-mass
+    const allowed = r - this.bodyRadius;
+    const penetration = dist - allowed;
+    
+    // If penetration <= 0, no collision
+    if (penetration <= 0) return;
+    
+    // Step 2: Compute outward normal
+    const n = rel.clone().normalize();
+    
+    // Step 3: Gentle positional correction (only move 50% of penetration to prevent jitter)
+    const correctionFactor = 0.5; // Reduced from 1.0 to prevent position oscillation
+    const corr = n.clone().scale(-penetration * correctionFactor); // negative → move inward
+    this.x += corr.x;
+    this.y += corr.y;
+    
+    // Step 4: Velocity bounce
+    const v = new Phaser.Math.Vector2(body.velocity.x, body.velocity.y);
+    const vn = v.dot(n);
+    
+    if (vn > this.minImpactSpeed) {
+      // Mark this frame as having processed a collision
+      this.lastBounceFrame = currentFrame;
+      
+      // Reflect and add restitution
+      const vReflected = v.clone().subtract(n.clone().scale((1 + this.bounceRestitution) * vn));
+      
+      // Tangential friction
+      const vt = vReflected.clone().subtract(n.clone().scale(vReflected.dot(n))); // tangent component
+      vReflected.subtract(vt.clone().scale(this.bounceFrictionTangent));
+      
+      // Apply new velocity to arcade physics
+      body.setVelocity(vReflected.x, vReflected.y);
+      
+      // Feed equal & opposite impulse into membrane
+      const impulseMag = (1 + this.bounceRestitution) * vn;
+      const j = n.clone().scale(impulseMag * this.impactImpulseScale);
+      this.membranePhysics.applyImpulseAt(pLocal, j); // in cell-local coords
+    }
+  }
+
+  /**
+   * Handle collisions with additional membranes (neighbor cells)
+   */
+  private handleAdditionalMembraneCollisions(): void {
+    if (!this.membranePhysics) return;
+    
+    const body = this.sprite.body;
+    if (!body) return;
+    
+    // Use world coordinates for neighbor cell collisions
+    const playerPos = new Phaser.Math.Vector2(this.x, this.y);
+    const playerVelocity = new Phaser.Math.Vector2(body.velocity.x, body.velocity.y);
+    
+    // Check collision with all additional membranes (legacy player-to-membrane collision)
+    // Note: The real membrane-to-membrane collision happens in the physics system
+    const collision = this.membranePhysics.checkAdditionalMembraneCollisions({
+      center: playerPos,
+      radius: this.bodyRadius,
+      inOutVelocity: playerVelocity,
+      restitution: this.bounceRestitution,
+      friction: this.bounceFrictionTangent,
+      impulseScale: this.impactImpulseScale
+    });
+    
+    if (collision.collided && collision.contactPoint && collision.normal) {
+      // Apply the modified velocity back to the player
+      body.setVelocity(playerVelocity.x, playerVelocity.y);
+    }
   }
 
   /**
@@ -283,121 +384,10 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   /**
-   * Calculate elastic forces using dynamic membrane physics
-   */
-  private calculateElasticForces(): Phaser.Math.Vector2 {
-    const force = new Phaser.Math.Vector2(0, 0);
-    const playerPos = this.getWorldPosition();
-    
-    // Convert to cell-local coordinates
-    const cellLocalPos = playerPos.clone().subtract(this.cellCenter);
-    const angle = Math.atan2(cellLocalPos.y, cellLocalPos.x);
-    const distanceFromCenter = cellLocalPos.length();
-    
-    // Get dynamic membrane radius at this angle
-    let membraneRadius = this.cellRadius;
-    let membraneElasticity = 0.3;
-    
-    if (this.membranePhysics) {
-      try {
-        const dynamicRadius = this.membranePhysics.getMembraneRadiusAt(angle);
-        const dynamicElasticity = this.membranePhysics.getMembraneElasticityAt(angle);
-        
-        // Validate the results before using them
-        if (typeof dynamicRadius === 'number' && !isNaN(dynamicRadius) && dynamicRadius > 0) {
-          membraneRadius = dynamicRadius;
-        } else if (Math.random() < 0.01) { // Occasionally log debug info
-          console.warn(`Invalid membrane radius: ${dynamicRadius}. Debug: ${(this.membranePhysics as any).getDebugInfo?.()}`);
-        }
-        
-        if (typeof dynamicElasticity === 'number' && !isNaN(dynamicElasticity)) {
-          membraneElasticity = dynamicElasticity;
-        }
-      } catch (error) {
-        // Silent fallback to default values
-        if (Math.random() < 0.01) { // Occasionally log errors
-          console.error('Error accessing membrane physics:', error);
-        }
-      }
-    }
-    
-    const maxDistance = membraneRadius - this.sprite.width / 2;
-    
-    if (distanceFromCenter > maxDistance) {
-      const penetration = distanceFromCenter - maxDistance;
-      const directionToCenter = cellLocalPos.clone().normalize().negate();
-      
-      // Use dynamic membrane elasticity
-      const membraneSpringForce = 600 * (1 + membraneElasticity);
-      const springForce = directionToCenter.scale(penetration * membraneSpringForce);
-      force.add(springForce);
-      
-      // Apply impact to membrane physics system
-      if (this.membranePhysics && this.scene.time.now - this.lastMembraneHit > 100) {
-        const impactForce = this.sprite.body.velocity.length() * 0.5;
-        
-        // Calculate the membrane contact point in cell-local coordinates
-        // Direction from center to player (outward from center)
-        const centerToPlayerDirection = cellLocalPos.clone().normalize();
-        const membraneContactLocalPos = centerToPlayerDirection.scale(membraneRadius);
-        
-        // Impact direction should be outward from the membrane (player pushing outward)
-        const impactDirection = centerToPlayerDirection; // Points away from center
-        
-        // Use the consolidated applyImpact method with cell-local coordinates
-        this.membranePhysics.applyImpact(
-          membraneContactLocalPos,
-          impactForce,
-          impactDirection,
-          this.isDashing ? 'dash' : 'collision'
-        );
-        
-        // Debug log the calculation
-        if (Math.random() < 0.1) { // 10% chance
-          console.log(`🎯 Player collision: cellLocal=(${cellLocalPos.x.toFixed(1)}, ${cellLocalPos.y.toFixed(1)}) -> membraneContact=(${membraneContactLocalPos.x.toFixed(1)}, ${membraneContactLocalPos.y.toFixed(1)})`);
-        }
-        
-        this.lastMembraneHit = this.scene.time.now;
-      }
-      
-      // Legacy ripple effect for fallback
-      if (!this.membranePhysics && this.scene.time.now - this.lastMembraneHit > 150) {
-        this.lastMembraneHit = this.scene.time.now;
-        this.createMembraneRipple(playerPos);
-      }
-    }
-    
-    return force;
-  }
-
-  /**
-   * Create visual ripple effect when hitting membrane
-   */
-  private createMembraneRipple(position: Phaser.Math.Vector2) {
-    const ripple = this.scene.add.circle(position.x, position.y, 20, 0x66ccff, 0.3);
-    ripple.setDepth(2);
-    
-    // HOTFIX H5: Add ripple to cellRoot if available, so it moves with the cell
-    if (this.cellRoot) {
-      this.cellRoot.add(ripple);
-    }
-    
-    this.scene.tweens.add({
-      targets: ripple,
-      scaleX: 3,
-      scaleY: 3,
-      alpha: 0,
-      duration: 300,
-      ease: "Power2",
-      onComplete: () => ripple.destroy()
-    });
-  }
-
-  /**
    * Update camera to smoothly follow player
    */
   private updateCameraSmoothing() {
-    const playerPos = this.getWorldPosition();
+    const playerPos = this.getCellLocalPosition();
     const camera = this.scene.cameras.main;
     
     const currentCenterX = camera.scrollX + camera.width / 2;
@@ -411,11 +401,28 @@ export class Player extends Phaser.GameObjects.Container {
   }
 
   /**
-   * Get world position of the player
+   * Get position relative to cell center
    */
-  getWorldPosition(): Phaser.Math.Vector2 {
+  getCellLocalPosition(): Phaser.Math.Vector2 {
     return new Phaser.Math.Vector2(this.x + this.sprite.x, this.y + this.sprite.y);
   }
+
+  /**
+   * Get position in cell-local coordinates (relative to membrane center)
+   */
+  getCellLocalCoordinates(): Phaser.Math.Vector2 {
+    const worldPos = new Phaser.Math.Vector2(this.x + this.sprite.x, this.y + this.sprite.y);
+    if (!this.membranePhysics) {
+      // Fallback to world position if no membrane physics
+      return worldPos;
+    }
+    const cellCenter = this.membranePhysics.getCenter();
+    return new Phaser.Math.Vector2(
+      worldPos.x - cellCenter.x,
+      worldPos.y - cellCenter.y
+    );
+  }
+
 
   /**
    * Get current velocity from physics body
@@ -442,7 +449,7 @@ export class Player extends Phaser.GameObjects.Container {
    * Get the hex coordinate of the tile the player is currently standing on
    */
   getHexCoord(): HexCoord | null {
-    const worldPos = this.getWorldPosition();
+    const worldPos = this.getCellLocalPosition();
     return this.hexGrid.worldToHex(worldPos.x, worldPos.y);
   }
 
@@ -557,7 +564,7 @@ export class Player extends Phaser.GameObjects.Container {
    * Apply membrane boundary force to keep player inside cell
    */
   applyMembraneForce(cellCenter: Phaser.Math.Vector2, cellRadius: number, springForce: number): Phaser.Math.Vector2 {
-    const playerPos = this.getWorldPosition();
+    const playerPos = this.getCellLocalPosition();
     const distanceFromCenter = Phaser.Math.Distance.Between(
       playerPos.x, playerPos.y,
       cellCenter.x, cellCenter.y
@@ -591,5 +598,12 @@ export class Player extends Phaser.GameObjects.Container {
     if (this.cargoIndicator) {
       this.cargoIndicator.setPosition(this.sprite.x + 20, this.sprite.y - 20);
     }
+  }
+
+  /**
+   * Set the membrane physics system for collision detection
+   */
+  setMembranePhysics(membranePhysics: MembranePhysicsSystem): void {
+    this.membranePhysics = membranePhysics;
   }
 }

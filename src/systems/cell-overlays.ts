@@ -13,7 +13,7 @@ export class CellOverlays extends System {
   // Milestone 8: Story 8.7 - Dirty tile redraw system
   private dirtyTiles: Set<string> = new Set(); // hex coordinates that need redraw
 
-  constructor(scene: Phaser.Scene, bus: NetBus, worldRefs: WorldRefs, parentContainer?: Phaser.GameObjects.Container) {
+  constructor(scene: Phaser.Scene, bus: NetBus, worldRefs: WorldRefs) {
     super(scene, bus, 'CellOverlays', (deltaSeconds: number) => this.update(deltaSeconds));
     this.worldRefs = worldRefs;
     
@@ -21,10 +21,7 @@ export class CellOverlays extends System {
     this.overlayGraphics = scene.add.graphics();
     this.overlayGraphics.setDepth(10); // Above everything else
     
-    // HOTFIX H2: Re-parent overlay graphics to cellRoot if provided
-    if (parentContainer) {
-      parentContainer.add(this.overlayGraphics);
-    }
+    // Physics-based positioning - graphics positioned in world coordinates automatically
   }
 
   /**
@@ -36,7 +33,6 @@ export class CellOverlays extends System {
     
     // Milestone 8: Story 8.7 - Process dirty tiles for redraw
     if (this.dirtyTiles.size > 0) {
-      this.refreshDirtyTiles();
       this.dirtyTiles.clear();
     }
     
@@ -53,16 +49,6 @@ export class CellOverlays extends System {
   public markTileDirty(coord: { q: number; r: number }): void {
     const tileKey = `${coord.q},${coord.r}`;
     this.dirtyTiles.add(tileKey);
-  }
-
-  /**
-   * Milestone 8: Story 8.7 - Refresh dirty tiles
-   */
-  private refreshDirtyTiles(): void {
-    // For now, trigger a full membrane debug refresh
-    // In the future, this could be optimized to only redraw specific tiles
-    this.scene.events.emit('refresh-membrane-glyphs');
-    console.log(`♻️ Refreshed ${this.dirtyTiles.size} dirty tiles`);
   }
 
   /**
@@ -170,9 +156,13 @@ export class CellOverlays extends System {
   /**
    * Render progress bar for cargo moving along segment
    */
-  private renderSegmentTransitProgress(cargo: any): void {
-    const progress = cargo.segmentState.transitProgress || 0;
-    const worldPos = cargo.worldPos;
+  private renderSegmentTransitProgress(cargo: Cargo): void {
+    const progress = cargo.segmentState?.transitProgress || 0;
+    
+    // Calculate world position in real-time from hex coordinates
+    const worldPos = cargo.atHex ? 
+      this.worldRefs.hexGrid.hexToWorld(cargo.atHex) : 
+      cargo.worldPos;
     
     // Progress bar background
     this.overlayGraphics.fillStyle(0x000000, 0.6);
@@ -191,7 +181,11 @@ export class CellOverlays extends System {
    * Render unified progress indicators for all cargo states
    */
   private renderUnifiedCargoProgress(cargo: Cargo): void {
-    const worldPos = cargo.worldPos;
+    // Calculate world position in real-time from hex coordinates  
+    const worldPos = cargo.atHex ? 
+      this.worldRefs.hexGrid.hexToWorld(cargo.atHex) : 
+      cargo.worldPos;
+      
     if (!worldPos) return; // Skip if no world position
     
     // Skip UI rendering for cargo that is carried by a player

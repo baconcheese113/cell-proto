@@ -8,17 +8,15 @@ export class HeatmapSystem {
   private hexGrid: HexGrid;
   private hexSize: number;
   private graphics!: Phaser.GameObjects.Graphics;
-  private parentContainer?: Phaser.GameObjects.Container; // HOTFIX: Support for cellRoot parenting
   
   private isVisible = false;
   private currentSpeciesIndex = 0;
   private allSpeciesIds: SpeciesId[];
 
-  constructor(scene: Phaser.Scene, hexGrid: HexGrid, hexSize: number, parentContainer?: Phaser.GameObjects.Container) {
+  constructor(scene: Phaser.Scene, hexGrid: HexGrid, hexSize: number) {
     this.scene = scene;
     this.hexGrid = hexGrid;
     this.hexSize = hexSize;
-    this.parentContainer = parentContainer;
     this.allSpeciesIds = getAllSpeciesIds();
     this.initializeGraphics();
   }
@@ -27,11 +25,7 @@ export class HeatmapSystem {
     this.graphics = this.scene.add.graphics();
     this.graphics.setDepth(1.4); // Above background, below hex grid lines
     this.graphics.setVisible(false);
-    
-    // HOTFIX H5: Add to cellRoot if provided
-    if (this.parentContainer) {
-      this.parentContainer.add(this.graphics);
-    }
+    // Physics mode - graphics are positioned in world coordinates automatically
   }
 
   /**

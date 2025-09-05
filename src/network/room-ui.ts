@@ -37,19 +37,28 @@ export class RoomUI {
   }
 
   private createUI(): void {
-    const centerX = this.scene.cameras.main.width / 2;
-    const centerY = this.scene.cameras.main.height / 2;
+    const camera = this.scene.cameras.main;
+    const screenCenterX = camera.width / 2;
+    const screenCenterY = camera.height / 2;
     
     // Full-screen blocking background to prevent interaction with the rest of the game
     this.blockingBackground = this.scene.add.graphics();
     this.blockingBackground.fillStyle(0x000000, 0.3); // Semi-transparent black
-    this.blockingBackground.fillRect(0, 0, this.scene.cameras.main.width, this.scene.cameras.main.height);
-    this.blockingBackground.setInteractive(new Phaser.Geom.Rectangle(0, 0, this.scene.cameras.main.width, this.scene.cameras.main.height), Phaser.Geom.Rectangle.Contains);
-    this.blockingBackground.setDepth(999); // Just below the modal
+    this.blockingBackground.fillRect(0, 0, camera.width, camera.height);
+    this.blockingBackground.setInteractive(new Phaser.Geom.Rectangle(0, 0, camera.width, camera.height), Phaser.Geom.Rectangle.Contains);
+    this.blockingBackground.setDepth(10000); // Much higher depth to ensure it's on top
+    this.blockingBackground.setScrollFactor(0); // Fixed to camera, not affected by camera movement
     
-    // Container for all UI elements
-    this.container = this.scene.add.container(centerX, centerY);
-    this.container.setDepth(1000);
+    // Add click handler to blocking background to prevent clicks from going through
+    this.blockingBackground.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      // Stop the event from propagating to objects behind the modal
+      pointer.event.stopPropagation();
+    });
+    
+    // Container for all UI elements - position in screen space
+    this.container = this.scene.add.container(screenCenterX, screenCenterY);
+    this.container.setDepth(10001); // Highest depth to ensure it's above everything
+    this.container.setScrollFactor(0); // Fixed to camera, not affected by camera movement
     
     // Background panel
     this.background = this.scene.add.graphics();
@@ -57,6 +66,14 @@ export class RoomUI {
     this.background.fillRoundedRect(-150, -100, 300, 200, 10);
     this.background.lineStyle(2, 0x16213e);
     this.background.strokeRoundedRect(-150, -100, 300, 200, 10);
+    
+    // Make background interactive to block clicks
+    this.background.setInteractive(new Phaser.Geom.Rectangle(-150, -100, 300, 200), Phaser.Geom.Rectangle.Contains);
+    this.background.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      // Stop event propagation for clicks on the modal background
+      pointer.event.stopPropagation();
+    });
+    
     this.container.add(this.background);
     
     // Title
@@ -68,12 +85,21 @@ export class RoomUI {
     this.titleText.setOrigin(0.5);
     this.container.add(this.titleText);
     
-    // Quick Join Button
+    // Quick Join Button - add directly to scene at high depth, not to container
     this.quickJoinButton = this.scene.add.graphics();
     this.quickJoinButton.fillStyle(0x0077ff, 1);
     this.quickJoinButton.fillRoundedRect(-80, -15, 160, 30, 5);
     this.quickJoinButton.setInteractive(new Phaser.Geom.Rectangle(-80, -15, 160, 30), Phaser.Geom.Rectangle.Contains);
-    this.quickJoinButton.on('pointerdown', () => this.onQuickJoin());
+    this.quickJoinButton.setDepth(10002); // Ensure button is above everything else
+    this.quickJoinButton.setScrollFactor(0); // Fixed to camera
+    this.quickJoinButton.setPosition(screenCenterX, screenCenterY); // Position manually at container center
+    
+    this.quickJoinButton.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      // Stop event propagation and handle the click
+      pointer.event.stopPropagation();
+      this.onQuickJoin();
+    });
+    
     this.quickJoinButton.on('pointerover', () => {
       this.quickJoinButton!.clear();
       this.quickJoinButton!.fillStyle(0x0088ff, 1);
@@ -84,25 +110,27 @@ export class RoomUI {
       this.quickJoinButton!.fillStyle(0x0077ff, 1);
       this.quickJoinButton!.fillRoundedRect(-80, -15, 160, 30, 5);
     });
-    this.container.add(this.quickJoinButton);
+    // Don't add button to container - it's positioned directly in scene
     
-    // Button text
-    this.quickJoinText = this.scene.add.text(0, 0, 'Quick Join', {
+    // Button text - also add directly to scene
+    this.quickJoinText = this.scene.add.text(screenCenterX, screenCenterY, 'Quick Join', {
       fontSize: '16px',
       color: '#ffffff',
       fontFamily: 'Arial'
     });
     this.quickJoinText.setOrigin(0.5);
-    this.container.add(this.quickJoinText);
+    this.quickJoinText.setDepth(10003); // Above button
+    this.quickJoinText.setScrollFactor(0); // Fixed to camera
     
     // Status text
-    this.statusText = this.scene.add.text(0, 40, 'Press F10 to open', {
+    this.statusText = this.scene.add.text(screenCenterX, screenCenterY + 40, 'Press F10 to open', {
       fontSize: '12px',
       color: '#aaaaaa',
       fontFamily: 'Arial'
     });
     this.statusText.setOrigin(0.5);
-    this.container.add(this.statusText);
+    this.statusText.setDepth(10003); // High depth
+    this.statusText.setScrollFactor(0); // Fixed to camera
   }
 
   private async onQuickJoin(): Promise<void> {
@@ -135,6 +163,15 @@ export class RoomUI {
     if (this.blockingBackground) {
       this.blockingBackground.setVisible(true);
     }
+    if (this.quickJoinButton) {
+      this.quickJoinButton.setVisible(true);
+    }
+    if (this.quickJoinText) {
+      this.quickJoinText.setVisible(true);
+    }
+    if (this.statusText) {
+      this.statusText.setVisible(true);
+    }
   }
 
   hide(): void {
@@ -144,6 +181,15 @@ export class RoomUI {
     }
     if (this.blockingBackground) {
       this.blockingBackground.setVisible(false);
+    }
+    if (this.quickJoinButton) {
+      this.quickJoinButton.setVisible(false);
+    }
+    if (this.quickJoinText) {
+      this.quickJoinText.setVisible(false);
+    }
+    if (this.statusText) {
+      this.statusText.setVisible(false);
     }
   }
 
@@ -161,6 +207,15 @@ export class RoomUI {
     }
     if (this.blockingBackground) {
       this.blockingBackground.destroy();
+    }
+    if (this.quickJoinButton) {
+      this.quickJoinButton.destroy();
+    }
+    if (this.quickJoinText) {
+      this.quickJoinText.destroy();
+    }
+    if (this.statusText) {
+      this.statusText.destroy();
     }
   }
 }

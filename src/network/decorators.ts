@@ -90,8 +90,12 @@ export function Multicast() {
     desc.value = function (this: any, ...args: unknown[]) {
       const bus: NetBus | undefined = this._netBus;
       if (!bus) return original.apply(this, args); // offline/SP
+      
+      // Send multicast to other peers
       bus.sendMulticast(this.netAddress, key, args);
-      // Do NOT call original here; local loopback will invoke it once.
+      
+      // Execute locally as well (since NetBus doesn't do self-loopback)
+      return original.apply(this, args);
     };
 
     return desc;

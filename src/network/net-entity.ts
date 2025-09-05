@@ -61,8 +61,8 @@ export abstract class NetComponent {
     this._isHost = !!netBus.isHost;
     this.netAddress = opts?.address ?? autoAddress(this.constructor.name);
 
-    // Let the bus register any decorated methods on this instance.
-    this._netBus.registerInstance(this);
+    // Let the bus register any decorated methods on this instance using the netAddress as key.
+    this._netBus.registerInstance(this, this.netAddress);
     
     // Manually register the patch receiver method (not decorated but needs routing)
     const patchTargetKey = `${this.netAddress}._applyStatePatch`;
