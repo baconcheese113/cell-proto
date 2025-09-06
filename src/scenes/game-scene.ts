@@ -83,7 +83,7 @@ export class GameScene extends Phaser.Scene {
   // Hex grid system
   private hexGrid!: HexGrid;
   private hexSize = 16; // Tunable hex tile size
-  private gridRadius = 12; // Tunable number of hex rings
+  private gridRadius = 16; // Increased from 12 to ensure full membrane coverage
   private hexGraphics!: Phaser.GameObjects.Graphics;
   private showHexGrid = true;
   private hoveredTile: HexTile | null = null;
@@ -507,7 +507,7 @@ export class GameScene extends Phaser.Scene {
         }
         
         // Re-render protein glyphs with new positions
-        this.updateProteinGlyphs();
+        // this.updateProteinGlyphs();
       }
     });
 
@@ -748,6 +748,13 @@ export class GameScene extends Phaser.Scene {
     
     // Update hex grid center to track physics center
     this.updateHexGridPosition();
+    
+    // NEW: Update hex grid for dynamic membrane deformation
+    if (this.hexGrid && this.membranePhysics) {
+      this.hexGrid.update(1/60); // Approximate delta time
+      // Force re-render after barycentric position updates
+      this.renderHexGrid();
+    }
     
     // Update player cargo indicator
     const carriedCargo = this.cargoSystem.getMyPlayerInventory()[0] || null;
@@ -1271,17 +1278,6 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private updateProteinGlyphs(): void {
-    // Clear existing glyphs
-    for (const glyph of this.proteinGlyphs) {
-      glyph.destroy();
-    }
-    this.proteinGlyphs = [];
-    
-    // Re-render membrane graphics which now includes protein glyphs
-    this.renderMembraneDebug();
-  }
-
   private drawSingleHexagon(x: number, y: number, size: number): void {
     for (let i = 0; i < 6; i++) {
       const angle = (Math.PI / 3) * i;
@@ -1301,19 +1297,59 @@ export class GameScene extends Phaser.Scene {
     if (!this.hexGrid || !this.hexGraphics) return;
     
     this.hexGraphics.clear();
-    this.hexGraphics.lineStyle(1, 0x88ddff, 0.3);
     
     const tiles = this.hexGrid.getAllTiles();
+    const membraneTiles = this.hexGrid.getMembraneTiles();
+    
+    // Render connections between neighboring tiles to show lattice deformation
+    this.hexGraphics.lineStyle(1, 0x44aacc, 0.4);
     this.hexGraphics.beginPath();
     
     for (const tile of tiles) {
-      this.addHexagonToPath(tile.worldPos.x, tile.worldPos.y, this.hexSize);
+      // Check connections to 6 hex neighbors
+      const neighbors = [
+        { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
+        { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }
+      ];
+      
+      for (const dir of neighbors) {
+        const neighborCoord = { q: tile.coord.q + dir.q, r: tile.coord.r + dir.r };
+        const neighborTile = this.hexGrid.getTile(neighborCoord);
+        
+        if (neighborTile) {
+          // Draw line between tile centers to show lattice structure
+          this.hexGraphics.moveTo(tile.worldPos.x, tile.worldPos.y);
+          this.hexGraphics.lineTo(neighborTile.worldPos.x, neighborTile.worldPos.y);
+        }
+      }
+    }
+    this.hexGraphics.strokePath();
+    
+    // Render interior (non-membrane) tiles as small circles
+    this.hexGraphics.lineStyle(1, 0x88ddff, 0.6);
+    this.hexGraphics.fillStyle(0x88ddff, 0.2);
+    
+    for (const tile of tiles) {
+      if (!tile.isMembrane) {
+        this.hexGraphics.fillCircle(tile.worldPos.x, tile.worldPos.y, 3);
+        this.hexGraphics.strokeCircle(tile.worldPos.x, tile.worldPos.y, 3);
+      }
     }
     
-    this.hexGraphics.strokePath();
+    // Render membrane tiles as hexagonal outlines to match membrane debug style
+    this.hexGraphics.lineStyle(2, 0xff6644, 0.8);
+    this.hexGraphics.fillStyle(0xff6644, 0.3);
+    
+    for (const tile of membraneTiles) {
+      // Draw hexagonal outline for membrane tiles
+      this.hexGraphics.beginPath();
+      this.drawMembraneHexagon(tile.worldPos.x, tile.worldPos.y, this.hexSize * 0.9); // Slightly smaller for clarity
+      this.hexGraphics.fillPath();
+      this.hexGraphics.strokePath();
+    }
   }
 
-  private addHexagonToPath(x: number, y: number, size: number): void {
+  private drawMembraneHexagon(x: number, y: number, size: number): void {
     for (let i = 0; i < 6; i++) {
       const angle = (Math.PI / 3) * i;
       const px = x + size * Math.cos(angle);
@@ -2143,6 +2179,10 @@ export class GameScene extends Phaser.Scene {
       id: 'player' // Unique identifier for main player membrane
     });
     this.membranePhysics = membranePhysics;
+
+    
+    // NEW: Connect hex grid to membrane physics for dynamic deformation
+    this.hexGrid.setMembranePhysics(membranePhysics);
     
     // PHYSICS-BASED POSITIONING: Add membrane physics to WorldRefs
     this.worldRefsInstance.membranePhysics = membranePhysics;
