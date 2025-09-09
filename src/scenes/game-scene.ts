@@ -41,6 +41,9 @@ import { ThrowInputController } from "../systems/throw-input-controller";
 import { CytoskeletonSystem } from "../systems/cytoskeleton-system";
 import { CytoskeletonRenderer } from "../systems/cytoskeleton-renderer";
 import { FilamentBuilder } from "../systems/filament-builder";
+// Milestone: Vesicle-endocytosis system
+import { VesicleSystem } from "../systems/vesicle-system";
+import { VesicleRenderer } from "../systems/vesicle-renderer";
 import type { WorldRefs, InstallOrder } from "../core/world-refs";
 import { LoopbackTransport } from "../network/transport";
 import type { NetBundle } from "../app/net-bundle";
@@ -62,7 +65,7 @@ import { MembraneTuningUI } from "../ui/membrane-tuning-ui";
 // Neighbor Cell System
 import { NeighborCellSystem } from "../systems/neighbor-cell-system";
 
-type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO" | "SHIFT", Phaser.Input.Keyboard.Key>;
+type Keys = Record<"W" | "A" | "S" | "D" | "R" | "ENTER" | "SPACE" | "G" | "I" | "C" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "H" | "LEFT" | "RIGHT" | "P" | "T" | "V" | "Q" | "E" | "B" | "X" | "M" | "F" | "Y" | "U" | "O" | "K" | "L" | "N" | "F1" | "F2" | "F3" | "F4" | "F9" | "F10" | "F11" | "F12" | "ESC" | "ZERO" | "SHIFT", Phaser.Input.Keyboard.Key>;
 
 export class GameScene extends Phaser.Scene {
   private grid!: Phaser.GameObjects.Image;
@@ -194,6 +197,10 @@ export class GameScene extends Phaser.Scene {
   private cytoskeletonRenderer!: CytoskeletonRenderer;
   private filamentBuilder!: FilamentBuilder;
   
+  // Milestone: Vesicle-endocytosis system
+  private vesicleSystem!: VesicleSystem;
+  private vesicleRenderer!: VesicleRenderer;
+  
   // Milestone 14: Multiplayer Core v1
   private roomUI!: RoomUI;
   
@@ -316,6 +323,8 @@ export class GameScene extends Phaser.Scene {
       cytoskeletonGraph: null as any,
       cargoSystem: null as any,
       installOrderSystem: null as any,
+      vesicleSystem: null as any,
+      vesicleRenderer: null as any,
       
       // Data collections
       installOrders: this.installOrders,
@@ -398,6 +407,14 @@ export class GameScene extends Phaser.Scene {
     this.net.cytoskeleton = this.cytoskeletonSystem;
     this.net.bus.registerInstance(this.cytoskeletonSystem);
     
+    // Milestone: Initialize Vesicle-endocytosis system
+    this.vesicleSystem = new VesicleSystem(this, this.net.bus, this.worldRefsInstance);
+    this.worldRefsInstance.vesicleSystem = this.vesicleSystem; // Add to worldRefs
+    this.vesicleRenderer = new VesicleRenderer(this, this.worldRefsInstance);
+    this.worldRefsInstance.vesicleRenderer = this.vesicleRenderer; // Add renderer to worldRefs
+    
+    this.net.bus.registerInstance(this.vesicleSystem);
+    
     this.initializeBlueprintSystem();
     
     this.filamentBuilder = new FilamentBuilder(this, this.worldRefsInstance, this.cytoskeletonSystem);
@@ -442,6 +459,7 @@ export class GameScene extends Phaser.Scene {
       F1: this.input.keyboard!.addKey("F1"), // Build actin filaments
       F2: this.input.keyboard!.addKey("F2"), // Build microtubules
       F3: this.input.keyboard!.addKey("F3"), // Toggle pathfinding debug
+      F4: this.input.keyboard!.addKey("F4"), // Vesicle system controls
       F9: this.input.keyboard!.addKey("F9"), // Toggle network HUD
       F10: this.input.keyboard!.addKey("F10"), // Toggle room UI
       F11: this.input.keyboard!.addKey("F11"), // Simulate packet loss
@@ -567,6 +585,11 @@ export class GameScene extends Phaser.Scene {
     // Handle pathfinding debug toggle
     if (Phaser.Input.Keyboard.JustDown(this.keys.F3)) {
       this.togglePathfindingDebug();
+    }
+
+    // Handle vesicle system controls
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F4)) {
+      this.handleVesicleDebugControls();
     }
 
     // Handle heatmap controls - Task 5
@@ -1367,6 +1390,20 @@ export class GameScene extends Phaser.Scene {
     }
     console.log(`Pathfinding debug ${this.showPathfindingDebug ? 'shown' : 'hidden'}`);
     this.showToast(`Pathfinding debug ${this.showPathfindingDebug ? 'ON' : 'OFF'} (F3 to toggle)`);
+  }
+
+  private handleVesicleDebugControls(): void {
+    if (!this.vesicleSystem) {
+      this.showToast("Vesicle system not available");
+      return;
+    }
+
+    // Spawn a test vesicle
+    const vesicleId = this.vesicleSystem.spawnVesicle();
+    const count = this.vesicleSystem.getVesicleCount();
+    
+    this.showToast(`Spawned vesicle! Total: ${count} (F4 to spawn more)`, 3000);
+    console.log(`🫧 F4 Debug: Spawned vesicle ${vesicleId}, total vesicles: ${count}`);
   }
 
   // Hex Interaction System

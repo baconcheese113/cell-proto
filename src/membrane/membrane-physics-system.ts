@@ -53,7 +53,12 @@ export const DEFAULT_MEMBRANE_PARAMETERS = {
   endocytosisDepthScale: 0.15,  // Depth scaling factor
   
   // === CENTER ANCHORING ===
-  centerAnchorCompliance: 2e-3  // Center anchor strength
+  centerAnchorCompliance: 2e-3, // Center anchor strength
+  
+  // === ACTIVE BROWNIAN MOTION ===
+  membraneNoise: 8.0,           // Thermal noise intensity for membrane
+  membraneActiveForce: 0.0,     // Self-propulsion for active patches
+  noiseCorrelationTime: 0.5     // How long noise persists (seconds)
 };
 
 export type MembraneParameters = typeof DEFAULT_MEMBRANE_PARAMETERS;
@@ -170,6 +175,9 @@ export class MembranePhysicsSystem extends System {
     // Sync from network state if we're a client
     this.syncFromNetworkState();
     
+    // Apply membrane Brownian motion
+    this.applyMembraneBrownianMotion(deltaTime);
+    
     // 1) Apply pending impulses to velocities
     for (const [i, imp] of this.pendingForces.entries()) {
       const p = this.particles[i];
@@ -221,6 +229,22 @@ export class MembranePhysicsSystem extends System {
           if (this.recentImpacts.has(i) || this.recentImpacts.has(j)) {
             adaptiveAlpha *= this.membraneParameters.impactSofteningFactor;
           }
+          
+          // PROOF OF CONCEPT: Regional compliance based on position
+          // Apply localized softening for endocytosis testing
+          const particleA = this.particles[i];
+          const particleB = this.particles[j];
+          const edgeMidpoint = particleA.position.clone().add(particleB.position).scale(0.5);
+          
+          // Get membrane center for regional calculations
+          const membraneCenter = this.getCenter();
+          const relativeY = edgeMidpoint.y - membraneCenter.y;
+          
+          // Bottom half of membrane gets much softer (higher alpha = more compliant)
+          if (relativeY > 0) {
+            adaptiveAlpha *= 200; // Make bottom half 200x more compliant (very soft)
+          }
+          // Top half stays stiff (original alpha value)
           
           this.solveDistanceXPBD(this.particles[i], this.particles[j], this.restEdge[i], adaptiveAlpha, h);
         }
@@ -620,6 +644,647 @@ export class MembranePhysicsSystem extends System {
     };
   }
 
+  // === VESICLE COLLISION DETECTION ===
+
+  /**
+   * Check collision between vesicle and membrane using SDF
+   */
+  public checkVesicleCollision(vesicleCenter: Phaser.Math.Vector2, vesicleRadius: number): {
+    colliding: boolean;
+    signedDistance: number;
+    contactPoint: Phaser.Math.Vector2;
+    normal: Phaser.Math.Vector2;
+    particleIndex: number;
+  } {
+    const sample = this.getNearestSurfaceSample(vesicleCenter);
+    const distance = vesicleCenter.distance(sample.pos);
+    const signedDistance = distance - vesicleRadius;
+    
+    return {
+      colliding: signedDistance <= 0,
+      signedDistance,
+      contactPoint: sample.pos,
+      normal: sample.normal,
+      particleIndex: sample.particleIndex
+    };
+  }
+
+  /**
+   * Resolve vesicle-membrane collision with proper XPBD response
+   */
+  public resolveVesicleCollision(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesicleRadius: number,
+    vesicleVelocity: Phaser.Math.Vector2,
+    vesicleInvMass: number,
+    restitution: number = 0.4,
+    friction: number = 0.1
+  ): {
+    newVesiclePosition: Phaser.Math.Vector2;
+    newVesicleVelocity: Phaser.Math.Vector2;
+    membraneImpulse: Phaser.Math.Vector2;
+    contactPoint: Phaser.Math.Vector2;
+  } {
+    const collision = this.checkVesicleCollision(vesicleCenter, vesicleRadius);
+    
+    if (!collision.colliding) {
+      return {
+        newVesiclePosition: vesicleCenter.clone(),
+        newVesicleVelocity: vesicleVelocity.clone(),
+        membraneImpulse: new Phaser.Math.Vector2(0, 0),
+        contactPoint: collision.contactPoint
+      };
+    }
+    
+    const normal = collision.normal;
+    const penetration = -collision.signedDistance;
+    
+    // Position correction - move vesicle out of membrane (with safety limits)
+    const maxCorrectionDistance = vesicleRadius * 2; // Limit correction to reasonable amount
+    const correctionDistance = Math.min(penetration + 2, maxCorrectionDistance); // Small margin, but clamped
+    const positionCorrection = normal.clone().scale(correctionDistance);
+    const newPosition = vesicleCenter.clone().add(positionCorrection);
+    
+    // Velocity correction - bounce with restitution
+    const relativeVelocity = vesicleVelocity.clone();
+    const velocityAlongNormal = relativeVelocity.dot(normal);
+    
+    let newVelocity = vesicleVelocity.clone();
+    if (velocityAlongNormal < 0) { // Moving into membrane
+      // Normal component with restitution (reduced for stability)
+      const normalCorrection = normal.clone().scale(-(1 + restitution * 0.5) * velocityAlongNormal);
+      newVelocity.add(normalCorrection);
+      
+      // Tangential friction
+      const tangent = new Phaser.Math.Vector2(-normal.y, normal.x);
+      const velocityAlongTangent = relativeVelocity.dot(tangent);
+      const frictionCorrection = tangent.clone().scale(-friction * velocityAlongTangent);
+      newVelocity.add(frictionCorrection);
+    }
+    
+    // Clamp velocity to prevent excessive speeds
+    const maxVelocity = 100; // Reasonable max velocity
+    if (newVelocity.length() > maxVelocity) {
+      newVelocity.normalize().scale(maxVelocity);
+    }
+    
+    // Calculate impulse to apply to membrane
+    const velocityChange = newVelocity.clone().subtract(vesicleVelocity);
+    const impulseStrength = velocityChange.length() * (vesicleInvMass > 0 ? 1.0 / vesicleInvMass : 1.0);
+    const membraneImpulse = normal.clone().scale(-impulseStrength * 0.5); // Reduced for stability
+    
+    return {
+      newVesiclePosition: newPosition,
+      newVesicleVelocity: newVelocity,
+      membraneImpulse,
+      contactPoint: collision.contactPoint
+    };
+  }
+
+  /**
+   * Apply impulse from vesicle collision to membrane
+   */
+  public applyVesicleImpulse(
+    impulse: Phaser.Math.Vector2,
+    particleIndex: number
+  ): void {
+    if (impulse.length() < 0.1) return; // Too small to matter
+    
+    // Distribute impulse to neighboring particles
+    const neighborCount = 3;
+    const maxImpulse = 100; // Clamp for stability
+    
+    for (let offset = -neighborCount; offset <= neighborCount; offset++) {
+      const targetIndex = (particleIndex + offset + this.particles.length) % this.particles.length;
+      const particle = this.particles[targetIndex];
+      
+      if (particle.invMass === 0) continue; // Skip static particles
+      
+      // Calculate falloff based on distance from center
+      const falloff = Math.cos((Math.PI * offset) / (neighborCount + 1));
+      if (falloff <= 0) continue;
+      
+      const weightedImpulse = impulse.clone().scale(falloff);
+      
+      // Clamp impulse magnitude
+      if (weightedImpulse.length() > maxImpulse) {
+        weightedImpulse.normalize().scale(maxImpulse);
+      }
+      
+      // Add to pending forces for next physics step
+      if (!this.pendingForces.has(targetIndex)) {
+        this.pendingForces.set(targetIndex, new Phaser.Math.Vector2());
+      }
+      this.pendingForces.get(targetIndex)!.add(weightedImpulse);
+      
+      // Track impact for adaptive compliance
+      if (impulse.length() > 20) {
+        this.recentImpacts.set(targetIndex, this.membraneParameters.impactSofteningFrames);
+      }
+    }
+  }
+
+  /**
+   * Get signed distance from point to membrane surface (negative = inside)
+   */
+  public getSignedDistanceToSurface(point: Phaser.Math.Vector2): number {
+    const sample = this.getNearestSurfaceSample(point);
+    const distance = point.distance(sample.pos);
+    
+    // Determine if point is inside or outside membrane
+    this.updateCenter();
+    const toCenter = this.centerPosition.clone().subtract(point);
+    
+    // If point is on same side as center relative to surface, it's inside
+    const isInside = toCenter.dot(sample.normal) < 0;
+    
+    return isInside ? -distance : distance;
+  }
+
+  /**
+   * Calculate adhesion force between vesicle and membrane
+   */
+  public calculateVesicleAdhesionForce(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesicleRadius: number,
+    adhesionStrength: number = 50,
+    adhesionRange: number = 30
+  ): {
+    force: Phaser.Math.Vector2;
+    adhesionDistance: number;
+    isAdhering: boolean;
+  } {
+    const sample = this.getNearestSurfaceSample(vesicleCenter);
+    const distance = vesicleCenter.distance(sample.pos);
+    const adhesionDistance = distance - vesicleRadius;
+    
+    // No adhesion if too far away
+    if (adhesionDistance > adhesionRange) {
+      return {
+        force: new Phaser.Math.Vector2(0, 0),
+        adhesionDistance,
+        isAdhering: false
+      };
+    }
+    
+    // Calculate adhesion force strength (stronger when closer)
+    const normalizedDistance = Math.max(0, adhesionDistance / adhesionRange);
+    const forceStrength = adhesionStrength * (1 - normalizedDistance) * (1 - normalizedDistance);
+    
+    // Force direction: toward membrane surface
+    const forceDirection = sample.pos.clone().subtract(vesicleCenter).normalize();
+    const adhesionForce = forceDirection.scale(forceStrength);
+    
+    return {
+      force: adhesionForce,
+      adhesionDistance,
+      isAdhering: adhesionDistance <= adhesionRange * 0.8
+    };
+  }
+
+  /**
+   * Calculate curvature-based adhesion modifier
+   */
+  public calculateCurvatureAdhesion(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesiclePreferredCurvature: number = 0.1
+  ): number {
+    const sample = this.getNearestSurfaceSample(vesicleCenter);
+    const particleIndex = sample.particleIndex;
+    
+    // Get neighboring particles for curvature calculation
+    const prevIndex = (particleIndex - 1 + this.particles.length) % this.particles.length;
+    const nextIndex = (particleIndex + 1) % this.particles.length;
+    
+    const prevPos = this.particles[prevIndex].position;
+    const currPos = this.particles[particleIndex].position;
+    const nextPos = this.particles[nextIndex].position;
+    
+    // Calculate local curvature using three points
+    const v1 = currPos.clone().subtract(prevPos);
+    const v2 = nextPos.clone().subtract(currPos);
+    
+    if (v1.length() < 0.001 || v2.length() < 0.001) {
+      return 1.0; // Default multiplier
+    }
+    
+    v1.normalize();
+    v2.normalize();
+    
+    // Curvature is related to the angle change
+    const dotProduct = Math.max(-1, Math.min(1, v1.dot(v2)));
+    const angleChange = Math.acos(dotProduct);
+    const curvature = angleChange / (v1.length() + v2.length() + 1);
+    
+    // Calculate preference match (vesicles prefer certain curvature ranges)
+    const curvatureDiff = Math.abs(curvature - vesiclePreferredCurvature);
+    const maxDiff = 0.5; // Maximum meaningful curvature difference
+    const preferenceMatch = Math.max(0, 1 - (curvatureDiff / maxDiff));
+    
+    // Return multiplier (1.0 = normal adhesion, higher = stronger attraction)
+    return 1.0 + preferenceMatch * 2.0; // Up to 3x stronger adhesion for preferred curvature
+  }
+
+  /**
+   * Apply vesicle adhesion forces to both vesicle and membrane
+   */
+  public applyVesicleAdhesion(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesicleRadius: number,
+    adhesionStrength: number,
+    vesiclePreferredCurvature: number = 0.1
+  ): {
+    vesicleForce: Phaser.Math.Vector2;
+    membraneForce: Phaser.Math.Vector2;
+    particleIndex: number;
+    adhesionDistance: number;
+  } {
+    // Calculate base adhesion
+    const adhesionResult = this.calculateVesicleAdhesionForce(
+      vesicleCenter, 
+      vesicleRadius, 
+      adhesionStrength
+    );
+    
+    if (!adhesionResult.isAdhering) {
+      return {
+        vesicleForce: new Phaser.Math.Vector2(0, 0),
+        membraneForce: new Phaser.Math.Vector2(0, 0),
+        particleIndex: -1,
+        adhesionDistance: adhesionResult.adhesionDistance
+      };
+    }
+    
+    // Apply curvature modifier
+    const curvatureMultiplier = this.calculateCurvatureAdhesion(
+      vesicleCenter,
+      vesiclePreferredCurvature
+    );
+    
+    const vesicleForce = adhesionResult.force.clone().scale(curvatureMultiplier);
+    const membraneForce = vesicleForce.clone().scale(-0.5); // Weaker reaction force
+    
+    const sample = this.getNearestSurfaceSample(vesicleCenter);
+    
+    return {
+      vesicleForce,
+      membraneForce,
+      particleIndex: sample.particleIndex,
+      adhesionDistance: adhesionResult.adhesionDistance
+    };
+  }
+
+  /**
+   * Calculate membrane curvature at a specific particle
+   */
+  public calculateMembranceCurvature(particleIndex: number): number {
+    if (particleIndex < 0 || particleIndex >= this.particles.length) {
+      return 0;
+    }
+    
+    // Get neighboring particles for curvature calculation
+    const prevIndex = (particleIndex - 1 + this.particles.length) % this.particles.length;
+    const nextIndex = (particleIndex + 1) % this.particles.length;
+    
+    const prevPos = this.particles[prevIndex].position;
+    const currPos = this.particles[particleIndex].position;
+    const nextPos = this.particles[nextIndex].position;
+    
+    // Calculate local curvature using three points
+    const v1 = currPos.clone().subtract(prevPos);
+    const v2 = nextPos.clone().subtract(currPos);
+    
+    if (v1.length() < 0.001 || v2.length() < 0.001) {
+      return 0; // No curvature if segments too short
+    }
+    
+    v1.normalize();
+    v2.normalize();
+    
+    // Curvature is related to the angle change
+    const dotProduct = Math.max(-1, Math.min(1, v1.dot(v2)));
+    const angleChange = Math.acos(dotProduct);
+    
+    // Normalize by segment lengths
+    const avgSegmentLength = (v1.length() + v2.length()) * 0.5 + 1;
+    return angleChange / avgSegmentLength;
+  }
+
+  /**
+   * Get all membrane curvatures for vesicle attraction calculations
+   */
+  public getAllMembraneCurvatures(): number[] {
+    const curvatures: number[] = [];
+    for (let i = 0; i < this.particles.length; i++) {
+      curvatures.push(this.calculateMembranceCurvature(i));
+    }
+    return curvatures;
+  }
+
+  /**
+   * Find high-curvature regions on membrane
+   */
+  public findHighCurvatureRegions(curvatureThreshold: number = 0.3): Array<{
+    particleIndex: number;
+    position: Phaser.Math.Vector2;
+    curvature: number;
+  }> {
+    const highCurvatureRegions: Array<{
+      particleIndex: number;
+      position: Phaser.Math.Vector2;
+      curvature: number;
+    }> = [];
+    
+    for (let i = 0; i < this.particles.length; i++) {
+      const curvature = this.calculateMembranceCurvature(i);
+      if (curvature > curvatureThreshold) {
+        highCurvatureRegions.push({
+          particleIndex: i,
+          position: this.particles[i].position.clone(),
+          curvature
+        });
+      }
+    }
+    
+    return highCurvatureRegions;
+  }
+
+  /**
+   * Check if vesicle should trigger endocytosis process
+   */
+  public shouldTriggerEndocytosis(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesicleRadius: number,
+    adhesionStrength: number,
+    endocytosisThreshold: number = 0.8
+  ): boolean {
+    const adhesionResult = this.calculateVesicleAdhesionForce(vesicleCenter, vesicleRadius, adhesionStrength);
+    const curvatureMultiplier = this.calculateCurvatureAdhesion(vesicleCenter);
+    
+    // Endocytosis threshold based on adhesion strength and membrane curvature
+    const effectiveAdhesion = (adhesionResult.force.length() / adhesionStrength) * curvatureMultiplier;
+    
+    return effectiveAdhesion > endocytosisThreshold && adhesionResult.isAdhering;
+  }
+
+  /**
+   * Create membrane invagination for endocytosis
+   */
+  public createEndocytosisInvagination(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesicleRadius: number,
+    invaginationDepth: number = 0.3
+  ): {
+    success: boolean;
+    affectedParticles: number[];
+    invaginationCenter: Phaser.Math.Vector2;
+  } {
+    const sample = this.getNearestSurfaceSample(vesicleCenter);
+    const centerParticleIndex = sample.particleIndex;
+    
+    // Determine how many particles to affect based on vesicle size
+    const particleCount = Math.max(3, Math.min(7, Math.ceil(vesicleRadius / 15)));
+    const halfCount = Math.floor(particleCount / 2);
+    
+    const affectedParticles: number[] = [];
+    for (let offset = -halfCount; offset <= halfCount; offset++) {
+      const index = (centerParticleIndex + offset + this.particles.length) % this.particles.length;
+      affectedParticles.push(index);
+    }
+    
+    // Calculate invagination direction (toward cell center)
+    this.updateCenter();
+    const toCenterDir = this.centerPosition.clone().subtract(sample.pos).normalize();
+    
+    // Apply invagination forces to create pocket
+    for (let i = 0; i < affectedParticles.length; i++) {
+      const particleIndex = affectedParticles[i];
+      const particle = this.particles[particleIndex];
+      
+      if (particle.invMass === 0) continue; // Skip static particles
+      
+      // Calculate force based on distance from center of invagination
+      const distanceFromCenter = Math.abs(i - halfCount);
+      const maxDistance = halfCount;
+      const falloff = maxDistance > 0 ? 1 - (distanceFromCenter / maxDistance) : 1;
+      
+      // Apply inward force to create pocket
+      const invaginationForce = toCenterDir.clone().scale(invaginationDepth * falloff * 20);
+      
+      // Add to pending forces
+      if (!this.pendingForces.has(particleIndex)) {
+        this.pendingForces.set(particleIndex, new Phaser.Math.Vector2());
+      }
+      this.pendingForces.get(particleIndex)!.add(invaginationForce);
+    }
+    
+    return {
+      success: true,
+      affectedParticles,
+      invaginationCenter: sample.pos
+    };
+  }
+
+  /**
+   * Progress endocytosis process over time with multi-point pocket formation
+   * Enhanced with adhesion bond density guidance
+   */
+  public progressEndocytosis(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesicleRadius: number,
+    endocytosisProgress: number,
+    deltaTime: number,
+    progressRate: number = 0.5,
+    bondDensityMap?: Map<number, number>
+  ): {
+    newProgress: number;
+    membraneForces: Map<number, Phaser.Math.Vector2>;
+    isComplete: boolean;
+  } {
+    const sample = this.getNearestSurfaceSample(vesicleCenter);
+    const centerParticleIndex = sample.particleIndex;
+    
+    // Calculate average bond density in the endocytosis region to modulate progress rate
+    let averageBondDensity = 0;
+    let bondCount = 0;
+    const checkRadius = Math.max(vesicleRadius, 25);
+    
+    if (bondDensityMap && bondDensityMap.size > 0) {
+      const particleCount = Math.max(5, Math.min(12, Math.ceil(checkRadius / 10)));
+      const halfCount = Math.floor(particleCount / 2);
+      
+      for (let offset = -halfCount; offset <= halfCount; offset++) {
+        const index = (centerParticleIndex + offset + this.particles.length) % this.particles.length;
+        const density = bondDensityMap.get(index) || 0;
+        averageBondDensity += density;
+        bondCount++;
+      }
+      
+      if (bondCount > 0) {
+        averageBondDensity /= bondCount;
+      }
+    }
+    
+    // Modulate progress rate based on bond density - more bonds = faster endocytosis
+    const bondProgressMultiplier = 1 + (averageBondDensity * 0.6); // Up to 60% faster with high bond density
+    const effectiveProgressRate = progressRate * bondProgressMultiplier;
+    
+    // Update progress
+    const newProgress = Math.min(1, endocytosisProgress + effectiveProgressRate * deltaTime);
+    const isComplete = newProgress >= 1;
+    
+    // Log bond-guided endocytosis progress
+    if (bondDensityMap && bondDensityMap.size > 0 && Math.random() < 0.01) { // Log 1% of frames
+      console.log(`🔗 Bond-guided endocytosis: progress=${newProgress.toFixed(2)}, avgBondDensity=${averageBondDensity.toFixed(2)}, speedup=${bondProgressMultiplier.toFixed(2)}x`);
+    }
+    
+    // Enhanced multi-point pocket formation
+    const pocketRadius = Math.max(vesicleRadius * 1.2, 30); // Larger affected area
+    const particleCount = Math.max(5, Math.min(12, Math.ceil(pocketRadius / 10))); // More particles
+    const halfCount = Math.floor(particleCount / 2);
+    
+    const membraneForces = new Map<number, Phaser.Math.Vector2>();
+    
+    this.updateCenter();
+    
+    for (let offset = -halfCount; offset <= halfCount; offset++) {
+      const index = (centerParticleIndex + offset + this.particles.length) % this.particles.length;
+      const particle = this.particles[index];
+      
+      if (particle.invMass === 0) continue;
+      
+      // Get bond density for this particle (higher density = stronger endocytosis)
+      const bondDensity = bondDensityMap?.get(index) || 0;
+      const bondMultiplier = 1 + (bondDensity * 0.8); // Up to 80% stronger with high bond density
+      
+      // Enhanced multi-point pocket formation
+      const distanceFromCenter = Math.abs(offset);
+      const maxDistance = halfCount;
+      const falloff = maxDistance > 0 ? 1 - (distanceFromCenter / maxDistance) : 1;
+      
+      // Create a more sophisticated pocket shape
+      // Phase 1: Initial invagination (0-0.4)
+      // Phase 2: Pocket deepening (0.4-0.7) 
+      // Phase 3: Neck formation (0.7-1.0)
+      
+      let pocketForce = new Phaser.Math.Vector2(0, 0);
+      
+      if (newProgress <= 0.4) {
+        // Phase 1: Pull inward toward cell center to start invagination
+        const inwardDir = this.centerPosition.clone().subtract(particle.position).normalize();
+        const invaginationStrength = newProgress * 2.5; // 0 to 1 over first 40%
+        pocketForce = inwardDir.scale(invaginationStrength * falloff * bondMultiplier * 20);
+        
+      } else if (newProgress <= 0.7) {
+        // Phase 2: Pull toward vesicle to deepen pocket - enhanced by bond density
+        const toVesicle = vesicleCenter.clone().subtract(particle.position).normalize();
+        const deepeningProgress = (newProgress - 0.4) / 0.3; // 0 to 1 over 30%
+        pocketForce = toVesicle.scale(deepeningProgress * falloff * bondMultiplier * 25);
+        
+      } else {
+        // Phase 3: Neck formation - bond density guides neck constriction
+        const isCenter = offset === 0;
+        if (!isCenter) {
+          // Side particles pull toward center particle to form neck
+          // Higher bond density on sides creates tighter neck formation
+          const centerParticle = this.particles[centerParticleIndex];
+          const toCenter = centerParticle.position.clone().subtract(particle.position).normalize();
+          const neckProgress = (newProgress - 0.7) / 0.3; // 0 to 1 over final 30%
+          
+          // Bond density makes neck formation more aggressive
+          const neckStrength = bondMultiplier > 1.5 ? 1.5 : bondMultiplier; // Cap neck enhancement
+          pocketForce = toCenter.scale(neckProgress * falloff * neckStrength * 35);
+        } else {
+          // Center particle continues toward vesicle - bond density guides depth
+          const toVesicle = vesicleCenter.clone().subtract(particle.position).normalize();
+          pocketForce = toVesicle.scale(newProgress * bondMultiplier * 20);
+        }
+      }
+      
+      membraneForces.set(index, pocketForce);
+    }
+    
+    return {
+      newProgress,
+      membraneForces,
+      isComplete
+    };
+  }
+
+  /**
+   * Apply endocytosis forces to membrane particles
+   */
+  public applyEndocytosisForces(forces: Map<number, Phaser.Math.Vector2>): void {
+    for (const [particleIndex, force] of forces) {
+      if (!this.pendingForces.has(particleIndex)) {
+        this.pendingForces.set(particleIndex, new Phaser.Math.Vector2());
+      }
+      this.pendingForces.get(particleIndex)!.add(force);
+    }
+  }
+
+  /**
+   * Complete endocytosis process - vesicle is fully internalized
+   * Enhanced with membrane pinch-off simulation
+   */
+  public completeEndocytosis(
+    vesicleCenter: Phaser.Math.Vector2,
+    vesicleRadius: number
+  ): {
+    internalizedPosition: Phaser.Math.Vector2;
+    restorationForces: Map<number, Phaser.Math.Vector2>;
+    pinchOffForces: Map<number, Phaser.Math.Vector2>;
+  } {
+    // Calculate position inside cell where vesicle will end up
+    this.updateCenter();
+    const directionToCenter = this.centerPosition.clone().subtract(vesicleCenter).normalize();
+    const internalDistance = vesicleRadius * 3; // Move vesicle further inside
+    const internalizedPosition = vesicleCenter.clone().add(directionToCenter.scale(internalDistance));
+    
+    // Generate restoration forces to return membrane to normal shape
+    const sample = this.getNearestSurfaceSample(vesicleCenter);
+    const centerParticleIndex = sample.particleIndex;
+    
+    const particleCount = Math.max(5, Math.min(9, Math.ceil(vesicleRadius / 12))); // More particles for pinch-off
+    const halfCount = Math.floor(particleCount / 2);
+    
+    const restorationForces = new Map<number, Phaser.Math.Vector2>();
+    const pinchOffForces = new Map<number, Phaser.Math.Vector2>();
+    
+    for (let offset = -halfCount; offset <= halfCount; offset++) {
+      const index = (centerParticleIndex + offset + this.particles.length) % this.particles.length;
+      const particle = this.particles[index];
+      
+      if (particle.invMass === 0) continue;
+      
+      // Calculate restoration force to return to normal membrane shape
+      const distanceFromCenter = Math.abs(offset);
+      const maxDistance = halfCount;
+      const falloff = maxDistance > 0 ? 1 - (distanceFromCenter / maxDistance) : 1;
+      
+      // Force pointing outward from cell center to restore normal curvature
+      const outwardDir = particle.position.clone().subtract(this.centerPosition).normalize();
+      const restorationForce = outwardDir.scale(falloff * 40);
+      
+      restorationForces.set(index, restorationForce);
+      
+      // Additional pinch-off forces - side particles come together to seal membrane
+      if (distanceFromCenter > 0 && distanceFromCenter <= 2) { // Side particles near the center
+        const centerParticle = this.particles[centerParticleIndex];
+        const toCenter = centerParticle.position.clone().subtract(particle.position).normalize();
+        const pinchForce = toCenter.scale((3 - distanceFromCenter) * 25); // Stronger for closer particles
+        
+        pinchOffForces.set(index, pinchForce);
+      }
+    }
+    
+    return {
+      internalizedPosition,
+      restorationForces,
+      pinchOffForces
+    };
+  }
+
   // === CENTER TRACKING ===
 
   public getCenter(): Phaser.Math.Vector2 {
@@ -695,6 +1360,46 @@ export class MembranePhysicsSystem extends System {
    */
   public getParticles() {
     return this.particles;
+  }
+
+  /**
+   * Apply active Brownian motion to membrane particles
+   */
+  private applyMembraneBrownianMotion(deltaTime: number): void {
+    if (this.membraneParameters.membraneNoise <= 0 && this.membraneParameters.membraneActiveForce <= 0) return;
+    
+    for (let i = 0; i < this.particles.length; i++) {
+      const particle = this.particles[i];
+      if (particle.isFrozen || particle.invMass === 0) continue;
+      
+      // Thermal noise
+      if (this.membraneParameters.membraneNoise > 0) {
+        const thermalForce = new Phaser.Math.Vector2(
+          (Math.random() - 0.5) * 2,  // -1 to 1
+          (Math.random() - 0.5) * 2   // -1 to 1
+        ).scale(this.membraneParameters.membraneNoise * Math.sqrt(deltaTime));
+        
+        // Apply force through pending forces system
+        if (!this.pendingForces.has(i)) {
+          this.pendingForces.set(i, new Phaser.Math.Vector2());
+        }
+        this.pendingForces.get(i)!.add(thermalForce);
+      }
+      
+      // Active membrane forces (optional - for future actin-like protrusions)
+      if (this.membraneParameters.membraneActiveForce > 0) {
+        // Calculate outward normal from center
+        const toCenter = this.centerPosition.clone().subtract(particle.position);
+        const outwardNormal = toCenter.normalize().scale(-1); // Point outward
+        
+        const activeForce = outwardNormal.scale(this.membraneParameters.membraneActiveForce);
+        
+        if (!this.pendingForces.has(i)) {
+          this.pendingForces.set(i, new Phaser.Math.Vector2());
+        }
+        this.pendingForces.get(i)!.add(activeForce);
+      }
+    }
   }
 
   /**
@@ -988,10 +1693,46 @@ export class MembranePhysicsSystem extends System {
 
   private render() {
     this.graphics.clear();
-    this.graphics.lineStyle(2, 0x00ff00, 0.8);
-    this.graphics.fillStyle(0x00ff00, 0.1);
     
-    // Draw membrane polygon
+    // Draw membrane edges with compliance-based coloring
+    for (let i = 0; i < this.particles.length; i++) {
+      const j = (i + 1) % this.particles.length;
+      const particleA = this.particles[i];
+      const particleB = this.particles[j];
+      
+      // Calculate edge compliance (same logic as in physics loop)
+      const edgeMidpoint = particleA.position.clone().add(particleB.position).scale(0.5);
+      const membraneCenter = this.getCenter();
+      const relativeY = edgeMidpoint.y - membraneCenter.y;
+      
+      let adaptiveAlpha = this.membraneParameters.alphaEdge;
+      if (this.recentImpacts.has(i) || this.recentImpacts.has(j)) {
+        adaptiveAlpha *= this.membraneParameters.impactSofteningFactor;
+      }
+      
+      // Apply regional compliance (bottom half is softer)
+      if (relativeY > 0) {
+        adaptiveAlpha *= 200; // Same multiplier as physics
+      }
+      
+      // Color based on compliance with extreme binary contrast for maximum visibility
+      const baseCompliance = this.membraneParameters.alphaEdge;
+      const isVeryCompliant = adaptiveAlpha > baseCompliance * 50; // 50x threshold for clear distinction
+      
+      // Pure binary colors for maximum contrast and responsiveness to tuning panel
+      const edgeColor = isVeryCompliant ? 0xff0000 : 0x0000ff; // Pure red vs pure blue
+      
+      // Draw individual edge with compliance color
+      this.graphics.lineStyle(3, edgeColor, 0.9); // Thicker lines for visibility
+      this.graphics.beginPath();
+      this.graphics.moveTo(particleA.position.x, particleA.position.y);
+      this.graphics.lineTo(particleB.position.x, particleB.position.y);
+      this.graphics.strokePath();
+    }
+    
+    // Fill the membrane with a subtle transparent color
+    this.graphics.lineStyle(0, 0x000000, 0); // No outline for fill
+    this.graphics.fillStyle(0x00ff00, 0.05); // Very subtle green fill
     this.graphics.beginPath();
     const firstParticle = this.particles[0];
     this.graphics.moveTo(firstParticle.position.x, firstParticle.position.y);
@@ -1003,7 +1744,6 @@ export class MembranePhysicsSystem extends System {
     
     this.graphics.closePath();
     this.graphics.fillPath();
-    this.graphics.strokePath();
     
     // Draw center cross
     const center = this.centerPosition;

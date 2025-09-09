@@ -27,6 +27,8 @@ import type { CytoskeletonRenderer } from "@/systems/cytoskeleton-renderer";
 import type { CytoskeletonGraph } from "@/systems/cytoskeleton-graph";
 import type { CargoSystem } from "@/systems/cargo-system";
 import type { InstallOrderSystem } from "@/systems/install-order-system";
+import type { VesicleSystem } from "@/systems/vesicle-system";
+import type { VesicleRenderer } from "@/systems/vesicle-renderer";
 
 // Milestone 7: Orders & Transcripts data types
 export type ProteinId = 'GLUT' | 'AA_TRANSPORTER' | 'NT_TRANSPORTER' | 'ROS_EXPORTER' | 'SECRETION_PUMP' | 'GROWTH_FACTOR_RECEPTOR';
@@ -172,6 +174,10 @@ export interface WorldRefs {
   
   // Graph for real segment transport
   cytoskeletonGraph: CytoskeletonGraph; // CytoskeletonGraph - will be initialized by cytoskeleton system
+  
+  // Milestone: Vesicle-endocytosis system
+  vesicleSystem: VesicleSystem;
+  vesicleRenderer: VesicleRenderer;
   
   // Milestone 7: Orders & Install Management
   installOrders: Map<string, InstallOrder>;
