@@ -213,6 +213,13 @@ export class CpmSimulation {
     return this.activity.pxact(i);
   }
 
+  /** Iterate the lattice pixels belonging to one cell (for field masks). */
+  *cellPixels(id: CellId): IterableIterator<[number, number]> {
+    for (const [[x, y], v] of this.cpm.grid.pixels()) {
+      if (v === id) yield [x, y];
+    }
+  }
+
   /** Centroid of a cell in lattice coords + its pixel count, or null if gone. */
   centroidLattice(id: CellId): { x: number; y: number; pixels: number } | null {
     let n = 0,
@@ -357,9 +364,16 @@ export class CpmSimulation {
    *  dormant, and re-activate dormant cells whose world position re-enters.
    *  Returns the set of cell ids that changed (demoted/promoted) for the
    *  renderer to forget/refresh. */
-  streamAround(anchorId: CellId): { demoted: CellId[]; promoted: CellId[] } {
+  streamAround(anchorId: CellId): {
+    demoted: CellId[];
+    promoted: CellId[];
+    shiftX: number;
+    shiftY: number;
+  } {
     const demoted: CellId[] = [];
     const promoted: CellId[] = [];
+    let shiftX = 0,
+      shiftY = 0;
 
     const c = this.centroidLattice(anchorId);
     if (c) {
@@ -369,12 +383,14 @@ export class CpmSimulation {
       const dy = Math.round(center - c.y);
       if (Math.abs(center - c.x) > margin || Math.abs(center - c.y) > margin) {
         this.shiftLattice(dx, dy, anchorId, demoted);
+        shiftX = dx;
+        shiftY = dy;
       }
     }
 
     this.demoteEdgeCells(anchorId, demoted);
     this.promoteDormant(promoted);
-    return { demoted, promoted };
+    return { demoted, promoted, shiftX, shiftY };
   }
 
   /** Translate all live pixels by (dx,dy) lattice px and shift the world origin

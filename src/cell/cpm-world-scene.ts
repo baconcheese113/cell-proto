@@ -9,6 +9,7 @@ import { CpmRenderer } from "./cpm-renderer";
 import { CpmRules, type DeathReason } from "./cpm-rules";
 import { CpmEnemyAi } from "./cpm-enemy-ai";
 import { CpmCombat } from "./cpm-combat";
+import { CpmField } from "./cpm-field";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -28,6 +29,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private rules!: CpmRules;
   private enemyAi!: CpmEnemyAi;
   private combat!: CpmCombat;
+  private signal!: CpmField;
   private playerId = 0;
   private nucleusId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
@@ -73,6 +75,10 @@ export class CpmWorldScene extends Phaser.Scene {
 
     this.makeBackground();
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
+    // A molecular signal field produced near the nucleus, diffusing through the
+    // cytosol (routes around the nucleus, bottlenecks where the cell squeezes).
+    this.signal = new CpmField(cfg.fieldSize);
+    this.cpmRenderer.setField(this.signal);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
       // Don't judge prey combat owns, nor organelle compartments (not creatures).
@@ -218,11 +224,24 @@ export class CpmWorldScene extends Phaser.Scene {
 
     // Infinite-world streaming: recenter the bubble on the player, demote cells
     // that left, re-activate ones that returned.
-    const { demoted } = this.sim.streamAround(this.playerId);
+    const { demoted, shiftX, shiftY } = this.sim.streamAround(this.playerId);
     for (const id of demoted) {
       this.cpmRenderer.forgetCell(id);
       this.rules.forget(id); // dormant != dead
     }
+
+    // Molecular signal field: follow the recenter, re-mask to the current
+    // cytosol shape, produce around the nucleus, diffuse.
+    this.signal.shift(shiftX, shiftY);
+    this.signal.setMask(this.sim.cellPixels(this.playerId));
+    const nc = this.sim.centroidLattice(this.nucleusId);
+    if (nc) {
+      const rad = Math.sqrt(120 / Math.PI) + 2;
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+        this.signal.addSource(nc.x + Math.cos(a) * rad, nc.y + Math.sin(a) * rad, 0.6);
+      }
+    }
+    this.signal.step(0.18, 0.03);
 
     // Biology/rules layer: structural-failure death etc.
     this.rules.update();

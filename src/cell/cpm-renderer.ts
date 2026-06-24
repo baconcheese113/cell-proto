@@ -8,6 +8,10 @@
 
 import Phaser from "phaser";
 import { CpmSimulation } from "./cpm-simulation";
+import type { CpmField } from "./cpm-field";
+
+/** Concentration that renders as full-intensity molecular glow. */
+const FIELD_FULL = 8;
 
 export class CpmRenderer {
   private readonly texture: Phaser.Textures.CanvasTexture;
@@ -22,6 +26,13 @@ export class CpmRenderer {
     number,
     { r: number; g: number; b: number; maxAct: number }
   >();
+
+  // Optional molecular field rendered as a green glow inside the cell.
+  private molField?: CpmField;
+
+  setField(field: CpmField): void {
+    this.molField = field;
+  }
 
   constructor(
     scene: Phaser.Scene,
@@ -73,9 +84,19 @@ export class CpmRenderer {
       const c = this.channels(id);
       const a = this.sim.activityAtIndex(grid.p2i([x, y])) / c.maxAct;
       const t = a > 1 ? 1 : a < 0 ? 0 : a;
-      const r = (c.r + (255 - c.r) * t) | 0;
-      const g = (c.g + (245 - c.g) * t) | 0;
-      const b = (c.b + (200 - c.b) * t) | 0;
+      let r = (c.r + (255 - c.r) * t) | 0;
+      let g = (c.g + (245 - c.g) * t) | 0;
+      let b = (c.b + (200 - c.b) * t) | 0;
+      // Molecular field glow (additive green) routed through the cytosol.
+      if (this.molField) {
+        const fv = this.molField.valueAt(x, y) / FIELD_FULL;
+        if (fv > 0) {
+          const m = fv > 1 ? 1 : fv;
+          r = (r * (1 - 0.5 * m)) | 0;
+          g = Math.min(255, g + 210 * m) | 0;
+          b = (b * (1 - 0.3 * m)) | 0;
+        }
+      }
       buf[y * field + x] = (0xff << 24) | (b << 16) | (g << 8) | r;
     }
     this.ctx.putImageData(this.imageData, 0, 0);
