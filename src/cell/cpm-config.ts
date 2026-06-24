@@ -72,6 +72,24 @@ export const ENEMY_PROFILE: CpmCellProfile = {
   jWithOther: 22,
 };
 
+/** A prey that has been committed to digestion: volume target 0 so it shrinks
+ *  away (no regrowth), inert, recoloured to read as "being digested". */
+export const DIGESTING_PROFILE: CpmCellProfile = {
+  name: "digesting",
+  color: 0xffae42,
+  volume: 0,
+  lambdaV: 60,
+  perimeter: 0,
+  lambdaP: 0,
+  maxAct: 0,
+  lambdaAct: 0,
+  lambdaActRest: 0,
+  lambdaConnectivity: 0,
+  steerLambda: 0,
+  jWithMedium: 20,
+  jWithOther: 20,
+};
+
 export interface CpmWorldConfig {
   /** Square lattice edge in pixels — the "quality" dial. Higher = sharper +
    *  slower. The lattice is the player-anchored bubble, recentered for an

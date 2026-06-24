@@ -39,6 +39,7 @@ export class GridBasedModel {
   time: number;
   conf: Record<string, unknown>;
   pixt(p: ArrayCoordinate): number;
+  pixti(i: IndexCoordinate): number;
   setpix(p: ArrayCoordinate, t: number): void;
   cellKind(id: CellId): CellKind;
   getStat(stat: unknown): unknown;

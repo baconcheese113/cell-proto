@@ -8,20 +8,24 @@ import { CpmSimulation } from "./cpm-simulation";
 import { CpmRenderer } from "./cpm-renderer";
 import { CpmRules, type DeathReason } from "./cpm-rules";
 import { CpmEnemyAi } from "./cpm-enemy-ai";
+import { CpmCombat } from "./cpm-combat";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
   ENEMY_PROFILE,
+  DIGESTING_PROFILE,
 } from "./cpm-config";
 
 const PLAYER_KIND = 1;
 const ENEMY_KIND = 2;
+const DIGEST_KIND = 3;
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: CpmSimulation;
   private cpmRenderer!: CpmRenderer;
   private rules!: CpmRules;
   private enemyAi!: CpmEnemyAi;
+  private combat!: CpmCombat;
   private playerId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
   private hud!: Phaser.GameObjects.Text;
@@ -34,7 +38,11 @@ export class CpmWorldScene extends Phaser.Scene {
 
   create(): void {
     const cfg = DEFAULT_WORLD_CONFIG;
-    this.sim = new CpmSimulation(cfg, [PLAYER_PROFILE, ENEMY_PROFILE]);
+    this.sim = new CpmSimulation(cfg, [
+      PLAYER_PROFILE,
+      ENEMY_PROFILE,
+      DIGESTING_PROFILE,
+    ]);
 
     // Anchor the bubble so its centre maps to world (0,0).
     const center = Math.floor(cfg.fieldSize / 2);
@@ -56,12 +64,22 @@ export class CpmWorldScene extends Phaser.Scene {
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
+      ignore: (id) => this.combat.isConsuming(id),
     });
     // Enemies are always motile (Act on); the AI drives their direction.
     this.sim.setKindActive(ENEMY_KIND, true);
     this.enemyAi = new CpmEnemyAi(this.sim, {
       enemyKind: ENEMY_KIND,
       getPlayerId: () => this.playerId,
+    });
+    this.combat = new CpmCombat(this.sim, {
+      playerKind: PLAYER_KIND,
+      enemyKind: ENEMY_KIND,
+      digestKind: DIGEST_KIND,
+      getPlayerId: () => this.playerId,
+      // Recolour the prey to the "digesting" tint once internalized.
+      onConsumeStart: (id) => this.cpmRenderer.forgetCell(id),
+      onDigested: (wx, wy) => this.spawnDeathFx(wx, wy, 26, 0xffe066),
     });
 
     this.cameras.main.setZoom(1.8);
@@ -83,6 +101,7 @@ export class CpmWorldScene extends Phaser.Scene {
     if (import.meta.env.DEV) {
       (window as unknown as { __cpm?: unknown }).__cpm = {
         sim: this.sim,
+        combat: this.combat,
         getPlayerId: () => this.playerId,
         deaths: () => this.deaths,
         tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
@@ -163,8 +182,10 @@ export class CpmWorldScene extends Phaser.Scene {
       this.sim.restCell(this.playerId);
     }
 
-    // Enemy behaviour (per-cell wander/flee).
+    // Enemy behaviour (per-cell wander/flee), then combat (hold RIGHT mouse to
+    // engulf the nearest enemy — overrides the AI for the grabbed prey).
     this.enemyAi.update(1 / 60);
+    this.combat.update(pointer.rightButtonDown());
 
     this.sim.step();
 
@@ -192,10 +213,17 @@ export class CpmWorldScene extends Phaser.Scene {
     this.bg.tilePositionX = this.cameras.main.scrollX;
     this.bg.tilePositionY = this.cameras.main.scrollY;
 
+    const combatStatus = this.combat.engulfing
+      ? "ENGULFING"
+      : this.combat.digestingCount > 0
+        ? "DIGESTING"
+        : this.steering
+          ? "STEERING (hold LMB)"
+          : "resting";
     this.hud.setText(
-      `CPM world — ${this.steering ? "STEERING (hold LMB)" : "resting"}   ` +
+      `CPM world — ${combatStatus}   LMB move · RMB engulf   ` +
         `active ${countActive(this.sim)}   dormant ${this.sim.dormantCount}   ` +
-        `area ${c ? c.pixels : 0}px`
+        `nutrients ${this.combat.nutrients}`
     );
   }
 }

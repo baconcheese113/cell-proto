@@ -17,6 +17,9 @@ export interface CpmRulesCallbacks {
   /** Fired once when a cell crosses a fatal threshold. The handler is expected
    *  to remove the cell from the simulation and play any death effect. */
   onDeath(id: number, reason: DeathReason): void;
+  /** Optional: cells the rules layer should not judge (e.g. being consumed by
+   *  combat, which owns their removal). */
+  ignore?(id: number): boolean;
 }
 
 /** A real tear leaves two parts each at least this many lattice px; the
@@ -44,6 +47,7 @@ export class CpmRules {
     const sizesByCell = this.sim.componentSizesByCell();
     for (const [id, sizes] of sizesByCell) {
       if (this.dead.has(id)) continue;
+      if (this.cb.ignore?.(id)) continue;
 
       // Structural failure: a second substantial component = a real tear.
       if (sizes.length >= 2 && sizes[1] >= FRAG_MIN_PX) {

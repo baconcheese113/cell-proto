@@ -266,6 +266,63 @@ export class CpmSimulation {
     return rec ? rec.profile.volume : 0;
   }
 
+  /** How engulfed `id` is by `hostId`: the fraction of its boundary that is NOT
+   *  exposed to background/other cells (1 = fully internalized inside the host).
+   *  Engulfment is the topological end-state — the prey ends up inside a closed
+   *  compartment of the host. */
+  engulfedFraction(id: CellId, hostId: CellId): number {
+    const grid = this.cpm.grid;
+    let border = 0,
+      enclosed = 0;
+    for (const [[x, y], v] of grid.pixels()) {
+      if (v !== id) continue;
+      let exposed = false;
+      let isBorder = false;
+      for (const ni of grid.neighi(grid.p2i([x, y]))) {
+        const t = this.cpm.pixti(ni);
+        if (t === id) continue;
+        isBorder = true;
+        if (t !== hostId) exposed = true; // background or third cell
+      }
+      if (isBorder) {
+        border++;
+        if (!exposed) enclosed++;
+      }
+    }
+    return border === 0 ? 0 : enclosed / border;
+  }
+
+  /** Live-modulate the adhesion (J) between two kinds (symmetric). Lower = the
+   *  two stick/wrap; used during engulfment so the host flows around the prey. */
+  setKindAdhesion(kindA: number, kindB: number, value: number): void {
+    const J = (this.cpm.conf as { J: number[][] }).J;
+    J[kindA][kindB] = value;
+    J[kindB][kindA] = value;
+  }
+
+  /** Reassign a live cell to a different kind (changes which per-kind CPM
+   *  parameters govern it). Used to convert engulfed prey into the inert,
+   *  volume-target-0 "digesting" kind so it dissolves without regrowing. */
+  setCellKind(id: CellId, kind: number): void {
+    const rec = this.cells.get(id);
+    if (!rec) return;
+    this.cpm.t2k[id] = kind;
+    this.cells.set(id, { ...rec, kind, profile: this.profiles[kind] });
+  }
+
+  /** Remove up to `count` pixels of a cell (digestion). Returns remaining pixel
+   *  count; finalizes removal (kills the cell) when it reaches zero. */
+  shrinkCell(id: CellId, count: number): number {
+    const grid = this.cpm.grid;
+    const px: [number, number][] = [];
+    for (const [[x, y], v] of grid.pixels()) if (v === id) px.push([x, y]);
+    const remove = Math.min(count, px.length);
+    for (let i = 0; i < remove; i++) this.cpm.setpix(px[i], 0);
+    const remaining = px.length - remove;
+    if (remaining <= 0) this.killCell(id);
+    return remaining;
+  }
+
   /** Forcibly tear a cell by carving a thin gap through its centroid, splitting
    *  it into two parts. Represents adverse force/chemistry overcoming cohesion;
    *  the rules layer then detects the split and kills the cell. `axis` = the cut
