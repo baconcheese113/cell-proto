@@ -14,11 +14,13 @@ import {
   PLAYER_PROFILE,
   ENEMY_PROFILE,
   DIGESTING_PROFILE,
+  NUCLEUS_PROFILE,
 } from "./cpm-config";
 
 const PLAYER_KIND = 1;
 const ENEMY_KIND = 2;
 const DIGEST_KIND = 3;
+const ORGANELLE_KIND = 4;
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: CpmSimulation;
@@ -27,6 +29,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private enemyAi!: CpmEnemyAi;
   private combat!: CpmCombat;
   private playerId = 0;
+  private nucleusId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
   private hud!: Phaser.GameObjects.Text;
   private steering = false;
@@ -42,15 +45,23 @@ export class CpmWorldScene extends Phaser.Scene {
       PLAYER_PROFILE,
       ENEMY_PROFILE,
       DIGESTING_PROFILE,
+      NUCLEUS_PROFILE,
     ]);
+    // Organelle adhesion: the nucleus sticks to the cytosol interior (low J with
+    // the player) and is repelled by the medium (high J via its profile), so it
+    // stays inside and flows with the cell.
+    this.sim.setKindAdhesion(PLAYER_KIND, ORGANELLE_KIND, 4);
 
     // Anchor the bubble so its centre maps to world (0,0).
     const center = Math.floor(cfg.fieldSize / 2);
     this.sim.originWX = -center * this.sim.scale;
     this.sim.originWY = -center * this.sim.scale;
 
-    // Player at centre; a few enemies scattered around.
+    // Player at centre; grow it briefly, then seed a nucleus INSIDE it (seeding
+    // onto the 1-pixel seed would destroy the host). A few enemies around.
     this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
+    for (let i = 0; i < 40; i++) this.sim.step();
+    this.nucleusId = this.sim.spawnCellAtLattice(ORGANELLE_KIND, center, center).id;
     const ring = 78;
     for (const ang of [2.1, 3.14, 4.2]) {
       this.sim.spawnCellAtLattice(
@@ -64,7 +75,10 @@ export class CpmWorldScene extends Phaser.Scene {
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
-      ignore: (id) => this.combat.isConsuming(id),
+      // Don't judge prey combat owns, nor organelle compartments (not creatures).
+      ignore: (id) =>
+        this.combat.isConsuming(id) ||
+        this.sim.getCell(id)?.kind === ORGANELLE_KIND,
     });
     // Enemies are always motile (Act on); the AI drives their direction.
     this.sim.setKindActive(ENEMY_KIND, true);
@@ -96,6 +110,8 @@ export class CpmWorldScene extends Phaser.Scene {
       .setDepth(1000);
 
     this.input.mouse?.disableContextMenu();
+    // B = build: grow a new organelle compartment.
+    this.input.keyboard?.on("keydown-B", () => this.growOrganelle());
 
     // Dev-only handle for automated verification (connectivity, centroids, tear).
     if (import.meta.env.DEV) {
@@ -103,6 +119,7 @@ export class CpmWorldScene extends Phaser.Scene {
         sim: this.sim,
         combat: this.combat,
         getPlayerId: () => this.playerId,
+        getNucleusId: () => this.nucleusId,
         deaths: () => this.deaths,
         tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
           this.sim.tearCell(id ?? this.playerId, axis, halfWidth),
@@ -131,7 +148,17 @@ export class CpmWorldScene extends Phaser.Scene {
 
   private respawnPlayer(): void {
     const center = Math.floor(this.sim.field / 2);
+    if (this.sim.getCell(this.nucleusId)) this.sim.killCell(this.nucleusId);
     this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
+    for (let i = 0; i < 40; i++) this.sim.step();
+    this.nucleusId = this.sim.spawnCellAtLattice(ORGANELLE_KIND, center, center).id;
+  }
+
+  /** Build interaction: grow a new organelle compartment at the player centre
+   *  (placeholder for nanobot-located building). */
+  private growOrganelle(): void {
+    const c = this.sim.centroidLattice(this.playerId);
+    if (c) this.sim.spawnCellAtLattice(ORGANELLE_KIND, c.x, c.y);
   }
 
   /** Brief expanding, fading ring + flash where a cell died. */

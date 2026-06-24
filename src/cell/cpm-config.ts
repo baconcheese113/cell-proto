@@ -90,6 +90,26 @@ export const DIGESTING_PROFILE: CpmCellProfile = {
   jWithOther: 20,
 };
 
+/** An organelle compartment (e.g. the nucleus): a sub-cell held INSIDE the
+ *  cytosol by differential adhesion (loves cytosol, repelled by the medium), so
+ *  it deforms and flows with the cell. Passive (no protrusion). Building a
+ *  structure = growing one of these. */
+export const NUCLEUS_PROFILE: CpmCellProfile = {
+  name: "nucleus",
+  color: 0x9b6cff,
+  volume: 120,
+  lambdaV: 40,
+  perimeter: 70,
+  lambdaP: 3,
+  maxAct: 0,
+  lambdaAct: 0,
+  lambdaActRest: 0,
+  lambdaConnectivity: 20,
+  steerLambda: 0,
+  jWithMedium: 40, // strongly repelled by background -> stays internal
+  jWithOther: 12,
+};
+
 export interface CpmWorldConfig {
   /** Square lattice edge in pixels — the "quality" dial. Higher = sharper +
    *  slower. The lattice is the player-anchored bubble, recentered for an
