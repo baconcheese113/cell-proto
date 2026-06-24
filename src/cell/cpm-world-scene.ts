@@ -38,8 +38,8 @@ export class CpmWorldScene extends Phaser.Scene {
 
     // Player at centre; a few enemies scattered around.
     this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
-    const ring = 60;
-    for (const ang of [0.4, 2.3, 4.1]) {
+    const ring = 78;
+    for (const ang of [2.1, 3.14, 4.2]) {
       this.sim.spawnCellAtLattice(
         ENEMY_KIND,
         center + Math.cos(ang) * ring,
@@ -50,7 +50,7 @@ export class CpmWorldScene extends Phaser.Scene {
     this.makeBackground();
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
 
-    this.cameras.main.setZoom(1.4);
+    this.cameras.main.setZoom(1.8);
     this.cameras.main.setBackgroundColor("#070b10");
     this.cameras.main.centerOn(0, 0);
 
@@ -108,6 +108,12 @@ export class CpmWorldScene extends Phaser.Scene {
     }
 
     this.sim.step();
+
+    // Infinite-world streaming: recenter the bubble on the player, demote cells
+    // that left, re-activate ones that returned.
+    const { demoted } = this.sim.streamAround(this.playerId);
+    for (const id of demoted) this.cpmRenderer.forgetCell(id);
+
     this.cpmRenderer.render();
 
     // Camera follows the player cell's centroid (in world space).
@@ -123,7 +129,8 @@ export class CpmWorldScene extends Phaser.Scene {
 
     this.hud.setText(
       `CPM world — ${this.steering ? "STEERING (hold LMB)" : "resting"}   ` +
-        `cells ${countActive(this.sim)}   area ${c ? c.pixels : 0}px`
+        `active ${countActive(this.sim)}   dormant ${this.sim.dormantCount}   ` +
+        `area ${c ? c.pixels : 0}px`
     );
   }
 }

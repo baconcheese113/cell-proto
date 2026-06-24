@@ -52,7 +52,7 @@ export const PLAYER_PROFILE: CpmCellProfile = {
   lambdaConnectivity: 40, // strong cohesion: no spontaneous tearing under steering
   steerLambda: 220,
   jWithMedium: 20,
-  jWithOther: 14,
+  jWithOther: 22,
 };
 
 /** A generic enemy/prey cell: a bit stiffer and slower than the player. */
@@ -69,7 +69,7 @@ export const ENEMY_PROFILE: CpmCellProfile = {
   lambdaConnectivity: 40,
   steerLambda: 180,
   jWithMedium: 20,
-  jWithOther: 14,
+  jWithOther: 22,
 };
 
 export interface CpmWorldConfig {

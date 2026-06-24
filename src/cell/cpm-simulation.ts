@@ -46,11 +46,18 @@ export class CpmSimulation {
   private readonly cells = new Map<CellId, CellRecord>();
 
   // World<->lattice transform. originWX/Y = world coords of lattice pixel [0,0];
-  // scale = world px per lattice px. Recentering (M-B) mutates the origin.
+  // scale = world px per lattice px. Recentering (M-B) mutates the origin so the
+  // world is effectively infinite while the lattice stays a fixed-size bubble.
   originWX = 0;
   originWY = 0;
   readonly scale: number;
   private readonly stepsPerFrame: number;
+
+  // Infinite-world streaming. Cells that leave the bubble are demoted to dormant
+  // (remembered by world position + kind) and re-activated when they return.
+  private readonly recenterMargin: number;
+  private readonly edgeBand = 18; // lattice px from the boundary = "leaving"
+  private readonly dormant: { kind: number; wx: number; wy: number }[] = [];
 
   constructor(
     readonly worldConfig: CpmWorldConfig,
@@ -60,6 +67,7 @@ export class CpmSimulation {
     this.field = worldConfig.fieldSize;
     this.scale = worldConfig.worldPerPixel;
     this.stepsPerFrame = worldConfig.stepsPerFrame;
+    this.recenterMargin = worldConfig.recenterMargin;
     // profiles[kind] lookup: prepend a background placeholder at index 0.
     this.profiles = [kindProfiles[0], ...kindProfiles];
 
@@ -242,6 +250,157 @@ export class CpmSimulation {
 
   latticeToWorld(lx: number, ly: number): [number, number] {
     return [this.originWX + lx * this.scale, this.originWY + ly * this.scale];
+  }
+
+  // ---- infinite-world streaming -------------------------------------------
+
+  /** Keep `anchorId` (the player) centered for an effectively infinite world:
+   *  recenter the bubble when it drifts, demote cells that left the bubble to
+   *  dormant, and re-activate dormant cells whose world position re-enters.
+   *  Returns the set of cell ids that changed (demoted/promoted) for the
+   *  renderer to forget/refresh. */
+  streamAround(anchorId: CellId): { demoted: CellId[]; promoted: CellId[] } {
+    const demoted: CellId[] = [];
+    const promoted: CellId[] = [];
+
+    const c = this.centroidLattice(anchorId);
+    if (c) {
+      const center = this.field / 2;
+      const margin = this.recenterMargin * this.field;
+      const dx = Math.round(center - c.x);
+      const dy = Math.round(center - c.y);
+      if (Math.abs(center - c.x) > margin || Math.abs(center - c.y) > margin) {
+        this.shiftLattice(dx, dy, anchorId, demoted);
+      }
+    }
+
+    this.demoteEdgeCells(anchorId, demoted);
+    this.promoteDormant(promoted);
+    return { demoted, promoted };
+  }
+
+  /** Translate all live pixels by (dx,dy) lattice px and shift the world origin
+   *  oppositely so every cell keeps its world position. Cells whose shifted
+   *  centroid leaves the keep-region are demoted to dormant.
+   *
+   *  Implementation note (Artistoo internals): we clear then re-stamp via setpix
+   *  so border bookkeeping stays correct, but clearing a cell to volume 0 makes
+   *  CPM.setpixi delete its `t2k` (kind) and `cellvolume`. We therefore snapshot
+   *  per-cell state and repair t2k/cellvolume/nr_cells before re-stamping, and
+   *  restore each pixel's Act value (setpix resets it to MAX_ACT, which would
+   *  erase the gradient the Act model needs to crawl). */
+  private shiftLattice(
+    dx: number,
+    dy: number,
+    anchorId: CellId,
+    demoted: CellId[]
+  ): void {
+    if (dx === 0 && dy === 0) return;
+    const grid = this.cpm.grid;
+    const oldOriginWX = this.originWX;
+    const oldOriginWY = this.originWY;
+
+    // Group pixels (with Act) by cell id, accumulating the centroid.
+    interface CellSnap {
+      kind: number;
+      px: { x: number; y: number; act: number }[];
+      sx: number;
+      sy: number;
+    }
+    const byId = new Map<number, CellSnap>();
+    for (const [[x, y], id] of grid.pixels()) {
+      let s = byId.get(id);
+      if (!s) {
+        s = { kind: this.cells.get(id)?.kind ?? this.cpm.cellKind(id), px: [], sx: 0, sy: 0 };
+        byId.set(id, s);
+      }
+      s.px.push({ x, y, act: this.activity.pxact(grid.p2i([x, y])) });
+      s.sx += x;
+      s.sy += y;
+    }
+
+    // Clear the whole grid (this drops kinds/volumes; we repair below).
+    for (const s of byId.values()) for (const p of s.px) this.cpm.setpix([p.x, p.y], 0);
+
+    this.originWX -= dx * this.scale;
+    this.originWY -= dy * this.scale;
+
+    const lo = this.edgeBand;
+    const hi = this.field - this.edgeBand;
+    for (const [id, s] of byId) {
+      const cx = s.sx / s.px.length + dx;
+      const cy = s.sy / s.px.length + dy;
+      const keep =
+        id === anchorId || (cx >= lo && cx <= hi && cy >= lo && cy <= hi);
+      if (!keep) {
+        // Demote: remember its world position (invariant under the shift).
+        const wx = oldOriginWX + (s.sx / s.px.length) * this.scale;
+        const wy = oldOriginWY + (s.sy / s.px.length) * this.scale;
+        this.dormant.push({ kind: s.kind, wx, wy });
+        this.cells.delete(id);
+        demoted.push(id);
+        continue;
+      }
+      // Repair CPM bookkeeping for this id before re-stamping its pixels.
+      this.cpm.t2k[id] = s.kind;
+      this.cpm.cellvolume[id] = 0;
+      this.cpm.nr_cells++;
+      for (const p of s.px) {
+        const nx = p.x + dx,
+          ny = p.y + dy;
+        if (nx < 0 || nx >= this.field || ny < 0 || ny >= this.field) continue;
+        this.cpm.setpix([nx, ny], id);
+        const ni = grid.p2i([nx, ny]);
+        if (p.act > 0) this.activity.cellpixelsact[ni] = p.act;
+        else delete this.activity.cellpixelsact[ni];
+      }
+    }
+  }
+
+  /** Demote cells whose centroid sits in the edge band (about to leave) to
+   *  dormant, removing them cleanly instead of letting them bulge against the
+   *  hard boundary. */
+  private demoteEdgeCells(anchorId: CellId, demoted: CellId[]): void {
+    const lo = this.edgeBand;
+    const hi = this.field - this.edgeBand;
+    for (const rec of [...this.cells.values()]) {
+      if (rec.id === anchorId) continue;
+      const cc = this.centroidLattice(rec.id);
+      if (!cc || cc.x < lo || cc.x > hi || cc.y < lo || cc.y > hi) {
+        this.makeDormant(rec, demoted);
+      }
+    }
+  }
+
+  private makeDormant(rec: CellRecord, demoted: CellId[]): void {
+    const cc = this.centroidLattice(rec.id);
+    const wx = cc ? this.latticeToWorld(cc.x, cc.y)[0] : this.originWX;
+    const wy = cc ? this.latticeToWorld(cc.x, cc.y)[1] : this.originWY;
+    this.dormant.push({ kind: rec.kind, wx, wy });
+    this.gm.killCell(rec.id);
+    this.cells.delete(rec.id);
+    demoted.push(rec.id);
+  }
+
+  /** Re-activate dormant cells whose remembered world position has re-entered
+   *  the bubble's interior (not the edge band). */
+  private promoteDormant(promoted: CellId[]): void {
+    const lo = this.edgeBand + 4;
+    const hi = this.field - this.edgeBand - 4;
+    for (let i = this.dormant.length - 1; i >= 0; i--) {
+      const d = this.dormant[i];
+      const [lx, ly] = this.worldToLattice(d.wx, d.wy);
+      if (lx >= lo && lx <= hi && ly >= lo && ly <= hi) {
+        const rec = this.spawnCellAtLattice(d.kind, lx, ly);
+        promoted.push(rec.id);
+        this.dormant.splice(i, 1);
+      }
+    }
+  }
+
+  /** Number of cells currently remembered as dormant (off-bubble). */
+  get dormantCount(): number {
+    return this.dormant.length;
   }
 }
 

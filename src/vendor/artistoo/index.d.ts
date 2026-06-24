@@ -49,6 +49,10 @@ export class CPM extends GridBasedModel {
   constructor(field_size: number[], conf: Record<string, unknown>);
   isCPM: boolean;
   nr_cells: number;
+  /** cellId -> cellKind. Internal; manipulated during lattice recentering. */
+  t2k: number[];
+  /** cellId -> pixel count. Internal; manipulated during lattice recentering. */
+  cellvolume: number[];
   add(constraint: unknown): void;
   getConstraint(name: string, num?: number): any;
   makeNewCellID(kind: CellKind): CellId;
