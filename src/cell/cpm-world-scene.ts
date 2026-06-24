@@ -124,6 +124,7 @@ export class CpmWorldScene extends Phaser.Scene {
       (window as unknown as { __cpm?: unknown }).__cpm = {
         sim: this.sim,
         combat: this.combat,
+        rules: this.rules,
         getPlayerId: () => this.playerId,
         getNucleusId: () => this.nucleusId,
         deaths: () => this.deaths,
@@ -266,10 +267,11 @@ export class CpmWorldScene extends Phaser.Scene {
         : this.steering
           ? "STEERING (hold LMB)"
           : "resting";
+    const hp = Math.round(this.rules.healthFraction(this.playerId) * 100);
     this.hud.setText(
-      `CPM world — ${combatStatus}   LMB move · RMB engulf   ` +
-        `active ${countActive(this.sim)}   dormant ${this.sim.dormantCount}   ` +
-        `nutrients ${this.combat.nutrients}`
+      `CPM world — ${combatStatus}   LMB move · RMB engulf · B build   ` +
+        `hp ${hp}   active ${countActive(this.sim)}   ` +
+        `dormant ${this.sim.dormantCount}   nutrients ${this.combat.nutrients}`
     );
   }
 }

@@ -11,7 +11,7 @@
 
 import type { CpmSimulation } from "./cpm-simulation";
 
-export type DeathReason = "fragmented" | "dissolved";
+export type DeathReason = "fragmented" | "dissolved" | "apoptosis";
 
 export interface CpmRulesCallbacks {
   /** Fired once when a cell crosses a fatal threshold. The handler is expected
@@ -31,15 +31,36 @@ const LOW_VOLUME_PERSIST = 3;
 /** Run the (stat-heavy) check every N frames. */
 const CHECK_INTERVAL = 5;
 
+// Health / apoptosis (accumulating damage, not just instant thresholds).
+const MAX_HEALTH = 100;
+/** Squeezed below this fraction of target volume = under stress, taking damage. */
+const STRESS_FRAC = 0.7;
+const DAMAGE_PER_CHECK = 9; // while stressed
+const HEAL_PER_CHECK = 4; // while healthy
+
 export class CpmRules {
   private frame = 0;
   private lowVolTicks = new Map<number, number>();
   private dead = new Set<number>();
+  private health = new Map<number, number>();
 
   constructor(
     private readonly sim: CpmSimulation,
     private readonly cb: CpmRulesCallbacks
   ) {}
+
+  /** Current health fraction (0..1) of a cell, for HUD/feedback. */
+  healthFraction(id: number): number {
+    return (this.health.get(id) ?? MAX_HEALTH) / MAX_HEALTH;
+  }
+
+  /** External damage (combat bites, adverse chemistry). Lethal -> apoptosis. */
+  applyDamage(id: number, amount: number): void {
+    if (this.dead.has(id)) return;
+    const h = (this.health.get(id) ?? MAX_HEALTH) - amount;
+    this.health.set(id, h);
+    if (h <= 0) this.kill(id, "apoptosis");
+  }
 
   update(): void {
     if (++this.frame % CHECK_INTERVAL !== 0) return;
@@ -62,8 +83,18 @@ export class CpmRules {
         const t = (this.lowVolTicks.get(id) ?? 0) + 1;
         this.lowVolTicks.set(id, t);
         if (t >= LOW_VOLUME_PERSIST) this.kill(id, "dissolved");
-      } else {
-        this.lowVolTicks.delete(id);
+        continue;
+      }
+      this.lowVolTicks.delete(id);
+
+      // Accumulating damage: sustained compression below STRESS_FRAC erodes
+      // health; otherwise it slowly recovers. Hitting zero = apoptosis.
+      if (target > 0) {
+        let h = this.health.get(id) ?? MAX_HEALTH;
+        if (largest < STRESS_FRAC * target) h -= DAMAGE_PER_CHECK;
+        else h = Math.min(MAX_HEALTH, h + HEAL_PER_CHECK);
+        this.health.set(id, h);
+        if (h <= 0) this.kill(id, "apoptosis");
       }
     }
 
@@ -71,11 +102,15 @@ export class CpmRules {
     for (const id of [...this.lowVolTicks.keys()]) {
       if (!sizesByCell.has(id)) this.lowVolTicks.delete(id);
     }
+    for (const id of [...this.health.keys()]) {
+      if (!sizesByCell.has(id)) this.health.delete(id);
+    }
   }
 
   private kill(id: number, reason: DeathReason): void {
     this.dead.add(id);
     this.lowVolTicks.delete(id);
+    this.health.delete(id);
     this.cb.onDeath(id, reason);
   }
 
@@ -83,5 +118,6 @@ export class CpmRules {
   forget(id: number): void {
     this.dead.delete(id);
     this.lowVolTicks.delete(id);
+    this.health.delete(id);
   }
 }
