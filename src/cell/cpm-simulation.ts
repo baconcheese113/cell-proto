@@ -220,6 +220,19 @@ export class CpmSimulation {
     }
   }
 
+  /** Host-authoritative replication snapshot: one byte per lattice pixel holding
+   *  the cell KIND (0 = background). Row-major (y*field + x). A client renders
+   *  the world from this (colour by kind) without re-simulating; see
+   *  cpm-replication for the binary delta codec that puts it on the wire. */
+  snapshotKinds(): Uint8Array {
+    const f = this.field;
+    const out = new Uint8Array(f * f);
+    for (const [[x, y], id] of this.cpm.grid.pixels()) {
+      out[y * f + x] = this.cpm.cellKind(id) & 0xff;
+    }
+    return out;
+  }
+
   /** Centroid of a cell in lattice coords + its pixel count, or null if gone. */
   centroidLattice(id: CellId): { x: number; y: number; pixels: number } | null {
     let n = 0,
