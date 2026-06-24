@@ -7,6 +7,7 @@ import Phaser from "phaser";
 import { CpmSimulation } from "./cpm-simulation";
 import { CpmRenderer } from "./cpm-renderer";
 import { CpmRules, type DeathReason } from "./cpm-rules";
+import { CpmEnemyAi } from "./cpm-enemy-ai";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -20,6 +21,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private sim!: CpmSimulation;
   private cpmRenderer!: CpmRenderer;
   private rules!: CpmRules;
+  private enemyAi!: CpmEnemyAi;
   private playerId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
   private hud!: Phaser.GameObjects.Text;
@@ -54,6 +56,12 @@ export class CpmWorldScene extends Phaser.Scene {
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
+    });
+    // Enemies are always motile (Act on); the AI drives their direction.
+    this.sim.setKindActive(ENEMY_KIND, true);
+    this.enemyAi = new CpmEnemyAi(this.sim, {
+      enemyKind: ENEMY_KIND,
+      getPlayerId: () => this.playerId,
     });
 
     this.cameras.main.setZoom(1.8);
@@ -148,10 +156,15 @@ export class CpmWorldScene extends Phaser.Scene {
     this.steering = pointer.leftButtonDown();
     if (this.steering) {
       const [lx, ly] = this.sim.worldToLattice(pointer.worldX, pointer.worldY);
-      this.sim.steerKindToLattice(PLAYER_KIND, lx, ly);
+      this.sim.setKindActive(PLAYER_KIND, true);
+      this.sim.steerCell(this.playerId, lx, ly);
     } else {
-      this.sim.restKind(PLAYER_KIND);
+      this.sim.setKindActive(PLAYER_KIND, false);
+      this.sim.restCell(this.playerId);
     }
+
+    // Enemy behaviour (per-cell wander/flee).
+    this.enemyAi.update(1 / 60);
 
     this.sim.step();
 

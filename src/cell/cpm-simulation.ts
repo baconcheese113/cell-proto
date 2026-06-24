@@ -15,11 +15,11 @@ import {
   CPM,
   GridManipulator,
   ActivityConstraint,
-  AttractionPointConstraint,
   SoftConnectivityConstraint,
   ConnectedComponentsByCell,
   type CellId,
 } from "../vendor/artistoo";
+import { PerCellAttractionConstraint } from "./per-cell-attraction-constraint";
 import type { CpmCellProfile, CpmWorldConfig } from "./cpm-config";
 
 export interface CellRecord {
@@ -29,11 +29,9 @@ export interface CellRecord {
   alive: boolean;
 }
 
-/** Mutable conf shape we read/write each frame for steering. */
+/** Mutable conf shape we read/write each frame to toggle per-kind protrusion. */
 interface SteerConf {
   LAMBDA_ACT: number[];
-  LAMBDA_ATTRACTIONPOINT: number[];
-  ATTRACTIONPOINT: number[][];
 }
 
 export class CpmSimulation {
@@ -42,6 +40,7 @@ export class CpmSimulation {
   readonly profiles: readonly CpmCellProfile[]; // index 0 unused (background)
   private readonly gm: GridManipulator;
   private readonly activity: ActivityConstraint;
+  private readonly attraction: PerCellAttractionConstraint;
   private readonly conf: SteerConf;
   private readonly cells = new Map<CellId, CellRecord>();
 
@@ -72,7 +71,6 @@ export class CpmSimulation {
     this.profiles = [kindProfiles[0], ...kindProfiles];
 
     const nKinds = kindProfiles.length; // excludes background
-    const center = Math.floor(this.field / 2);
 
     // Per-kind conf arrays (index 0 = background).
     const V = [0];
@@ -81,8 +79,6 @@ export class CpmSimulation {
     const LAMBDA_P = [0];
     const MAX_ACT = [0];
     const LAMBDA_ACT = [0];
-    const LAMBDA_ATTRACTIONPOINT = [0];
-    const ATTRACTIONPOINT: number[][] = [[0, 0]];
     const LAMBDA_CONNECTIVITY = [0];
     for (const p of kindProfiles) {
       V.push(p.volume);
@@ -91,8 +87,6 @@ export class CpmSimulation {
       LAMBDA_P.push(p.lambdaP);
       MAX_ACT.push(p.maxAct);
       LAMBDA_ACT.push(p.lambdaActRest); // start at rest
-      LAMBDA_ATTRACTIONPOINT.push(0);
-      ATTRACTIONPOINT.push([center, center]);
       LAMBDA_CONNECTIVITY.push(p.lambdaConnectivity);
     }
 
@@ -124,13 +118,11 @@ export class CpmSimulation {
       V,
       LAMBDA_P,
       P,
-      // Activity + attraction added below; their params live here so we can
-      // mutate them each frame to steer.
+      // Activity params live here so we can mutate LAMBDA_ACT per kind to toggle
+      // a kind between rest and active protrusion.
       LAMBDA_ACT,
       MAX_ACT,
       ACT_MEAN: "geometric",
-      LAMBDA_ATTRACTIONPOINT,
-      ATTRACTIONPOINT,
       LAMBDA_CONNECTIVITY,
     });
 
@@ -140,12 +132,10 @@ export class CpmSimulation {
       ACT_MEAN: "geometric",
     });
     this.cpm.add(this.activity);
-    this.cpm.add(
-      new AttractionPointConstraint({
-        LAMBDA_ATTRACTIONPOINT,
-        ATTRACTIONPOINT,
-      })
-    );
+    // Per-cell directed motion (steering). Each cell (player, enemy, later
+    // cargo) gets its own target + strength.
+    this.attraction = new PerCellAttractionConstraint();
+    this.cpm.add(this.attraction);
     // Cohesion: a soft penalty for disconnecting a cell. Resists spontaneous
     // "lava-lamp" fragmentation; strong force / adverse conditions can still
     // overcome it (condition-gated tearing).
@@ -177,6 +167,7 @@ export class CpmSimulation {
     const rec = this.cells.get(id);
     if (!rec) return;
     this.gm.killCell(id);
+    this.attraction.forget(id);
     rec.alive = false;
     this.cells.delete(id);
   }
@@ -187,20 +178,25 @@ export class CpmSimulation {
     for (let i = 0; i < this.stepsPerFrame; i++) this.cpm.timeStep();
   }
 
-  /** Command a kind toward a lattice point and switch it to active protrusion. */
-  steerKindToLattice(kind: number, x: number, y: number): void {
+  /** Command a single cell toward a lattice point at its profile's strength. */
+  steerCell(id: CellId, x: number, y: number, lambdaScale = 1): void {
+    const rec = this.cells.get(id);
+    if (!rec) return;
     const cx = clamp(x, 0, this.field - 1);
     const cy = clamp(y, 0, this.field - 1);
-    this.conf.ATTRACTIONPOINT[kind][0] = cx;
-    this.conf.ATTRACTIONPOINT[kind][1] = cy;
-    this.conf.LAMBDA_ATTRACTIONPOINT[kind] = this.profiles[kind].steerLambda;
-    this.conf.LAMBDA_ACT[kind] = this.profiles[kind].lambdaAct;
+    this.attraction.setTarget(id, cx, cy, rec.profile.steerLambda * lambdaScale);
   }
 
-  /** Return a kind to rest (no directional drive, protrusion drops to rest). */
-  restKind(kind: number): void {
-    this.conf.LAMBDA_ATTRACTIONPOINT[kind] = 0;
-    this.conf.LAMBDA_ACT[kind] = this.profiles[kind].lambdaActRest;
+  /** Stop directing a single cell (it keeps whatever Act its kind has). */
+  restCell(id: CellId): void {
+    this.attraction.clear(id);
+  }
+
+  /** Toggle a whole kind between active protrusion and rest (Act strength). */
+  setKindActive(kind: number, active: boolean): void {
+    this.conf.LAMBDA_ACT[kind] = active
+      ? this.profiles[kind].lambdaAct
+      : this.profiles[kind].lambdaActRest;
   }
 
   // ---- reads ---------------------------------------------------------------
@@ -382,6 +378,7 @@ export class CpmSimulation {
         const wx = oldOriginWX + (s.sx / s.px.length) * this.scale;
         const wy = oldOriginWY + (s.sy / s.px.length) * this.scale;
         this.dormant.push({ kind: s.kind, wx, wy });
+        this.attraction.forget(id);
         this.cells.delete(id);
         demoted.push(id);
         continue;
@@ -423,6 +420,7 @@ export class CpmSimulation {
     const wy = cc ? this.latticeToWorld(cc.x, cc.y)[1] : this.originWY;
     this.dormant.push({ kind: rec.kind, wx, wy });
     this.gm.killCell(rec.id);
+    this.attraction.forget(rec.id);
     this.cells.delete(rec.id);
     demoted.push(rec.id);
   }
