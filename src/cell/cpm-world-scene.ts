@@ -6,6 +6,7 @@
 import Phaser from "phaser";
 import { CpmSimulation } from "./cpm-simulation";
 import { CpmRenderer } from "./cpm-renderer";
+import { CpmRules, type DeathReason } from "./cpm-rules";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -18,10 +19,12 @@ const ENEMY_KIND = 2;
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: CpmSimulation;
   private cpmRenderer!: CpmRenderer;
+  private rules!: CpmRules;
   private playerId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
   private hud!: Phaser.GameObjects.Text;
   private steering = false;
+  private deaths = 0;
 
   constructor() {
     super("CpmWorldScene");
@@ -49,6 +52,9 @@ export class CpmWorldScene extends Phaser.Scene {
 
     this.makeBackground();
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
+    this.rules = new CpmRules(this.sim, {
+      onDeath: (id, reason) => this.onCellDeath(id, reason),
+    });
 
     this.cameras.main.setZoom(1.8);
     this.cameras.main.setBackgroundColor("#070b10");
@@ -65,13 +71,53 @@ export class CpmWorldScene extends Phaser.Scene {
 
     this.input.mouse?.disableContextMenu();
 
-    // Dev-only handle for automated verification (connectivity, centroids).
+    // Dev-only handle for automated verification (connectivity, centroids, tear).
     if (import.meta.env.DEV) {
       (window as unknown as { __cpm?: unknown }).__cpm = {
         sim: this.sim,
-        playerId: this.playerId,
+        getPlayerId: () => this.playerId,
+        deaths: () => this.deaths,
+        tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
+          this.sim.tearCell(id ?? this.playerId, axis, halfWidth),
       };
     }
+  }
+
+  /** A cell crossed a fatal threshold (tear / mortal damage). Remove it, play a
+   *  death effect, and respawn the player if it was the one that died. */
+  private onCellDeath(id: number, reason: DeathReason): void {
+    const c = this.sim.centroidLattice(id);
+    const rec = this.sim.getCell(id);
+    const color = rec ? rec.profile.color : 0xffffff;
+    if (c) {
+      const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+      const radius = Math.sqrt(c.pixels / Math.PI) * this.sim.scale;
+      this.spawnDeathFx(wx, wy, radius, color);
+    }
+    const wasPlayer = id === this.playerId;
+    this.sim.killCell(id);
+    this.cpmRenderer.forgetCell(id);
+    this.deaths++;
+    console.log(`💀 cell ${id} died (${reason})${wasPlayer ? " — PLAYER" : ""}`);
+    if (wasPlayer) this.respawnPlayer();
+  }
+
+  private respawnPlayer(): void {
+    const center = Math.floor(this.sim.field / 2);
+    this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
+  }
+
+  /** Brief expanding, fading ring + flash where a cell died. */
+  private spawnDeathFx(wx: number, wy: number, radius: number, color: number): void {
+    const ring = this.add.circle(wx, wy, radius, color, 0.5).setDepth(20);
+    this.tweens.add({
+      targets: ring,
+      scale: 2.2,
+      alpha: 0,
+      duration: 520,
+      ease: "Cubic.Out",
+      onComplete: () => ring.destroy(),
+    });
   }
 
   private makeBackground(): void {
@@ -112,7 +158,13 @@ export class CpmWorldScene extends Phaser.Scene {
     // Infinite-world streaming: recenter the bubble on the player, demote cells
     // that left, re-activate ones that returned.
     const { demoted } = this.sim.streamAround(this.playerId);
-    for (const id of demoted) this.cpmRenderer.forgetCell(id);
+    for (const id of demoted) {
+      this.cpmRenderer.forgetCell(id);
+      this.rules.forget(id); // dormant != dead
+    }
+
+    // Biology/rules layer: structural-failure death etc.
+    this.rules.update();
 
     this.cpmRenderer.render();
 

@@ -242,6 +242,51 @@ export class CpmSimulation {
     >;
   }
 
+  /** Connected-component pixel-counts per live cell, each sorted descending.
+   *  Computed once (one stat pass) for the rules layer. */
+  componentSizesByCell(): Map<CellId, number[]> {
+    const cc = this.cpm.getStat(ConnectedComponentsByCell) as Record<
+      number,
+      Record<number, ArrayLike<unknown>>
+    >;
+    const out = new Map<CellId, number[]>();
+    for (const rec of this.cells.values()) {
+      const comps = cc[rec.id];
+      if (!comps) {
+        out.set(rec.id, []);
+        continue;
+      }
+      const sizes: number[] = [];
+      for (const k of Object.keys(comps)) sizes.push(comps[k as never].length);
+      sizes.sort((a, b) => b - a);
+      out.set(rec.id, sizes);
+    }
+    return out;
+  }
+
+  /** Target volume (lattice px) for a cell's kind. */
+  targetVolume(id: CellId): number {
+    const rec = this.cells.get(id);
+    return rec ? rec.profile.volume : 0;
+  }
+
+  /** Forcibly tear a cell by carving a thin gap through its centroid, splitting
+   *  it into two parts. Represents adverse force/chemistry overcoming cohesion;
+   *  the rules layer then detects the split and kills the cell. `axis` = the cut
+   *  orientation. Returns false if the cell isn't present. */
+  tearCell(id: CellId, axis: "h" | "v" = "h", halfWidth = 1): boolean {
+    const c = this.centroidLattice(id);
+    if (!c) return false;
+    const cut: [number, number][] = [];
+    for (const [[x, y], v] of this.cpm.grid.pixels()) {
+      if (v !== id) continue;
+      const d = axis === "h" ? y - c.y : x - c.x;
+      if (Math.abs(d) <= halfWidth) cut.push([x, y]);
+    }
+    for (const [x, y] of cut) this.cpm.setpix([x, y], 0);
+    return true;
+  }
+
   // ---- world<->lattice transform ------------------------------------------
 
   worldToLattice(wx: number, wy: number): [number, number] {
