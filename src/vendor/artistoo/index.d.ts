@@ -80,7 +80,10 @@ export class SoftConstraint extends Constraint {}
 export class HardConstraint extends Constraint {}
 export class Adhesion extends SoftConstraint {}
 export class VolumeConstraint extends SoftConstraint {}
-export class PerimeterConstraint extends SoftConstraint {}
+export class PerimeterConstraint extends SoftConstraint {
+  /** cellId -> current actual perimeter (border-mismatch count). */
+  cellperimeters: Record<number, number>;
+}
 export class ActivityConstraint extends SoftConstraint {
   /** Activity (0..MAX_ACT) at a pixel index — used for protrusion rendering. */
   pxact(i: IndexCoordinate): number;

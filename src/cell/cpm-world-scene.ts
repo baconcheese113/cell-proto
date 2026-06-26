@@ -10,7 +10,7 @@ import { CpmRules, type DeathReason } from "./cpm-rules";
 import { CpmEnemyAi } from "./cpm-enemy-ai";
 import { CpmCombat } from "./cpm-combat";
 import { CpmField } from "./cpm-field";
-import { CpmBuildGrid } from "./cpm-build-grid";
+import { CpmDeformGrid } from "./cpm-deform-grid";
 import { CpmBigOrganelles } from "./cpm-big-organelles";
 import {
   DEFAULT_WORLD_CONFIG,
@@ -31,7 +31,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private enemyAi!: CpmEnemyAi;
   private combat!: CpmCombat;
   private signal!: CpmField;
-  private buildGrid!: CpmBuildGrid;
+  private grid!: CpmDeformGrid;
   private bigOrganelles!: CpmBigOrganelles;
   private interiorGfx!: Phaser.GameObjects.Graphics;
   private playerId = 0;
@@ -113,7 +113,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // Shape-conforming internal build grid. Organelles are structures placed in
     // slots that exist only where there's cytoplasm — so the cell's size/shape
     // shapes its interior. The cell ships with a nucleus; the player builds more.
-    this.buildGrid = new CpmBuildGrid(this.sim, () => this.playerId, 5);
+    this.grid = new CpmDeformGrid();
     this.interiorGfx = this.add.graphics().setDepth(12);
     // The nucleus is now a controlled soft body (not a grid slot): it recenters
     // on its own, bottlenecks the cell at tight gaps, and ruptures if over-squeezed.
@@ -149,9 +149,7 @@ export class CpmWorldScene extends Phaser.Scene {
         combat: this.combat,
         rules: this.rules,
         getPlayerId: () => this.playerId,
-        occupants: () => this.buildGrid.occupants,
-        occupantLattice: (o: unknown) =>
-          this.buildGrid.occupantLattice(o as never),
+        occupants: () => this.grid.occupants,
         deaths: () => this.deaths,
         nucleus: () => {
           const n = this.bigOrganelles.organelles[0];
@@ -197,8 +195,8 @@ export class CpmWorldScene extends Phaser.Scene {
     const center = Math.floor(this.sim.field / 2);
     this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
     for (let i = 0; i < 110; i++) this.sim.step();
-    // Fresh interior: just a nucleus (a new soft body).
-    this.buildGrid.clear();
+    // Fresh interior: just a nucleus (a new soft body); no small organelles.
+    this.grid.clear();
     this.bigOrganelles.clear();
     const pc = this.sim.centroidLattice(this.playerId);
     const N = CpmWorldScene.NUCLEUS;
@@ -209,18 +207,18 @@ export class CpmWorldScene extends Phaser.Scene {
    *  that spot is interior to the cell, else fall back to the centre). Cycles
    *  through buildable types so you can see several kinds coexist. */
   private growOrganelle(): void {
-    const c = this.sim.centroidLattice(this.playerId);
-    if (!c) return;
+    const frame = this.sim.cellFrame(this.playerId);
+    if (!frame) return;
     const ptr = this.input.activePointer;
     const [lx, ly] = this.sim.worldToLattice(ptr.worldX, ptr.worldY);
     const cx = Math.round(lx);
     const cy = Math.round(ly);
     const interior = this.sim.ownerAtLattice(cx, cy) === this.playerId;
-    const sx = interior ? cx : Math.round(c.x);
-    const sy = interior ? cy : Math.round(c.y);
+    const sx = interior ? cx : Math.round(frame.cx);
+    const sy = interior ? cy : Math.round(frame.cy);
     const kind = CpmWorldScene.BUILDABLES[this.buildIndex % CpmWorldScene.BUILDABLES.length];
     this.buildIndex++;
-    this.buildGrid.place(kind.type, kind.color, kind.radius, sx, sy);
+    this.grid.add(kind.type, kind.color, kind.radius, frame, sx, sy);
   }
 
   /** Brief expanding, fading ring + flash where a cell died. */
@@ -294,8 +292,12 @@ export class CpmWorldScene extends Phaser.Scene {
       this.rules.forget(id); // dormant != dead
     }
 
-    // Build grid: relocate any structure whose slot was squeezed out of cytoplasm.
-    this.buildGrid.update();
+    // Deforming grid: small organelles flow/regroup with the cell's current shape.
+    const frame = this.sim.cellFrame(this.playerId);
+    if (frame) {
+      this.grid.shift(shiftX, shiftY);
+      this.grid.step(frame, (x, y) => this.sim.ownerAtLattice(x, y) === this.playerId);
+    }
 
     // Big organelles (nucleus): step the soft bodies, refresh the footprint
     // coupling, accumulate confinement stress. Pass the steer direction so the
@@ -363,18 +365,18 @@ export class CpmWorldScene extends Phaser.Scene {
           ? "STEERING (hold LMB)"
           : "resting";
     const hp = Math.round(this.rules.healthFraction(this.playerId) * 100);
-    const stressed = this.buildGrid.displacedCount;
+    const stressed = this.grid.compressedCount;
     const nucInteg = Math.round((1 - this.bigOrganelles.maxStress()) * 100);
     this.hud.setText(
       `CPM world — ${combatStatus}   LMB move · RMB engulf · B build@cursor   ` +
         `hp ${hp}   nucleus ${nucInteg}%` +
-        `   organelles ${this.buildGrid.occupants.length}` +
-        (stressed > 0 ? ` (${stressed} displaced!)` : "") +
+        `   organelles ${this.grid.occupants.length}` +
+        (stressed > 0 ? ` (${stressed} squeezed!)` : "") +
         `   nutrients ${this.combat.nutrients}`
     );
   }
 
-  /** Draw the conforming build grid + the organelles as distinct structures. */
+  /** Draw the deforming-grid small organelles + the nucleus soft body. */
   private drawInterior(): void {
     const g = this.interiorGfx;
     g.clear();
@@ -382,19 +384,9 @@ export class CpmWorldScene extends Phaser.Scene {
     const c = this.sim.centroidLattice(this.playerId);
     if (!c) return;
 
-    // The buildable interior: faint dots on every cytoplasm slot (this set grows
-    // and shrinks with the cell, showing the conforming grid the factory uses).
-    g.fillStyle(0xbfefff, 0.06);
-    for (const slot of this.buildGrid.validSlots()) {
-      const [lx, ly] = this.buildGrid.slotToLattice(c.x, c.y, slot.gx, slot.gy);
-      const [wx, wy] = this.sim.latticeToWorld(lx, ly);
-      g.fillCircle(wx, wy, s * 0.45);
-    }
-
-    // Organelles as distinct, placed structures.
-    for (const o of this.buildGrid.occupants) {
-      const [lx, ly] = this.buildGrid.occupantLattice(o);
-      const [wx, wy] = this.sim.latticeToWorld(lx, ly);
+    // Small organelles as distinct, placed structures on the deforming grid.
+    for (const o of this.grid.occupants) {
+      const [wx, wy] = this.sim.latticeToWorld(o.x, o.y);
       this.drawStructure(g, o, wx, wy, s);
     }
 
@@ -427,13 +419,13 @@ export class CpmWorldScene extends Phaser.Scene {
 
   private drawStructure(
     g: Phaser.GameObjects.Graphics,
-    o: { type: string; color: number; radius: number; gx: number; gy: number; displaced: boolean },
+    o: { type: string; color: number; radius: number; x: number; y: number; compressed: number },
     wx: number,
     wy: number,
     s: number
   ): void {
     const r = o.radius * s;
-    const alpha = o.displaced ? 0.4 : 0.92;
+    const alpha = 0.92 - 0.4 * o.compressed;
     g.lineStyle(Math.max(1, s * 0.28), 0x0a0f14, 0.5);
     g.fillStyle(o.color, alpha);
     switch (o.type) {
@@ -445,7 +437,7 @@ export class CpmWorldScene extends Phaser.Scene {
         break;
       case "mitochondrion": {
         // Oriented capsule (overlapping discs along a stable axis) = a rod, not a ball.
-        const ang = (((o.gx * 3 + o.gy * 7) % 6) / 6) * Math.PI;
+        const ang = (((Math.round(o.x) * 3 + Math.round(o.y) * 7) % 6) / 6) * Math.PI;
         const len = r * 2.0;
         for (let k = 0; k < 4; k++) {
           const t = (k / 3 - 0.5) * len;

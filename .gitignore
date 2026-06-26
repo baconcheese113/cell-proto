@@ -26,3 +26,7 @@ dist-ssr
 .wrangler/
 # Playwright MCP test artifacts
 .playwright-mcp/
+
+# debug screenshots
+*.png
+.playwright-mcp/
