@@ -21,6 +21,7 @@ import {
   type PerimeterConstraint,
 } from "../vendor/artistoo";
 import { PerCellAttractionConstraint } from "./per-cell-attraction-constraint";
+import { CpmFootprintConstraint } from "./cpm-footprint-constraint";
 import type { CpmCellProfile, CpmWorldConfig } from "./cpm-config";
 
 export interface CellRecord {
@@ -45,6 +46,7 @@ export class CpmSimulation {
   private readonly activity: ActivityConstraint;
   private readonly perimeter: PerimeterConstraint;
   private readonly attraction: PerCellAttractionConstraint;
+  private readonly footprint: CpmFootprintConstraint;
   private readonly conf: SteerConf;
   /** Per-kind baseline target perimeter (a solid blob); the host's live budget is
    *  this plus the perimeter its enclosed compartments add. */
@@ -147,6 +149,10 @@ export class CpmSimulation {
     // cargo) gets its own target + strength.
     this.attraction = new PerCellAttractionConstraint();
     this.cpm.add(this.attraction);
+    // The single coupling between the CPM membrane and the big-organelle soft
+    // bodies (nucleus): the host is penalized for not covering their footprint.
+    this.footprint = new CpmFootprintConstraint(this.field);
+    this.cpm.add(this.footprint);
     // Cohesion: a soft penalty for disconnecting a cell. Resists spontaneous
     // "lava-lamp" fragmentation; strong force / adverse conditions can still
     // overcome it (condition-gated tearing).
@@ -254,6 +260,22 @@ export class CpmSimulation {
       clamp(y, 0, this.field - 1),
       lambda
     );
+  }
+
+  /** Set the big-organelle footprint mask the membrane must keep covered this
+   *  frame (rasterized by the soft bodies). `lambda` sets the bottleneck/rupture
+   *  resistance; 0 disables. */
+  setBigOrganelleFootprint(
+    hostId: CellId,
+    cells: Iterable<[number, number]>,
+    lambda: number
+  ): void {
+    this.footprint.setFootprint(hostId, cells, this.field, lambda);
+  }
+
+  /** Clear the footprint coupling (no big organelles this frame). */
+  clearBigOrganelleFootprint(): void {
+    this.footprint.setFootprint(0, [], this.field, 0);
   }
 
   // ---- reads ---------------------------------------------------------------
