@@ -48,5 +48,8 @@
     // Usually not needed and can mask mistakes
     "allowArbitraryExtensions": false
   },
-  "include": ["src"]
+  // *.test.ts are node --test files (use node: imports + explicit .ts extensions)
+  // run by the Node test runner, not bundled by Vite or type-checked here.
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
 }
