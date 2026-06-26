@@ -11,6 +11,7 @@ import { CpmEnemyAi } from "./cpm-enemy-ai";
 import { CpmCombat } from "./cpm-combat";
 import { CpmField } from "./cpm-field";
 import { CpmBuildGrid } from "./cpm-build-grid";
+import { CpmBigOrganelles } from "./cpm-big-organelles";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -31,6 +32,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private combat!: CpmCombat;
   private signal!: CpmField;
   private buildGrid!: CpmBuildGrid;
+  private bigOrganelles!: CpmBigOrganelles;
   private interiorGfx!: Phaser.GameObjects.Graphics;
   private playerId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
@@ -113,10 +115,13 @@ export class CpmWorldScene extends Phaser.Scene {
     // shapes its interior. The cell ships with a nucleus; the player builds more.
     this.buildGrid = new CpmBuildGrid(this.sim, () => this.playerId, 5);
     this.interiorGfx = this.add.graphics().setDepth(12);
+    // The nucleus is now a controlled soft body (not a grid slot): it recenters
+    // on its own, bottlenecks the cell at tight gaps, and ruptures if over-squeezed.
+    this.bigOrganelles = new CpmBigOrganelles(this.sim, () => this.playerId);
     const pc = this.sim.centroidLattice(this.playerId);
     if (pc) {
       const N = CpmWorldScene.NUCLEUS;
-      this.buildGrid.place(N.type, N.color, N.radius, pc.x, pc.y);
+      this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
     }
 
     this.cameras.main.setZoom(1.8);
@@ -148,6 +153,21 @@ export class CpmWorldScene extends Phaser.Scene {
         occupantLattice: (o: unknown) =>
           this.buildGrid.occupantLattice(o as never),
         deaths: () => this.deaths,
+        nucleus: () => {
+          const n = this.bigOrganelles.organelles[0];
+          if (!n) return null;
+          const host = this.playerId;
+          const inside = (x: number, y: number) =>
+            this.sim.ownerAtLattice(x, y) === host;
+          const c = n.body.center();
+          return {
+            cx: c.x,
+            cy: c.y,
+            exposed: n.body.exposedFraction(inside),
+            oval: n.body.ovalness(),
+            stress: n.stress,
+          };
+        },
         tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
           this.sim.tearCell(id ?? this.playerId, axis, halfWidth),
       };
@@ -177,11 +197,12 @@ export class CpmWorldScene extends Phaser.Scene {
     const center = Math.floor(this.sim.field / 2);
     this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
     for (let i = 0; i < 110; i++) this.sim.step();
-    // Fresh interior: just a nucleus.
+    // Fresh interior: just a nucleus (a new soft body).
     this.buildGrid.clear();
+    this.bigOrganelles.clear();
     const pc = this.sim.centroidLattice(this.playerId);
     const N = CpmWorldScene.NUCLEUS;
-    if (pc) this.buildGrid.place(N.type, N.color, N.radius, pc.x, pc.y);
+    if (pc) this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
   }
 
   /** Build interaction: place a lightweight organelle where the cursor points (if
@@ -276,17 +297,36 @@ export class CpmWorldScene extends Phaser.Scene {
     // Build grid: relocate any structure whose slot was squeezed out of cytoplasm.
     this.buildGrid.update();
 
+    // Big organelles (nucleus): step the soft bodies, refresh the footprint
+    // coupling, accumulate confinement stress. Pass the steer direction so the
+    // nucleus trails slightly, and the recenter shift so it rides the world.
+    let steerDir: { x: number; y: number } | null = null;
+    if (this.steering) {
+      const c = this.sim.centroidLattice(this.playerId);
+      const ptr = this.input.activePointer;
+      const [lx, ly] = this.sim.worldToLattice(ptr.worldX, ptr.worldY);
+      if (c) steerDir = { x: lx - c.x, y: ly - c.y };
+    }
+    this.bigOrganelles.update(steerDir, shiftX, shiftY);
+    const burst = this.bigOrganelles.consumeRupture();
+    if (burst) {
+      // The nucleus ruptured under confinement — the player dies (the toy's fail
+      // state for forcing too tight a gap).
+      this.onCellDeath(this.playerId, "ruptured");
+    }
+
     // Molecular signal field: follow the recenter, re-mask to the current cytosol
     // shape, produce around the nucleus (first occupant), diffuse.
     this.signal.shift(shiftX, shiftY);
     this.signal.setMask(this.sim.cellPixels(this.playerId));
-    const nuc = this.buildGrid.occupants[0];
-    if (nuc) {
-      const [nx, ny] = this.buildGrid.occupantLattice(nuc);
+    const nucleus = this.bigOrganelles.organelles[0];
+    if (nucleus) {
+      const nc = nucleus.body.center();
+      const rr = nucleus.body.cfg.restRadius;
       for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
         this.signal.addSource(
-          nx + Math.cos(a) * (nuc.radius + 2),
-          ny + Math.sin(a) * (nuc.radius + 2),
+          nc.x + Math.cos(a) * (rr + 2),
+          nc.y + Math.sin(a) * (rr + 2),
           0.6
         );
       }
@@ -324,9 +364,11 @@ export class CpmWorldScene extends Phaser.Scene {
           : "resting";
     const hp = Math.round(this.rules.healthFraction(this.playerId) * 100);
     const stressed = this.buildGrid.displacedCount;
+    const nucInteg = Math.round((1 - this.bigOrganelles.maxStress()) * 100);
     this.hud.setText(
       `CPM world — ${combatStatus}   LMB move · RMB engulf · B build@cursor   ` +
-        `hp ${hp}   organelles ${this.buildGrid.occupants.length}` +
+        `hp ${hp}   nucleus ${nucInteg}%` +
+        `   organelles ${this.buildGrid.occupants.length}` +
         (stressed > 0 ? ` (${stressed} displaced!)` : "") +
         `   nutrients ${this.combat.nutrients}`
     );
@@ -354,6 +396,32 @@ export class CpmWorldScene extends Phaser.Scene {
       const [lx, ly] = this.buildGrid.occupantLattice(o);
       const [wx, wy] = this.sim.latticeToWorld(lx, ly);
       this.drawStructure(g, o, wx, wy, s);
+    }
+
+    // The nucleus soft body: fill its polygon (oozes/ovals visibly) and tint the
+    // outline toward red as confinement stress rises (the rupture warning ramp).
+    const nucleus = this.bigOrganelles.organelles[0];
+    if (nucleus) {
+      const nodes = nucleus.body.nodes;
+      const stress = nucleus.stress;
+      const pts: Phaser.Math.Vector2[] = [];
+      for (const nd of nodes) {
+        const [wx, wy] = this.sim.latticeToWorld(nd.x, nd.y);
+        pts.push(new Phaser.Math.Vector2(wx, wy));
+      }
+      g.fillStyle(nucleus.color, 0.9);
+      g.lineStyle(Math.max(1, s * 0.35), stress > 0.01 ? 0xff5d5d : 0x2a1a4a, 0.7 + 0.3 * stress);
+      g.beginPath();
+      g.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+      g.closePath();
+      g.fillPath();
+      g.strokePath();
+      // Nucleolus at the (deforming) center.
+      const nc = nucleus.body.center();
+      const [cwx, cwy] = this.sim.latticeToWorld(nc.x, nc.y);
+      g.fillStyle(0x5b2f9e, 0.9);
+      g.fillCircle(cwx, cwy, nucleus.body.cfg.restRadius * s * 0.35);
     }
   }
 
