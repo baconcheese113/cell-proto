@@ -20,11 +20,20 @@ export interface CpmRulesCallbacks {
   /** Optional: cells the rules layer should not judge (e.g. being consumed by
    *  combat, which owns their removal). */
   ignore?(id: number): boolean;
+  /** Optional: component sizes of a cell's whole STRUCTURE (it plus its enclosed
+   *  compartments), used instead of the bare per-cell components for tear/volume
+   *  checks. Lets a compartmentalized host avoid false "fragmented" deaths from
+   *  organelles dividing its cytoplasm. Return undefined to use per-cell sizes. */
+  structureSizes?(id: number): number[] | undefined;
 }
 
 /** A real tear leaves two parts each at least this many lattice px; the
  *  Monte-Carlo flicker is 1-2 px, far below this. */
 const FRAG_MIN_PX = 18;
+/** ...and it must persist this many checks. A cell wrapping organelles can
+ *  momentarily pinch a cytoplasm bridge during a hard maneuver and recover; only
+ *  a SUSTAINED split is a real, fatal tear. */
+const FRAG_PERSIST = 3;
 /** Below this fraction of target volume (sustained) a cell is mortally damaged. */
 const LOW_VOLUME_FRAC = 0.4;
 const LOW_VOLUME_PERSIST = 3;
@@ -41,6 +50,7 @@ const HEAL_PER_CHECK = 4; // while healthy
 export class CpmRules {
   private frame = 0;
   private lowVolTicks = new Map<number, number>();
+  private fragTicks = new Map<number, number>();
   private dead = new Set<number>();
   private health = new Map<number, number>();
 
@@ -66,15 +76,24 @@ export class CpmRules {
     if (++this.frame % CHECK_INTERVAL !== 0) return;
 
     const sizesByCell = this.sim.componentSizesByCell();
-    for (const [id, sizes] of sizesByCell) {
+    for (const [id, perCellSizes] of sizesByCell) {
       if (this.dead.has(id)) continue;
       if (this.cb.ignore?.(id)) continue;
+      // Use whole-structure connectivity when provided (host + its compartments),
+      // so organelles dividing the cytoplasm don't read as a fatal tear.
+      const sizes = this.cb.structureSizes?.(id) ?? perCellSizes;
 
-      // Structural failure: a second substantial component = a real tear.
+      // Structural failure: a second substantial component = a tear — but only
+      // fatal if it persists (a transient maneuver pinch recovers).
       if (sizes.length >= 2 && sizes[1] >= FRAG_MIN_PX) {
-        this.kill(id, "fragmented");
+        const t = (this.fragTicks.get(id) ?? 0) + 1;
+        this.fragTicks.set(id, t);
+        if (t >= FRAG_PERSIST) {
+          this.kill(id, "fragmented");
+        }
         continue;
       }
+      this.fragTicks.delete(id);
 
       // Mortal damage: most of the body is gone.
       const largest = sizes.length > 0 ? sizes[0] : 0;
@@ -102,6 +121,9 @@ export class CpmRules {
     for (const id of [...this.lowVolTicks.keys()]) {
       if (!sizesByCell.has(id)) this.lowVolTicks.delete(id);
     }
+    for (const id of [...this.fragTicks.keys()]) {
+      if (!sizesByCell.has(id)) this.fragTicks.delete(id);
+    }
     for (const id of [...this.health.keys()]) {
       if (!sizesByCell.has(id)) this.health.delete(id);
     }
@@ -110,6 +132,7 @@ export class CpmRules {
   private kill(id: number, reason: DeathReason): void {
     this.dead.add(id);
     this.lowVolTicks.delete(id);
+    this.fragTicks.delete(id);
     this.health.delete(id);
     this.cb.onDeath(id, reason);
   }
@@ -118,6 +141,7 @@ export class CpmRules {
   forget(id: number): void {
     this.dead.delete(id);
     this.lowVolTicks.delete(id);
+    this.fragTicks.delete(id);
     this.health.delete(id);
   }
 }

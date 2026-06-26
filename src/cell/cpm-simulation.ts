@@ -14,10 +14,11 @@
 import {
   CPM,
   GridManipulator,
-  ActivityConstraint,
   SoftConnectivityConstraint,
   ConnectedComponentsByCell,
   type CellId,
+  type ActivityConstraint,
+  type PerimeterConstraint,
 } from "../vendor/artistoo";
 import { PerCellAttractionConstraint } from "./per-cell-attraction-constraint";
 import type { CpmCellProfile, CpmWorldConfig } from "./cpm-config";
@@ -29,9 +30,11 @@ export interface CellRecord {
   alive: boolean;
 }
 
-/** Mutable conf shape we read/write each frame to toggle per-kind protrusion. */
+/** Mutable conf shape we read/write each frame to toggle per-kind protrusion and
+ *  retarget a host's perimeter budget as it wraps compartments. */
 interface SteerConf {
   LAMBDA_ACT: number[];
+  P: number[];
 }
 
 export class CpmSimulation {
@@ -40,8 +43,12 @@ export class CpmSimulation {
   readonly profiles: readonly CpmCellProfile[]; // index 0 unused (background)
   private readonly gm: GridManipulator;
   private readonly activity: ActivityConstraint;
+  private readonly perimeter: PerimeterConstraint;
   private readonly attraction: PerCellAttractionConstraint;
   private readonly conf: SteerConf;
+  /** Per-kind baseline target perimeter (a solid blob); the host's live budget is
+   *  this plus the perimeter its enclosed compartments add. */
+  private readonly basePerim: number[];
   private readonly cells = new Map<CellId, CellRecord>();
 
   // World<->lattice transform. originWX/Y = world coords of lattice pixel [0,0];
@@ -126,12 +133,16 @@ export class CpmSimulation {
       LAMBDA_CONNECTIVITY,
     });
 
-    this.activity = new ActivityConstraint({
-      LAMBDA_ACT,
-      MAX_ACT,
-      ACT_MEAN: "geometric",
-    });
-    this.cpm.add(this.activity);
+    // Activity (amoeboid protrusion) and Perimeter are AUTO-added by CPM from the
+    // LAMBDA_ACT / LAMBDA_P conf keys (see AutoAdderConfig). Grab those instances
+    // rather than adding our own — a second ActivityConstraint doubles the
+    // protrusion force and runs a parallel activity state, which corrupts the
+    // gradient and rigidifies the membrane. We keep the Perimeter handle so we can
+    // read per-cell perimeter and retarget a host's budget as it wraps compartments.
+    this.activity = this.cpm.getConstraint("ActivityConstraint") as ActivityConstraint;
+    this.perimeter = this.cpm.getConstraint("PerimeterConstraint") as PerimeterConstraint;
+    this.basePerim = [...P];
+
     // Per-cell directed motion (steering). Each cell (player, enemy, later
     // cargo) gets its own target + strength.
     this.attraction = new PerCellAttractionConstraint();
@@ -199,6 +210,52 @@ export class CpmSimulation {
       : this.profiles[kind].lambdaActRest;
   }
 
+  // ---- compartments: perimeter budget + cytoskeletal carry -----------------
+
+  /** Current actual perimeter (border-mismatch count) of a live cell. */
+  cellPerimeter(id: CellId): number {
+    return this.perimeter.cellperimeters[id] ?? 0;
+  }
+
+  /** A kind's baseline target perimeter (the solid-blob value from its profile). */
+  basePerimeter(kind: number): number {
+    return this.basePerim[kind] ?? 0;
+  }
+
+  /** Sum of actual perimeters over all live cells whose kind is in `kinds`.
+   *  An enclosed compartment inflates its host's perimeter by ~its own perimeter
+   *  (the inner boundary the host must wrap), so this is exactly the extra budget
+   *  the host needs to avoid perimeter-locking (which would freeze its membrane). */
+  compartmentPerimeterSum(kinds: readonly number[]): number {
+    let s = 0;
+    for (const rec of this.cells.values()) {
+      if (kinds.includes(rec.kind)) s += this.cellPerimeter(rec.id);
+    }
+    return s;
+  }
+
+  /** Retarget a kind's perimeter budget (mutates the shared conf the
+   *  PerimeterConstraint reads). Used each frame to size the host's budget to the
+   *  compartments it currently wraps. */
+  setKindPerimeterTarget(kind: number, value: number): void {
+    this.conf.P[kind] = value;
+  }
+
+  /** Softly bias a single compartment toward a lattice point (cytoskeletal
+   *  anchoring via the attraction constraint — a smooth force, not pixel surgery,
+   *  so it never disrupts the host's topology). `lambda` sets how firmly it's held;
+   *  0 releases it to drift. The compartment still deforms and flows with the
+   *  cytoplasm — it's biased, not pinned. */
+  attractCellTo(id: CellId, x: number, y: number, lambda: number): void {
+    if (!this.cells.has(id)) return;
+    this.attraction.setTarget(
+      id,
+      clamp(x, 0, this.field - 1),
+      clamp(y, 0, this.field - 1),
+      lambda
+    );
+  }
+
   // ---- reads ---------------------------------------------------------------
 
   getCells(): IterableIterator<CellRecord> {
@@ -207,6 +264,13 @@ export class CpmSimulation {
 
   getCell(id: CellId): CellRecord | undefined {
     return this.cells.get(id);
+  }
+
+  /** Cell id owning a lattice pixel (0 = background/medium). For build placement:
+   *  a structure is only valid on a pixel the host actually owns. */
+  ownerAtLattice(x: number, y: number): CellId {
+    if (x < 0 || x >= this.field || y < 0 || y >= this.field) return 0;
+    return this.cpm.pixt([x, y]);
   }
 
   activityAtIndex(i: number): number {
@@ -231,6 +295,40 @@ export class CpmSimulation {
       out[y * f + x] = this.cpm.cellKind(id) & 0xff;
     }
     return out;
+  }
+
+  /** Centroid + half-extents (bounding-box) of a cell in one pass. Defines a
+   *  DEFORMING local frame: anchors stored as fractions of (halfW,halfH) stretch
+   *  and compress with the cell, so things pinned to it move organically with the
+   *  cell's shape rather than at a rigid pixel offset. Null if the cell is gone. */
+  cellFrame(
+    id: CellId
+  ): { cx: number; cy: number; halfW: number; halfH: number } | null {
+    let n = 0,
+      sx = 0,
+      sy = 0,
+      minX = Infinity,
+      maxX = -Infinity,
+      minY = Infinity,
+      maxY = -Infinity;
+    for (const [[x, y], v] of this.cpm.grid.pixels()) {
+      if (v !== id) continue;
+      n++;
+      sx += x;
+      sy += y;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (n === 0) return null;
+    return {
+      cx: sx / n,
+      cy: sy / n,
+      // Guard against a degenerate (1-px) extent so fractions stay finite.
+      halfW: Math.max((maxX - minX) / 2, 1),
+      halfH: Math.max((maxY - minY) / 2, 1),
+    };
   }
 
   /** Centroid of a cell in lattice coords + its pixel count, or null if gone. */
@@ -278,6 +376,57 @@ export class CpmSimulation {
       out.set(rec.id, sizes);
     }
     return out;
+  }
+
+  /** Connected-component sizes (descending) of the STRUCTURE formed by a host
+   *  cell together with its internal compartments — flood-filled over the union of
+   *  `primaryId`'s pixels and all pixels owned by cells of `memberKinds`.
+   *
+   *  This is the correct "is the cell torn?" test for a compartmentalized cell:
+   *  an organelle sitting between two lobes of cytoplasm BRIDGES them in the union,
+   *  so normal compartment-wrapping reads as ONE component. Only a genuine tear —
+   *  a piece that separates with no compartment bridging it — splits the union. */
+  structureComponentSizes(
+    primaryId: CellId,
+    memberKinds: readonly number[]
+  ): number[] {
+    const f = this.field;
+    const mark = new Uint8Array(f * f);
+    for (const [[x, y], v] of this.cpm.grid.pixels()) {
+      if (v === primaryId || memberKinds.includes(this.cpm.t2k[v])) {
+        mark[y * f + x] = 1;
+      }
+    }
+    const sizes: number[] = [];
+    const stack: number[] = [];
+    for (let s = 0; s < mark.length; s++) {
+      if (mark[s] !== 1) continue;
+      let n = 0;
+      stack.push(s);
+      mark[s] = 2;
+      while (stack.length) {
+        const j = stack.pop()!;
+        n++;
+        const x = j % f,
+          y = (j / f) | 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx,
+              ny = y + dy;
+            if (nx < 0 || nx >= f || ny < 0 || ny >= f) continue;
+            const k = ny * f + nx;
+            if (mark[k] === 1) {
+              mark[k] = 2;
+              stack.push(k);
+            }
+          }
+        }
+      }
+      sizes.push(n);
+    }
+    sizes.sort((a, b) => b - a);
+    return sizes;
   }
 
   /** Target volume (lattice px) for a cell's kind. */

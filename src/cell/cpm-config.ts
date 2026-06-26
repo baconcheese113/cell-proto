@@ -42,9 +42,12 @@ export interface CpmCellProfile {
 export const PLAYER_PROFILE: CpmCellProfile = {
   name: "player",
   color: 0x49d0ff,
-  volume: 540,
+  // Large enough that 15+ small organelles stay a minority of the cell's area,
+  // leaving thick cytoplasm so vigorous crawling never pinches the cell apart.
+  // (A small cell crowded with compartments fragments when it moves.)
+  volume: 1300,
   lambdaV: 50,
-  perimeter: 260,
+  perimeter: 400,
   lambdaP: 2,
   maxAct: 80,
   lambdaAct: 220, // active protrusion while steering (above this it self-fragments)
@@ -97,10 +100,19 @@ export const DIGESTING_PROFILE: CpmCellProfile = {
 export const NUCLEUS_PROFILE: CpmCellProfile = {
   name: "nucleus",
   color: 0x9b6cff,
-  volume: 120,
+  // Compartments must be SMALL relative to the cell: their combined volume has to
+  // fit inside the cytosol with cytoplasm to spare, or they bulge through the
+  // membrane. At ~26 px, 15+ structures still leave the ~540 px cell mostly
+  // cytoplasm. (Distinct organelle kinds with their own sizes — a larger nucleus,
+  // tiny ribosomes — come later; for now one shared profile.)
+  volume: 26,
+  // Deformable but stable: a firm volume target keeps the compartment from
+  // collapsing/merging in the churning interior, while modest perimeter stiffness
+  // still lets it squish and flow with the cytoplasm (organic) rather than riding
+  // as a rigid pinned blob. (lambdaP is the deform-vs-survive dial.)
   lambdaV: 40,
-  perimeter: 70,
-  lambdaP: 3,
+  perimeter: 18,
+  lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,
   lambdaActRest: 0,
