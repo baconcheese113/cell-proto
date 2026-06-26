@@ -12,6 +12,7 @@ import { CpmCombat } from "./cpm-combat";
 import { CpmField } from "./cpm-field";
 import { CpmDeformGrid } from "./cpm-deform-grid";
 import { CpmBigOrganelles } from "./cpm-big-organelles";
+import { DEFAULT_NUCLEUS_SOFT_BODY } from "./cpm-soft-body";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -122,6 +123,13 @@ export class CpmWorldScene extends Phaser.Scene {
     if (pc) {
       const N = CpmWorldScene.NUCLEUS;
       this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
+      // A second, smaller big organelle (a large mitochondrion) to prove multiple
+      // soft bodies + footprints coexist without fragmenting the host.
+      this.bigOrganelles.add("mito-big", 0xff9d4d, pc.x + 14, pc.y, {
+        ...DEFAULT_NUCLEUS_SOFT_BODY,
+        restRadius: 4,
+        nodeCount: 12,
+      });
     }
 
     this.cameras.main.setZoom(1.8);
@@ -390,18 +398,18 @@ export class CpmWorldScene extends Phaser.Scene {
       this.drawStructure(g, o, wx, wy, s);
     }
 
-    // The nucleus soft body: fill its polygon (oozes/ovals visibly) and tint the
-    // outline toward red as confinement stress rises (the rupture warning ramp).
-    const nucleus = this.bigOrganelles.organelles[0];
-    if (nucleus) {
-      const nodes = nucleus.body.nodes;
-      const stress = nucleus.stress;
+    // Big organelles (nucleus + mitochondrion): fill each soft-body polygon
+    // (oozes/ovals visibly) and tint the outline toward red as confinement stress
+    // rises (the rupture warning ramp).
+    for (const big of this.bigOrganelles.organelles) {
+      const nodes = big.body.nodes;
+      const stress = big.stress;
       const pts: Phaser.Math.Vector2[] = [];
       for (const nd of nodes) {
         const [wx, wy] = this.sim.latticeToWorld(nd.x, nd.y);
         pts.push(new Phaser.Math.Vector2(wx, wy));
       }
-      g.fillStyle(nucleus.color, 0.9);
+      g.fillStyle(big.color, 0.9);
       g.lineStyle(Math.max(1, s * 0.35), stress > 0.01 ? 0xff5d5d : 0x2a1a4a, 0.7 + 0.3 * stress);
       g.beginPath();
       g.moveTo(pts[0].x, pts[0].y);
@@ -409,11 +417,13 @@ export class CpmWorldScene extends Phaser.Scene {
       g.closePath();
       g.fillPath();
       g.strokePath();
-      // Nucleolus at the (deforming) center.
-      const nc = nucleus.body.center();
-      const [cwx, cwy] = this.sim.latticeToWorld(nc.x, nc.y);
-      g.fillStyle(0x5b2f9e, 0.9);
-      g.fillCircle(cwx, cwy, nucleus.body.cfg.restRadius * s * 0.35);
+      // Nucleolus at the (deforming) center — nucleus only.
+      if (big.type === "nucleus") {
+        const nc = big.body.center();
+        const [cwx, cwy] = this.sim.latticeToWorld(nc.x, nc.y);
+        g.fillStyle(0x5b2f9e, 0.9);
+        g.fillCircle(cwx, cwy, big.body.cfg.restRadius * s * 0.35);
+      }
     }
   }
 
