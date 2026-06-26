@@ -11,7 +11,7 @@
 
 import type { CpmSimulation } from "./cpm-simulation";
 
-export type DeathReason = "fragmented" | "dissolved" | "apoptosis";
+export type DeathReason = "fragmented" | "dissolved" | "apoptosis" | "ruptured";
 
 export interface CpmRulesCallbacks {
   /** Fired once when a cell crosses a fatal threshold. The handler is expected
