@@ -40,9 +40,10 @@ const DIGEST_KIND = 7;
 
 // DEV: freeze the player-anchored streaming bubble so the whole fixed lattice is
 // visible and stable to study (camera fits the map + mouse-wheel zoom). Flowing
-// traffic is culled at the lattice edge instead of streamed out. Re-enable
-// streaming for the infinite world later.
-const DEV_FREEZE_STREAMING = true;
+// traffic is culled at the lattice edge instead of streamed out. This is a STUDY
+// aid only — for actual play it must be false so the camera follows the player at a
+// playable zoom (fit-to-map makes the cell tiny and movement feel glacial).
+const DEV_FREEZE_STREAMING = false;
 
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
 function heartbeat(timeSec: number, bpm = 70): number {
@@ -125,15 +126,16 @@ export class CpmWorldScene extends Phaser.Scene {
       ignore: (id) => this.combat.isConsuming(id),
     });
 
-    // Motile kinds protrude (Act on). In the vessel the controlled cell is always
-    // active too — it's continuously being pumped (carried by the current), not
-    // resting; input just directs it. Sessile wall kinds get no Act.
-    this.sim.setKindActive(CONTROLLED_KIND, true);
+    // Autonomous motile kinds protrude (Act on). The CONTROLLED cell is NOT forced
+    // active here — it rests by default and only protrudes WHILE the player steers
+    // (toggled in update), so it never drifts on its own. Sessile wall kinds get no Act.
     this.sim.setKindActive(MACROPHAGE_KIND, true);
     this.sim.setKindActive(MICROBE_KIND, true);
 
-    // The current carries the lumen dwellers (incl. the player), not the walls.
-    this.sim.flow.setFlowingKinds([CONTROLLED_KIND, MACROPHAGE_KIND, MICROBE_KIND]);
+    // The current carries the autonomous lumen dwellers, NOT the player — the player
+    // moves only on input (never swept downstream), so it never gets shoved into the
+    // lining and wedged. Sessile walls are excluded too.
+    this.sim.flow.setFlowingKinds([MACROPHAGE_KIND, MICROBE_KIND]);
     // Lining + tissue are procedurally maintained, so drop (don't remember) them
     // when they stream out; the vessel maintainer refills ahead.
     this.sim.setTransient(ENDOTHELIAL_KIND);
@@ -488,11 +490,12 @@ export class CpmWorldScene extends Phaser.Scene {
   override update(): void {
     const pointer = this.input.activePointer;
 
-    // The controlled cell is always Act-on (it's being pumped, not resting). Hold
-    // LMB to steer it across/along the current toward the cursor; release and the
-    // current carries it.
+    // The controlled cell RESTS by default and only protrudes while steered, so with
+    // no input it holds still (just Monte-Carlo wiggle) and never drifts. Hold LMB to
+    // steer toward the cursor; release to stop.
     this.steering = pointer.leftButtonDown();
     const kind = this.controlledKind();
+    this.sim.setKindActive(kind, this.steering);
     if (this.steering) {
       const [lx, ly] = this.sim.worldToLattice(pointer.worldX, pointer.worldY);
       this.sim.steerCell(this.controlledCellId, lx, ly);

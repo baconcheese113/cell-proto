@@ -33,10 +33,10 @@ import type { WorldCell } from "./world-cell";
 /** Nominal area per body (matches the CPM profiles' target volumes) — drives
  *  predator/prey size relations + the overview render radius. */
 const BODY_VOL: Record<BodyKey, number> = {
-  macrophage: 1300,
-  epithelial: 700,
-  microbe: 280,
-  endothelial: 600,
+  macrophage: 560,
+  epithelial: 500,
+  microbe: 140,
+  endothelial: 900,
   fibroblast: 460,
 };
 

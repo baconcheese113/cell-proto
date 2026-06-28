@@ -34,9 +34,9 @@ export const DEFAULT_VESSEL: VesselConfig = {
   radius: 2200,
   wobbleAmp: 300,
   wobbleK: 3,
-  // Both walls in view (~400 world px lumen) with room for the player (~200) to
-  // flow without jamming.
-  lumenR: 200,
+  // A WIDE open channel (~680 world px lumen): the player (~200 across) plus a few
+  // cells abreast with real room to maneuver, not a jam. (Was 200 — too narrow.)
+  lumenR: 340,
   liningW: 200,
   tissueW: 120,
   liningInset: 75, // ~ endothelial cell radius in world px

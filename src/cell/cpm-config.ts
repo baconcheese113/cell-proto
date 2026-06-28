@@ -38,16 +38,23 @@ export interface CpmCellProfile {
 // slightly looser perimeter drives the crawl; the soft connectivity penalty is
 // cheap and resists spontaneous fragmentation without blocking motion.
 
+// CELL-SIZE SCHEME (realistic relative diameters, legibility-adjusted; areas in
+// lattice px). The player macrophage is the reference. Real WBC ~2x an RBC across,
+// macrophage > lymphocyte > RBC ~ bacterium. Smaller player than before (was 1300,
+// vestigial from the embedded-organelle era) => much faster amoeboid crawl.
+//   macrophage/player ~560   tissue/epithelial ~500   endothelial(wall) ~600
+//   enemy/lymphocyte ~230     microbe/bacterium ~140
+// Perimeters scale ~sqrt(area). Nucleus soft-body scales in cpm-soft-body.ts.
+
 /** The player's amoeboid cell: soft, motile, steerable, rests when idle. */
 export const PLAYER_PROFILE: CpmCellProfile = {
   name: "player",
   color: 0x49d0ff,
-  // Large enough that 15+ small organelles stay a minority of the cell's area,
-  // leaving thick cytoplasm so vigorous crawling never pinches the cell apart.
-  // (A small cell crowded with compartments fragments when it moves.)
-  volume: 1300,
+  // A macrophage-sized motile cell. Small enough to crawl responsively; the few
+  // big organelles (nucleus soft body) are sized to stay a minority of its area.
+  volume: 560,
   lambdaV: 50,
-  perimeter: 400,
+  perimeter: 260,
   lambdaP: 2,
   maxAct: 80,
   lambdaAct: 220, // active protrusion while steering (above this it self-fragments)
@@ -62,9 +69,9 @@ export const PLAYER_PROFILE: CpmCellProfile = {
 export const ENEMY_PROFILE: CpmCellProfile = {
   name: "enemy",
   color: 0xff5d73,
-  volume: 460,
+  volume: 230,
   lambdaV: 50,
-  perimeter: 230,
+  perimeter: 165,
   lambdaP: 2,
   maxAct: 50,
   lambdaAct: 180,
@@ -130,10 +137,10 @@ export const NUCLEUS_PROFILE: CpmCellProfile = {
 export const TISSUE_PROFILE: CpmCellProfile = {
   name: "tissue",
   color: 0x6b8f9c,
-  volume: 700,
+  volume: 500,
   lambdaV: 45,
   // Deformable (low lambdaP) so the player can wedge them apart and they reflow.
-  perimeter: 300,
+  perimeter: 255,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,
@@ -154,9 +161,9 @@ export const TISSUE_PROFILE: CpmCellProfile = {
 export const MICROBE_PROFILE: CpmCellProfile = {
   name: "microbe",
   color: 0xe7d14b,
-  volume: 280,
+  volume: 140,
   lambdaV: 50,
-  perimeter: 150,
+  perimeter: 105,
   lambdaP: 2,
   maxAct: 60,
   lambdaAct: 200,
@@ -192,20 +199,24 @@ export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
   // scale cpm.step). Camera zoom is tuned to match in the scene.
   worldPerPixel: 5,
   temperature: 16,
-  stepsPerFrame: 2,
+  // 3 (was 2): movement is sim-rate-bound, so more MCS/frame = snappier crawl per
+  // real second. Affordable now that cpm.step is cheap (post-connectivity-removal).
+  stepsPerFrame: 3,
   recenterMargin: 0.22,
   seed: 1,
 };
 
-/** An ENDOTHELIAL lining cell: cohesive + sessile, forms the vessel wall. Big-ish
- *  so a couple span the lining band; sticks tightly to neighbours so the lining
- *  holds against the pump (containment is the cells themselves, not a wall mask). */
+/** An ENDOTHELIAL lining cell: cohesive + sessile, forms the vessel wall. LARGE +
+ *  flat (realistic) so adjacent wall cells OVERLAP at the slot spacing and form a
+ *  continuous SEAL — no gaps for motile bacteria to squeeze through — and sticks
+ *  tightly to neighbours so the lining holds against the pump. (Containment is the
+ *  cells themselves, not a wall mask.) */
 export const ENDOTHELIAL_PROFILE: CpmCellProfile = {
   name: "endothelial",
   color: 0x8a6f9e,
-  volume: 600,
+  volume: 900,
   lambdaV: 50,
-  perimeter: 280,
+  perimeter: 320,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,

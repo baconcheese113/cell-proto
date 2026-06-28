@@ -15,8 +15,10 @@ test("recenters toward its target after displacement", () => {
 
 test("preserves area and oozes oval when squeezed into a channel", () => {
   const b = new CpmSoftBody(50, 50, DEFAULT_NUCLEUS_SOFT_BODY);
-  // A vertical channel narrower than the body: |x-50| <= 4 (width 9 < diameter 14).
-  const channel = (x: number, _y: number) => Math.abs(x - 50) <= 4;
+  // A vertical channel well narrower than the body, scaled to its radius so the
+  // squeeze ratio (~0.6x diameter) is the same at any restRadius.
+  const half = DEFAULT_NUCLEUS_SOFT_BODY.restRadius * 0.6;
+  const channel = (x: number, _y: number) => Math.abs(x - 50) <= half;
   for (let i = 0; i < 400; i++) b.step({ x: 50, y: 50 }, channel);
   const area = b.area();
   // Area held within tolerance (soft preservation, not rigid).
