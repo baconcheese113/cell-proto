@@ -66,6 +66,11 @@ export class CpmSimulation {
   private readonly recenterMargin: number;
   private readonly edgeBand = 18; // lattice px from the boundary = "leaving"
   private readonly dormant: { kind: number; wx: number; wy: number }[] = [];
+  // Kinds whose cells are KILLED (not remembered as dormant) when they leave the
+  // bubble. Used for procedurally-refilled tissue: individual tissue cells are
+  // generic and re-spawned to fill space, so remembering each one would bloat the
+  // dormant list as you migrate. The owner (CpmTissue) maintains density instead.
+  private readonly transientKinds = new Set<number>();
 
   constructor(
     readonly worldConfig: CpmWorldConfig,
@@ -187,6 +192,14 @@ export class CpmSimulation {
     this.attraction.forget(id);
     rec.alive = false;
     this.cells.delete(id);
+  }
+
+  /** Mark a kind as transient: its cells are KILLED (not remembered as dormant)
+   *  when they leave the bubble. For procedurally-refilled background populations
+   *  whose individuals are generic and re-spawned rather than tracked. */
+  setTransient(kind: number, on = true): void {
+    if (on) this.transientKinds.add(kind);
+    else this.transientKinds.delete(kind);
   }
 
   // ---- stepping & steering -------------------------------------------------
@@ -631,10 +644,13 @@ export class CpmSimulation {
       const keep =
         id === anchorId || (cx >= lo && cx <= hi && cy >= lo && cy <= hi);
       if (!keep) {
-        // Demote: remember its world position (invariant under the shift).
-        const wx = oldOriginWX + (s.sx / s.px.length) * this.scale;
-        const wy = oldOriginWY + (s.sy / s.px.length) * this.scale;
-        this.dormant.push({ kind: s.kind, wx, wy });
+        // Demote: remember its world position (invariant under the shift) — unless
+        // the kind is transient, in which case it's dropped (the owner refills).
+        if (!this.transientKinds.has(s.kind)) {
+          const wx = oldOriginWX + (s.sx / s.px.length) * this.scale;
+          const wy = oldOriginWY + (s.sy / s.px.length) * this.scale;
+          this.dormant.push({ kind: s.kind, wx, wy });
+        }
         this.attraction.forget(id);
         this.cells.delete(id);
         demoted.push(id);
@@ -672,10 +688,12 @@ export class CpmSimulation {
   }
 
   private makeDormant(rec: CellRecord, demoted: CellId[]): void {
-    const cc = this.centroidLattice(rec.id);
-    const wx = cc ? this.latticeToWorld(cc.x, cc.y)[0] : this.originWX;
-    const wy = cc ? this.latticeToWorld(cc.x, cc.y)[1] : this.originWY;
-    this.dormant.push({ kind: rec.kind, wx, wy });
+    if (!this.transientKinds.has(rec.kind)) {
+      const cc = this.centroidLattice(rec.id);
+      const wx = cc ? this.latticeToWorld(cc.x, cc.y)[0] : this.originWX;
+      const wy = cc ? this.latticeToWorld(cc.x, cc.y)[1] : this.originWY;
+      this.dormant.push({ kind: rec.kind, wx, wy });
+    }
     this.gm.killCell(rec.id);
     this.attraction.forget(rec.id);
     this.cells.delete(rec.id);

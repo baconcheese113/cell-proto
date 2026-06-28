@@ -12,6 +12,7 @@ import { CpmCombat } from "./cpm-combat";
 import { CpmField } from "./cpm-field";
 import { CpmDeformGrid } from "./cpm-deform-grid";
 import { CpmBigOrganelles } from "./cpm-big-organelles";
+import { CpmProfiler } from "./cpm-profiler";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -34,9 +35,11 @@ export class CpmWorldScene extends Phaser.Scene {
   private grid!: CpmDeformGrid;
   private bigOrganelles!: CpmBigOrganelles;
   private interiorGfx!: Phaser.GameObjects.Graphics;
+  private prof = new CpmProfiler();
   private playerId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
   private hud!: Phaser.GameObjects.Text;
+  private profText!: Phaser.GameObjects.Text;
   private steering = false;
   private deaths = 0;
   private camCx: number | undefined;
@@ -137,6 +140,21 @@ export class CpmWorldScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(1000);
 
+    // Always-on performance overlay (top-right): per-system ms + scale drivers.
+    this.profText = this.add
+      .text(this.scale.width - 12, 10, "", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#8fe39b",
+        align: "right",
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(1000);
+    this.scale.on("resize", (size: Phaser.Structs.Size) => {
+      this.profText.setX(size.width - 12);
+    });
+
     this.input.mouse?.disableContextMenu();
     // B = build: grow a new organelle compartment.
     this.input.keyboard?.on("keydown-B", () => this.growOrganelle());
@@ -151,6 +169,7 @@ export class CpmWorldScene extends Phaser.Scene {
         getPlayerId: () => this.playerId,
         occupants: () => this.grid.occupants,
         deaths: () => this.deaths,
+        perf: () => this.prof.report(),
         nucleus: () => {
           const n = this.bigOrganelles.organelles[0];
           if (!n) return null;
@@ -271,8 +290,10 @@ export class CpmWorldScene extends Phaser.Scene {
 
     // Enemy behaviour (per-cell wander/flee), then combat (hold RIGHT mouse to
     // engulf the nearest enemy — overrides the AI for the grabbed prey).
-    this.enemyAi.update(1 / 60);
-    this.combat.update(pointer.rightButtonDown());
+    this.prof.measure("behavior", () => {
+      this.enemyAi.update(1 / 60);
+      this.combat.update(pointer.rightButtonDown());
+    });
 
     // Compartments-in-membrane is the digesting prey only now (built organelles
     // are lightweight, not CPM cells), so size the perimeter budget to those.
@@ -282,11 +303,13 @@ export class CpmWorldScene extends Phaser.Scene {
         this.sim.compartmentPerimeterSum([DIGEST_KIND])
     );
 
-    this.sim.step();
+    this.prof.measure("cpm.step", () => this.sim.step());
 
     // Infinite-world streaming: recenter the bubble on the player, demote cells
     // that left, re-activate ones that returned.
-    const { demoted, shiftX, shiftY } = this.sim.streamAround(this.playerId);
+    const { demoted, shiftX, shiftY } = this.prof.measure("stream", () =>
+      this.sim.streamAround(this.playerId)
+    );
     for (const id of demoted) {
       this.cpmRenderer.forgetCell(id);
       this.rules.forget(id); // dormant != dead
@@ -309,7 +332,9 @@ export class CpmWorldScene extends Phaser.Scene {
       const [lx, ly] = this.sim.worldToLattice(ptr.worldX, ptr.worldY);
       if (c) steerDir = { x: lx - c.x, y: ly - c.y };
     }
-    this.bigOrganelles.update(steerDir, shiftX, shiftY);
+    this.prof.measure("interior", () =>
+      this.bigOrganelles.update(steerDir, shiftX, shiftY)
+    );
     const burst = this.bigOrganelles.consumeRupture();
     if (burst) {
       // The nucleus ruptured under confinement — the player dies (the toy's fail
@@ -333,13 +358,15 @@ export class CpmWorldScene extends Phaser.Scene {
         );
       }
     }
-    this.signal.step(0.18, 0.03);
+    this.prof.measure("field", () => this.signal.step(0.18, 0.03));
 
     // Biology/rules layer: structural-failure death etc.
-    this.rules.update();
+    this.prof.measure("rules", () => this.rules.update());
 
-    this.cpmRenderer.render();
-    this.drawInterior();
+    this.prof.measure("render", () => {
+      this.cpmRenderer.render();
+      this.drawInterior();
+    });
 
     // Camera follows the player, but with a little lag so the cell visibly drifts
     // as it crawls instead of being pinned dead-centre (gives the interior life).
@@ -374,6 +401,19 @@ export class CpmWorldScene extends Phaser.Scene {
         (stressed > 0 ? ` (${stressed} squeezed!)` : "") +
         `   nutrients ${this.combat.nutrients}`
     );
+
+    // Profiler: scale drivers + per-system ms (the always-on cost overlay).
+    let activeCells = 0;
+    let borderPixels = 0;
+    for (const rec of this.sim.getCells()) {
+      activeCells++;
+      borderPixels += this.sim.cellPerimeter(rec.id);
+    }
+    this.prof.metrics.activeCells = activeCells;
+    this.prof.metrics.dormantCells = this.sim.dormantCount;
+    this.prof.metrics.borderPixels = borderPixels;
+    this.prof.frame();
+    this.profText.setText(this.prof.overlayText());
   }
 
   /** Draw the deforming-grid small organelles + the nucleus soft body. */
