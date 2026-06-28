@@ -142,8 +142,14 @@ export class CpmWorldScene extends Phaser.Scene {
       registerChild: (cid, comp) => this.compositions.set(cid, comp),
       damage: (id, amt) => this.rules.applyDamage(id, amt),
       onStarve: (id) => this.onCellDeath(id, "dissolved"),
-      // The player's body doesn't auto-split into uncontrolled copies.
-      canDivide: (id) => id !== this.controlledCellId,
+      // The player's body doesn't auto-split into uncontrolled copies, and the
+      // structural vessel cells (lining/tissue) don't divide into the lumen — the
+      // maintainer keeps their population, so the passage stays open.
+      canDivide: (id) => {
+        if (id === this.controlledCellId) return false;
+        const k = this.sim.getCell(id)?.kind;
+        return k !== ENDOTHELIAL_KIND && k !== FIBROBLAST_KIND;
+      },
     });
     this.combat = new CpmCombat(this.sim, {
       playerKind: CONTROLLED_KIND,

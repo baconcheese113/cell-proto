@@ -87,6 +87,15 @@ export class CpmRenderer {
       let r = (c.r + (255 - c.r) * t) | 0;
       let g = (c.g + (245 - c.g) * t) | 0;
       let b = (c.b + (200 - c.b) * t) | 0;
+      // Cell outline: darken where this pixel borders a DIFFERENT cell, so adjacent
+      // same-coloured cells (e.g. the endothelial lining) read as distinct bricks.
+      const right = grid.pixt([x + 1, y]);
+      const down = grid.pixt([x, y + 1]);
+      if ((right !== id && right !== 0) || (down !== id && down !== 0)) {
+        r = (r * 0.32) | 0;
+        g = (g * 0.32) | 0;
+        b = (b * 0.32) | 0;
+      }
       // Molecular field glow (additive green) routed through the cytosol.
       if (this.molField) {
         const fv = this.molField.valueAt(x, y) / FIELD_FULL;

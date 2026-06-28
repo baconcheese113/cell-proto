@@ -21,6 +21,10 @@ export interface VesselConfig {
   liningW: number;
   /** Width of the tissue band beyond the lining (world px). */
   tissueW: number;
+  /** Approx wall-cell radius (world px). Lining cells are seeded at least this far
+   *  outside the lumen so when they grow their inner edge sits AT the lumen wall,
+   *  not inside it (otherwise the growing wall seals the passage). */
+  liningInset: number;
 }
 
 // Dimensions are WORLD px. With worldPerPixel ~5 a cell of radius ~20 lattice px
@@ -28,13 +32,14 @@ export interface VesselConfig {
 // abreast. radius is large (a long loop = a real journey before you return).
 export const DEFAULT_VESSEL: VesselConfig = {
   radius: 2200,
-  wobbleAmp: 320,
+  wobbleAmp: 300,
   wobbleK: 3,
-  // Narrow enough that BOTH walls are in view (a readable passage, ~320 world px
-  // wide) and the player cell (~200 world px) flows through it snugly.
-  lumenR: 160,
-  liningW: 180,
+  // Both walls in view (~400 world px lumen) with room for the player (~200) to
+  // flow without jamming.
+  lumenR: 200,
+  liningW: 200,
   tissueW: 120,
+  liningInset: 75, // ~ endothelial cell radius in world px
 };
 
 export type Region = "lumen" | "lining" | "tissue" | "outside";
@@ -136,7 +141,7 @@ export class CpmVessel {
     spacing: number
   ): Array<{ x: number; y: number; role: "lining" | "tissue" }> {
     const out: Array<{ x: number; y: number; role: "lining" | "tissue" }> = [];
-    const { lumenR, liningW, tissueW } = this.cfg;
+    const { lumenR, liningW, tissueW, liningInset } = this.cfg;
     // Arc length per radian ~ radius; choose dt so steps are ~spacing apart.
     const dt = spacing / Math.max(1, this.cfg.radius);
     for (let t = centerT - span; t <= centerT + span; t += dt) {
@@ -146,8 +151,9 @@ export class CpmVessel {
       const nx = -tan.y;
       const ny = tan.x;
       for (const side of [1, -1]) {
-        // Lining: one or two cells deep across the lining band.
-        for (let off = lumenR + liningW * 0.35; off < lumenR + liningW; off += liningW * 0.55) {
+        // Lining cells seeded OUTSIDE the lumen (first row's inner edge ~ lumenR),
+        // stepping outward across the band so they don't grow into the passage.
+        for (let off = lumenR + liningInset; off < lumenR + liningW; off += liningInset * 1.25) {
           out.push({ x: p.x + nx * side * off, y: p.y + ny * side * off, role: "lining" });
         }
         // Tissue: a thin layer beyond the lining.
