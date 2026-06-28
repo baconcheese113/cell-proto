@@ -352,29 +352,38 @@ export class CpmWorldScene extends Phaser.Scene {
       this.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", xi, yi);
     }
 
-    // A little lumen traffic (microbes), kept SPARSE so the channel stays open and
-    // the pump can move things. Spawned upstream so they flow through and are culled
-    // at the downstream edge (circulation).
+    // Lumen traffic, kept SPARSE so the channel stays open: bacteria (prey) +
+    // a few autonomous immune cells (WBCs that hunt the bacteria — the world feels
+    // alive, and it sets up diapedesis). Spawned across the visible arc; they flow
+    // and are culled at the edge (circulation).
     let microbeCount = 0;
-    for (const rec of this.sim.getCells()) if (rec.kind === MICROBE_KIND) microbeCount++;
-    const cap = 8;
-    const want = initial ? 5 : microbeCount < cap && Math.random() < 0.3 ? 1 : 0;
-    for (let i = 0; i < want; i++) {
-      // A point in the lumen across the visible arc.
+    let wbcCount = 0;
+    for (const rec of this.sim.getCells()) {
+      if (rec.kind === MICROBE_KIND) microbeCount++;
+      else if (rec.kind === MACROPHAGE_KIND) wbcCount++;
+    }
+    const spawnInLumen = (preset: string): void => {
       const t = centerT + (Math.random() - 0.5) * span;
       const p = this.vessel.pathPoint(t);
       const jitter = (Math.random() - 0.5) * this.vessel.cfg.lumenR * 1.2;
       const tan = this.vessel.tangent(t);
-      const nx = -tan.y;
-      const ny = tan.x;
-      const wx = p.x + nx * jitter;
-      const wy = p.y + ny * jitter;
+      const wx = p.x + -tan.y * jitter;
+      const wy = p.y + tan.x * jitter;
       const [lx, ly] = this.sim.worldToLattice(wx, wy);
       const xi = Math.round(lx);
       const yi = Math.round(ly);
-      if (xi < margin || xi >= f - margin || yi < margin || yi >= f - margin) continue;
-      if (this.sim.ownerAtLattice(xi, yi) !== 0) continue;
-      this.spawnPreset("microbe", xi, yi);
+      if (xi < margin || xi >= f - margin || yi < margin || yi >= f - margin) return;
+      if (this.sim.ownerAtLattice(xi, yi) !== 0) return;
+      this.spawnPreset(preset, xi, yi);
+    };
+    const microbeCap = 8;
+    const wbcCap = 3;
+    if (initial) {
+      for (let i = 0; i < 5; i++) spawnInLumen("microbe");
+      for (let i = 0; i < 2; i++) spawnInLumen("macrophage");
+    } else {
+      if (microbeCount < microbeCap && Math.random() < 0.3) spawnInLumen("microbe");
+      if (wbcCount < wbcCap && Math.random() < 0.12) spawnInLumen("macrophage");
     }
 
     if (initial) for (let i = 0; i < 40; i++) this.sim.step(); // let them take shape
@@ -395,7 +404,8 @@ export class CpmWorldScene extends Phaser.Scene {
     const f = this.sim.field;
     const band = 10;
     for (const rec of [...this.sim.getCells()]) {
-      if (rec.kind !== MICROBE_KIND) continue;
+      // Autonomous lumen traffic (bacteria + immune cells), not the player/walls.
+      if (rec.kind !== MICROBE_KIND && rec.kind !== MACROPHAGE_KIND) continue;
       const c = centroids.get(rec.id);
       if (!c) continue;
       if (c.x < band || c.x > f - band || c.y < band || c.y > f - band) {
