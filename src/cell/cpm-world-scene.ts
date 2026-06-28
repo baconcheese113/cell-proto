@@ -12,7 +12,6 @@ import { CpmCombat } from "./cpm-combat";
 import { CpmField } from "./cpm-field";
 import { CpmDeformGrid } from "./cpm-deform-grid";
 import { CpmBigOrganelles } from "./cpm-big-organelles";
-import { DEFAULT_NUCLEUS_SOFT_BODY } from "./cpm-soft-body";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -123,13 +122,6 @@ export class CpmWorldScene extends Phaser.Scene {
     if (pc) {
       const N = CpmWorldScene.NUCLEUS;
       this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
-      // A second, smaller big organelle (a large mitochondrion) to prove multiple
-      // soft bodies + footprints coexist without fragmenting the host.
-      this.bigOrganelles.add("mito-big", 0xff9d4d, pc.x + 14, pc.y, {
-        ...DEFAULT_NUCLEUS_SOFT_BODY,
-        restRadius: 4,
-        nodeCount: 12,
-      });
     }
 
     this.cameras.main.setZoom(1.8);
