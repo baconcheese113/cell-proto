@@ -12,12 +12,17 @@ import type { CellComposition, Rng } from "./cell-composition";
 
 export const START_ENERGY = 50;
 export const MAX_ENERGY = 100;
-export const DIVIDE_THRESHOLD = 82;
+export const DIVIDE_THRESHOLD = 90;
 /** Energy units per metabolic-balance unit per frame. */
 export const METAB_RATE = 1;
-/** Predation: per-frame energy a predator drains from / damage it deals to prey. */
-export const FEED_GAIN = 0.8;
+/** Predation: per-frame energy a predator drains from / damage it deals to prey.
+ *  Kept modest so predators reproduce slowly relative to prey (a stable food web,
+ *  not a predator explosion). */
+export const FEED_GAIN = 0.35;
 export const FEED_DAMAGE = 1.4;
+/** Energy each of parent + child keep after a division (fraction of pre-split).
+ *  Below half so a freshly-divided cell can't immediately divide again. */
+export const DIVIDE_RETAIN = 0.4;
 
 /** One frame of passive metabolism: energy moves by (gain - drain) and is clamped
  *  to [0, max]. Pure. */
@@ -68,8 +73,9 @@ export class CpmLife {
     this.energy.set(id, energy);
   }
 
-  update(): void {
-    // Snapshot agents (one centroid pass each) for metabolism + feeding.
+  /** `centroids` is the shared per-frame snapshot (sim.centroidsAll). */
+  update(centroids: Map<number, { x: number; y: number; pixels: number }>): void {
+    // Snapshot agents from the shared centroid map for metabolism + feeding.
     interface A {
       id: number;
       x: number;
@@ -83,7 +89,7 @@ export class CpmLife {
     for (const rec of this.sim.getCells()) {
       const comp = this.opts.getComposition(rec.id);
       if (!comp) continue;
-      const c = this.sim.centroidLattice(rec.id);
+      const c = centroids.get(rec.id);
       if (!c) continue;
       live.add(rec.id);
       // Passive metabolism.
@@ -141,9 +147,9 @@ export class CpmLife {
     const child = this.sim.spawnCellAtLattice(rec.kind, spot.x, spot.y);
     const childComp = parentComp.childComposition(this.rng);
     this.opts.registerChild(child.id, childComp);
-    const half = this.energyOf(id) * 0.5;
-    this.energy.set(id, half);
-    this.energy.set(child.id, half);
+    const keep = this.energyOf(id) * DIVIDE_RETAIN;
+    this.energy.set(id, keep);
+    this.energy.set(child.id, keep);
   }
 
   /** Find a background lattice pixel a short ring out from (cx,cy), away from the

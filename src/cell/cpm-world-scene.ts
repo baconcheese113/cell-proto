@@ -7,33 +7,46 @@ import Phaser from "phaser";
 import { CpmSimulation } from "./cpm-simulation";
 import { CpmRenderer } from "./cpm-renderer";
 import { CpmRules, type DeathReason } from "./cpm-rules";
-import { CpmEnemyAi } from "./cpm-enemy-ai";
+import { CpmCellBehavior } from "./cpm-cell-behavior";
 import { CpmCombat } from "./cpm-combat";
 import { CpmField } from "./cpm-field";
 import { CpmDeformGrid } from "./cpm-deform-grid";
 import { CpmBigOrganelles } from "./cpm-big-organelles";
 import { CpmProfiler } from "./cpm-profiler";
+import { CpmLife } from "./cpm-life";
+import { CellComposition } from "./cell-composition";
+import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
-  ENEMY_PROFILE,
+  TISSUE_PROFILE,
+  MICROBE_PROFILE,
   DIGESTING_PROFILE,
-  NUCLEUS_PROFILE,
 } from "./cpm-config";
 
-const PLAYER_KIND = 1;
-const ENEMY_KIND = 2;
-const DIGEST_KIND = 3;
+// Kinds = physics bodies only (NOT identities — a cell's identity is its
+// composition). CONTROLLED is the macrophage body reserved for the player's cell
+// so its rest-by-default Act toggle doesn't move autonomous macrophages (same
+// body, separate Act group). Map a preset's BodyKey -> kind via bodyKind().
+const CONTROLLED_KIND = 1; // macrophage body, player-driven
+const MACROPHAGE_KIND = 2; // macrophage body, autonomous
+const EPITHELIAL_KIND = 3;
+const MICROBE_KIND = 4;
+const DIGEST_KIND = 5;
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: CpmSimulation;
   private cpmRenderer!: CpmRenderer;
   private rules!: CpmRules;
-  private enemyAi!: CpmEnemyAi;
+  private behavior!: CpmCellBehavior;
+  private life!: CpmLife;
   private combat!: CpmCombat;
   private signal!: CpmField;
   private grid!: CpmDeformGrid;
   private bigOrganelles!: CpmBigOrganelles;
+  /** A cell IS its composition. The registry maps every live cell -> its mutable
+   *  composition; behaviour + life + (later) the factory all read from here. */
+  private readonly compositions = new Map<number, CellComposition>();
   private interiorGfx!: Phaser.GameObjects.Graphics;
   private prof = new CpmProfiler();
   /** The one cell the player input is bound to. NOT special in any other way —
@@ -63,57 +76,59 @@ export class CpmWorldScene extends Phaser.Scene {
 
   create(): void {
     const cfg = DEFAULT_WORLD_CONFIG;
+    // Kinds 1..5 are pure physics bodies (see kind constants). Macrophage body
+    // (PLAYER_PROFILE) is registered twice — controlled + autonomous — so the two
+    // have independent Act groups while sharing identical physics.
     this.sim = new CpmSimulation(cfg, [
-      PLAYER_PROFILE,
-      ENEMY_PROFILE,
-      DIGESTING_PROFILE,
-      NUCLEUS_PROFILE,
+      PLAYER_PROFILE, // 1 CONTROLLED
+      PLAYER_PROFILE, // 2 MACROPHAGE
+      TISSUE_PROFILE, // 3 EPITHELIAL
+      MICROBE_PROFILE, // 4 MICROBE
+      DIGESTING_PROFILE, // 5 DIGEST
     ]);
     // Anchor the bubble so its centre maps to world (0,0).
     const center = Math.floor(cfg.fieldSize / 2);
     this.sim.originWX = -center * this.sim.scale;
     this.sim.originWY = -center * this.sim.scale;
 
-    // Player at centre; grow it to full size. The player is ONE solid CPM cell —
-    // organelles are lightweight entities (below), not embedded sub-cells, so they
-    // can't fragment it. A few enemies around.
-    this.controlledCellId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
-    for (let i = 0; i < 110; i++) this.sim.step();
-    const ring = 78;
-    for (const ang of [2.1, 3.14, 4.2]) {
-      this.sim.spawnCellAtLattice(
-        ENEMY_KIND,
-        center + Math.cos(ang) * ring,
-        center + Math.sin(ang) * ring
-      );
-    }
-
     this.makeBackground();
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
-    // A molecular signal field produced near the nucleus, diffusing through the
-    // cytosol (routes around the nucleus, bottlenecks where the cell squeezes).
     this.signal = new CpmField(cfg.fieldSize);
     this.cpmRenderer.setField(this.signal);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
-      // Don't judge prey combat owns (it owns their removal).
       ignore: (id) => this.combat.isConsuming(id),
     });
-    // Enemies are always motile (Act on); the AI drives their direction.
-    this.sim.setKindActive(ENEMY_KIND, true);
-    this.enemyAi = new CpmEnemyAi(this.sim, {
-      enemyKind: ENEMY_KIND,
-      getPlayerId: () => this.controlledCellId,
+
+    // Autonomous motile kinds protrude (Act on); the behaviour controller steers
+    // them. The CONTROLLED kind is toggled by player input (rest-by-default).
+    this.sim.setKindActive(MACROPHAGE_KIND, true);
+    this.sim.setKindActive(MICROBE_KIND, true);
+
+    this.behavior = new CpmCellBehavior(this.sim, {
+      controlledId: () => this.controlledCellId,
+      getCaps: (id) => this.compositions.get(id)?.capabilities,
+    });
+    this.life = new CpmLife(this.sim, {
+      getComposition: (id) => this.compositions.get(id),
+      registerChild: (cid, comp) => this.compositions.set(cid, comp),
+      damage: (id, amt) => this.rules.applyDamage(id, amt),
+      onStarve: (id) => this.onCellDeath(id, "dissolved"),
     });
     this.combat = new CpmCombat(this.sim, {
-      playerKind: PLAYER_KIND,
-      enemyKind: ENEMY_KIND,
+      playerKind: CONTROLLED_KIND,
+      enemyKind: MICROBE_KIND,
       digestKind: DIGEST_KIND,
       getAttackerId: () => this.controlledCellId,
-      // Recolour the prey to the "digesting" tint once internalized.
       onConsumeStart: (id) => this.cpmRenderer.forgetCell(id),
       onDigested: (wx, wy) => this.spawnDeathFx(wx, wy, 26, 0xffe066),
     });
+
+    // The controlled cell (a macrophage) at centre, grown to size; then a living
+    // population around it — autonomous macrophages, epithelial tissue, microbes.
+    this.controlledCellId = this.spawnPreset("macrophage", center, center, true)!;
+    for (let i = 0; i < 110; i++) this.sim.step();
+    this.populateWorld(center);
 
     // Shape-conforming internal build grid. Organelles are structures placed in
     // slots that exist only where there's cytoplasm — so the cell's size/shape
@@ -208,6 +223,7 @@ export class CpmWorldScene extends Phaser.Scene {
     const wasControlled = id === this.controlledCellId;
     this.sim.killCell(id);
     this.cpmRenderer.forgetCell(id);
+    this.compositions.delete(id);
     this.deaths++;
     console.log(`💀 cell ${id} died (${reason})${wasControlled ? " — CONTROLLED" : ""}`);
     if (wasControlled) this.handoffControl();
@@ -218,9 +234,59 @@ export class CpmWorldScene extends Phaser.Scene {
    *  enabled by `bindControl` and comes once behaviour/kinds are unified. */
   private handoffControl(): void {
     const center = Math.floor(this.sim.field / 2);
-    const id = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
+    const id = this.spawnPreset("macrophage", center, center, true);
+    if (id === null) return;
     for (let i = 0; i < 110; i++) this.sim.step();
     this.bindControl(id);
+  }
+
+  /** Resolve a preset's body to a CPM kind (CONTROLLED reserved for the player). */
+  private bodyKind(body: BodyKey, asControlled: boolean): number {
+    switch (body) {
+      case "macrophage":
+        return asControlled ? CONTROLLED_KIND : MACROPHAGE_KIND;
+      case "epithelial":
+        return EPITHELIAL_KIND;
+      case "microbe":
+        return MICROBE_KIND;
+    }
+  }
+
+  /** Spawn a cell from a preset: physics body + a randomized composition (the cell
+   *  is then defined by that composition, not the preset). Returns its id. */
+  private spawnPreset(
+    presetName: string,
+    lx: number,
+    ly: number,
+    asControlled = false
+  ): number | null {
+    const preset = PRESETS[presetName];
+    if (!preset) return null;
+    const kind = this.bodyKind(preset.body, asControlled);
+    const rec = this.sim.spawnCellAtLattice(kind, Math.round(lx), Math.round(ly));
+    this.compositions.set(rec.id, new CellComposition(rollComponents(preset, Math.random)));
+    this.life.seed(rec.id);
+    return rec.id;
+  }
+
+  /** Seed a living population around the controlled cell. */
+  private populateWorld(center: number): void {
+    const scatter = (
+      preset: string,
+      count: number,
+      rMin: number,
+      rMax: number
+    ): void => {
+      for (let i = 0; i < count; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const r = rMin + Math.random() * (rMax - rMin);
+        this.spawnPreset(preset, center + Math.cos(ang) * r, center + Math.sin(ang) * r);
+      }
+    };
+    scatter("microbe", 12, 30, 92);
+    scatter("macrophage", 3, 45, 90);
+    scatter("epithelial", 8, 40, 88);
+    for (let i = 0; i < 40; i++) this.sim.step(); // let them take shape
   }
 
   /** Bind player input + camera + the (controlled-cell-only) interior to `id`. */
@@ -239,7 +305,7 @@ export class CpmWorldScene extends Phaser.Scene {
   /** Kind of the controlled cell (so steering activates the right kind's Act,
    *  whatever cell we're bound to). */
   private controlledKind(): number {
-    return this.sim.getCell(this.controlledCellId)?.kind ?? PLAYER_KIND;
+    return this.sim.getCell(this.controlledCellId)?.kind ?? CONTROLLED_KIND;
   }
 
   /** Build interaction: place a lightweight organelle where the cursor points (if
@@ -297,7 +363,9 @@ export class CpmWorldScene extends Phaser.Scene {
   override update(): void {
     const pointer = this.input.activePointer;
 
-    // Hold left mouse button -> steer the player cell toward the cursor.
+    // Hold left mouse button -> steer the controlled cell toward the cursor. The
+    // CONTROLLED kind is its own Act group, so toggling rest doesn't freeze the
+    // autonomous macrophages.
     this.steering = pointer.leftButtonDown();
     const kind = this.controlledKind();
     if (this.steering) {
@@ -305,23 +373,23 @@ export class CpmWorldScene extends Phaser.Scene {
       this.sim.setKindActive(kind, true);
       this.sim.steerCell(this.controlledCellId, lx, ly);
     } else {
-      if (kind === PLAYER_KIND) this.sim.setKindActive(kind, false);
+      if (kind === CONTROLLED_KIND) this.sim.setKindActive(kind, false);
       this.sim.restCell(this.controlledCellId);
     }
 
-    // Enemy behaviour (per-cell wander/flee), then combat (hold RIGHT mouse to
-    // engulf the nearest enemy — overrides the AI for the grabbed prey).
-    this.prof.measure("behavior", () => {
-      this.enemyAi.update(1 / 60);
-      this.combat.update(pointer.rightButtonDown());
-    });
+    // ONE centroid pass for all cells, shared by every system (was the dominant
+    // cost when each system scanned per-cell). Every other cell then runs the SAME
+    // autonomous stack: behaviour (hunt/flee/sit by capability) then life
+    // (metabolize/feed/divide/starve). Combat is the player's manual engulf (RMB).
+    const centroids = this.prof.measure("centroids", () => this.sim.centroidsAll());
+    this.prof.measure("behavior", () => this.behavior.update(1 / 60, centroids));
+    this.prof.measure("life", () => this.life.update(centroids));
+    this.combat.update(pointer.rightButtonDown());
 
-    // Compartments-in-membrane is the digesting prey only now (built organelles
-    // are lightweight, not CPM cells), so size the perimeter budget to those.
+    // Size the controlled cell's perimeter budget for any prey it's digesting.
     this.sim.setKindPerimeterTarget(
-      PLAYER_KIND,
-      this.sim.basePerimeter(PLAYER_KIND) +
-        this.sim.compartmentPerimeterSum([DIGEST_KIND])
+      kind,
+      this.sim.basePerimeter(kind) + this.sim.compartmentPerimeterSum([DIGEST_KIND])
     );
 
     this.prof.measure("cpm.step", () => this.sim.step());
@@ -405,6 +473,20 @@ export class CpmWorldScene extends Phaser.Scene {
     this.bg.tilePositionX = this.cameras.main.scrollX;
     this.bg.tilePositionY = this.cameras.main.scrollY;
 
+    // One pass over live cells: population census + profiler scale drivers.
+    let activeCells = 0;
+    let borderPixels = 0;
+    let macrophages = 0;
+    let epithelial = 0;
+    let microbes = 0;
+    for (const rec of this.sim.getCells()) {
+      activeCells++;
+      borderPixels += this.sim.cellPerimeter(rec.id);
+      if (rec.kind === CONTROLLED_KIND || rec.kind === MACROPHAGE_KIND) macrophages++;
+      else if (rec.kind === EPITHELIAL_KIND) epithelial++;
+      else if (rec.kind === MICROBE_KIND) microbes++;
+    }
+
     const combatStatus = this.combat.engulfing
       ? "ENGULFING"
       : this.combat.digestingCount > 0
@@ -412,24 +494,15 @@ export class CpmWorldScene extends Phaser.Scene {
         : this.steering
           ? "STEERING (hold LMB)"
           : "resting";
+    const energy = Math.round(this.life.energyOf(this.controlledCellId));
     const hp = Math.round(this.rules.healthFraction(this.controlledCellId) * 100);
-    const stressed = this.grid.compressedCount;
-    const nucInteg = Math.round((1 - this.bigOrganelles.maxStress()) * 100);
     this.hud.setText(
-      `CPM world — ${combatStatus}   LMB move · RMB engulf · B build@cursor   ` +
-        `hp ${hp}   nucleus ${nucInteg}%` +
-        `   organelles ${this.grid.occupants.length}` +
-        (stressed > 0 ? ` (${stressed} squeezed!)` : "") +
-        `   nutrients ${this.combat.nutrients}`
+      `Living cell world — ${combatStatus}   LMB move · RMB engulf   ` +
+        `you: hp ${hp} energy ${energy}\n` +
+        `world:  macrophages ${macrophages}   epithelial ${epithelial}   ` +
+        `microbes ${microbes}   nutrients ${this.combat.nutrients}`
     );
 
-    // Profiler: scale drivers + per-system ms (the always-on cost overlay).
-    let activeCells = 0;
-    let borderPixels = 0;
-    for (const rec of this.sim.getCells()) {
-      activeCells++;
-      borderPixels += this.sim.cellPerimeter(rec.id);
-    }
     this.prof.metrics.activeCells = activeCells;
     this.prof.metrics.dormantCells = this.sim.dormantCount;
     this.prof.metrics.borderPixels = borderPixels;

@@ -366,6 +366,29 @@ export class CpmSimulation {
     };
   }
 
+  /** Centroids + pixel counts for ALL live cells in ONE lattice pass. Per-cell
+   *  `centroidLattice` is O(field^2) each; systems that need every cell's centroid
+   *  (behaviour, life, census) must share this instead of calling it per cell —
+   *  the profiler showed that was the dominant cost as population scaled. */
+  centroidsAll(): Map<CellId, { x: number; y: number; pixels: number }> {
+    const acc = new Map<number, { sx: number; sy: number; n: number }>();
+    for (const [[x, y], id] of this.cpm.grid.pixels()) {
+      let a = acc.get(id);
+      if (!a) {
+        a = { sx: 0, sy: 0, n: 0 };
+        acc.set(id, a);
+      }
+      a.sx += x;
+      a.sy += y;
+      a.n++;
+    }
+    const out = new Map<CellId, { x: number; y: number; pixels: number }>();
+    for (const [id, a] of acc) {
+      if (this.cells.has(id)) out.set(id, { x: a.sx / a.n, y: a.sy / a.n, pixels: a.n });
+    }
+    return out;
+  }
+
   /** Centroid of a cell in lattice coords + its pixel count, or null if gone. */
   centroidLattice(id: CellId): { x: number; y: number; pixels: number } | null {
     let n = 0,
@@ -572,7 +595,9 @@ export class CpmSimulation {
     let shiftX = 0,
       shiftY = 0;
 
-    const c = this.centroidLattice(anchorId);
+    // One shared centroid pass (was O(field^2) per cell inside demoteEdgeCells).
+    let cents = this.centroidsAll();
+    const c = cents.get(anchorId);
     if (c) {
       const center = this.field / 2;
       const margin = this.recenterMargin * this.field;
@@ -582,10 +607,11 @@ export class CpmSimulation {
         this.shiftLattice(dx, dy, anchorId, demoted);
         shiftX = dx;
         shiftY = dy;
+        cents = this.centroidsAll(); // positions changed; refresh for the demote check
       }
     }
 
-    this.demoteEdgeCells(anchorId, demoted);
+    this.demoteEdgeCells(anchorId, demoted, cents);
     this.promoteDormant(promoted);
     return { demoted, promoted, shiftX, shiftY };
   }
@@ -675,12 +701,16 @@ export class CpmSimulation {
   /** Demote cells whose centroid sits in the edge band (about to leave) to
    *  dormant, removing them cleanly instead of letting them bulge against the
    *  hard boundary. */
-  private demoteEdgeCells(anchorId: CellId, demoted: CellId[]): void {
+  private demoteEdgeCells(
+    anchorId: CellId,
+    demoted: CellId[],
+    cents: Map<CellId, { x: number; y: number; pixels: number }>
+  ): void {
     const lo = this.edgeBand;
     const hi = this.field - this.edgeBand;
     for (const rec of [...this.cells.values()]) {
       if (rec.id === anchorId) continue;
-      const cc = this.centroidLattice(rec.id);
+      const cc = cents.get(rec.id);
       if (!cc || cc.x < lo || cc.x > hi || cc.y < lo || cc.y > hi) {
         this.makeDormant(rec, demoted);
       }

@@ -105,15 +105,20 @@ export class CpmCellBehavior {
     this.opts = opts;
   }
 
-  update(dt: number): void {
+  /** `centroids` is the shared per-frame snapshot (sim.centroidsAll) so we don't
+   *  pay an O(field^2) centroid scan per cell. */
+  update(
+    dt: number,
+    centroids: Map<number, { x: number; y: number; pixels: number }>
+  ): void {
     const controlled = this.opts.controlledId();
 
-    // Snapshot every live cell as an Agent (one centroid pass each).
+    // Snapshot every live cell as an Agent from the shared centroid map.
     const agents: Agent[] = [];
     for (const rec of this.sim.getCells()) {
-      const caps = this.opts.getCaps(rec.id);
-      const c = this.sim.centroidLattice(rec.id);
+      const c = centroids.get(rec.id);
       if (!c) continue;
+      const caps = this.opts.getCaps(rec.id);
       agents.push({
         id: rec.id,
         x: c.x,
