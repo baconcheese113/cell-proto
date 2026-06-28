@@ -142,6 +142,8 @@ export class CpmWorldScene extends Phaser.Scene {
       registerChild: (cid, comp) => this.compositions.set(cid, comp),
       damage: (id, amt) => this.rules.applyDamage(id, amt),
       onStarve: (id) => this.onCellDeath(id, "dissolved"),
+      // The player's body doesn't auto-split into uncontrolled copies.
+      canDivide: (id) => id !== this.controlledCellId,
     });
     this.combat = new CpmCombat(this.sim, {
       playerKind: CONTROLLED_KIND,
@@ -311,8 +313,8 @@ export class CpmWorldScene extends Phaser.Scene {
   private maintainVessel(initial = false): void {
     const f = this.sim.field;
     const margin = 16;
-    const span = 0.16; // radians of loop arc to cover around the player
-    const spacing = this.vessel.cfg.lumenR * 0.7; // world px between wall slots
+    const span = 0.24; // radians of loop arc to cover around the player
+    const spacing = this.vessel.cfg.lumenR * 0.5; // world px between wall slots
     const slots = this.vessel.slots(this.playerT, span, spacing);
     for (const s of slots) {
       const [lx, ly] = this.sim.worldToLattice(s.x, s.y);
@@ -323,8 +325,13 @@ export class CpmWorldScene extends Phaser.Scene {
       this.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", xi, yi);
     }
 
-    // A little lumen traffic (microbes) drifting with the current.
-    const want = initial ? 6 : 1;
+    // A little lumen traffic (microbes) drifting with the current — kept SPARSE so
+    // the channel stays open and the pump can actually move things (a packed lumen
+    // jams bumper-to-bumper).
+    let microbeCount = 0;
+    for (const rec of this.sim.getCells()) if (rec.kind === MICROBE_KIND) microbeCount++;
+    const cap = 10;
+    const want = initial ? 6 : microbeCount < cap && Math.random() < 0.34 ? 1 : 0;
     for (let i = 0; i < want; i++) {
       // A point in the lumen ahead of the player along the flow.
       const t = this.playerT + (Math.random() - 0.5) * span;
@@ -440,8 +447,10 @@ export class CpmWorldScene extends Phaser.Scene {
       this.playerT = this.vessel.nearestT(pwx, pwy, this.playerT).t;
       const dir = this.vessel.tangent(this.playerT);
       const pulse = heartbeat(this.time.now / 1000);
-      const FLOW_BASE = 14;
-      this.sim.flow.setFlow(dir.x, dir.y, FLOW_BASE * (0.25 + 0.75 * pulse));
+      // Strong pump: carried noticeably downstream, surging on each beat. (Steer
+      // lambda is ~220, so the player can still cut across the flow.)
+      const FLOW_BASE = 140;
+      this.sim.flow.setFlow(dir.x, dir.y, FLOW_BASE * (0.3 + 0.7 * pulse));
     }
 
     // ONE centroid pass for all cells, shared by every system (was the dominant

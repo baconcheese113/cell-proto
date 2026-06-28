@@ -30,8 +30,10 @@ export const DEFAULT_VESSEL: VesselConfig = {
   radius: 2200,
   wobbleAmp: 320,
   wobbleK: 3,
-  lumenR: 260,
-  liningW: 170,
+  // Narrow enough that BOTH walls are in view (a readable passage, ~320 world px
+  // wide) and the player cell (~200 world px) flows through it snugly.
+  lumenR: 160,
+  liningW: 180,
   tissueW: 120,
 };
 

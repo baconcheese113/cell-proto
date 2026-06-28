@@ -49,6 +49,9 @@ export interface CpmLifeOptions {
   damage: (id: number, amount: number) => void;
   /** A cell starved to death. */
   onStarve: (id: number) => void;
+  /** Optional veto on division (e.g. the player's controlled cell shouldn't split
+   *  into uncontrolled copies). Default: everything may divide. */
+  canDivide?: (id: number) => boolean;
   rng?: Rng;
 }
 
@@ -82,6 +85,7 @@ export class CpmLife {
       y: number;
       r: number;
       phago: number;
+      motility: number;
       vol: number;
     }
     const agents: A[] = [];
@@ -101,6 +105,7 @@ export class CpmLife {
         y: c.y,
         r: Math.sqrt(c.pixels / Math.PI),
         phago: comp.capabilities.phagocytic,
+        motility: comp.capabilities.motility,
         vol: c.pixels,
       });
     }
@@ -110,7 +115,8 @@ export class CpmLife {
       if (p.phago <= 0.2) continue;
       for (const q of agents) {
         if (q.id === p.id) continue;
-        const edible = q.phago < p.phago * 0.4 && q.vol < p.vol * 0.95;
+        // Only motile free cells are prey — predators don't digest the vessel wall.
+        const edible = q.motility > 0.1 && q.phago < p.phago * 0.4 && q.vol < p.vol * 0.95;
         if (!edible) continue;
         const d = Math.hypot(q.x - p.x, q.y - p.y);
         if (d > (p.r + q.r) * 0.95) continue; // must be touching
@@ -127,7 +133,9 @@ export class CpmLife {
         this.opts.onStarve(a.id);
         continue;
       }
-      if (e >= DIVIDE_THRESHOLD) this.tryDivide(a.id, a.x, a.y);
+      if (e >= DIVIDE_THRESHOLD && (this.opts.canDivide?.(a.id) ?? true)) {
+        this.tryDivide(a.id, a.x, a.y);
+      }
     }
 
     // Forget energy for cells that are gone.

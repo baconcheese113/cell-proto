@@ -2,13 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chooseSteer, type Agent } from "./cpm-cell-behavior.ts";
 
-const hunter: Agent = { id: 1, x: 0, y: 0, vol: 1300, phagocytic: 1.2 };
+const hunter: Agent = { id: 1, x: 0, y: 0, vol: 1300, phagocytic: 1.2, motility: 1 };
 const microbe = (id: number, x: number, y: number): Agent => ({
   id,
   x,
   y,
   vol: 280,
   phagocytic: 0,
+  motility: 1, // motile free cell -> valid prey
 });
 
 test("a predator hunts the nearest edible cell within sense range", () => {
@@ -26,8 +27,8 @@ test("a predator with no edible cell in range wanders (null)", () => {
 });
 
 test("a predator does not hunt another predator or a bigger cell", () => {
-  const otherPredator: Agent = { id: 2, x: 10, y: 0, vol: 1300, phagocytic: 1.0 };
-  const bigger: Agent = { id: 3, x: 12, y: 0, vol: 2000, phagocytic: 0 };
+  const otherPredator: Agent = { id: 2, x: 10, y: 0, vol: 1300, phagocytic: 1.0, motility: 1 };
+  const bigger: Agent = { id: 3, x: 12, y: 0, vol: 2000, phagocytic: 0, motility: 1 };
   const c = chooseSteer(hunter, [hunter, otherPredator, bigger], 80, 40);
   assert.equal(c, null);
 });

@@ -13,13 +13,15 @@
 import type { CpmSimulation } from "./cpm-simulation";
 import type { Capabilities } from "./cell-composition";
 
-/** A cell reduced to what behaviour needs: position, size, predatory power. */
+/** A cell reduced to what behaviour needs: position, size, predatory power, and
+ *  whether it can move (sessile wall cells are not prey). */
 export interface Agent {
   id: number;
   x: number;
   y: number;
   vol: number;
   phagocytic: number;
+  motility: number;
 }
 
 export interface SteerChoice {
@@ -47,7 +49,10 @@ export function chooseSteer(
     let bestD = sense;
     for (const o of others) {
       if (o.id === self.id) continue;
-      const edible = o.phagocytic < self.phagocytic * 0.4 && o.vol < self.vol * 0.95;
+      // Prey must be a MOTILE free cell (microbe/debris) — predators don't graze on
+      // the sessile vessel wall / tissue.
+      const edible =
+        o.motility > 0.1 && o.phagocytic < self.phagocytic * 0.4 && o.vol < self.vol * 0.95;
       if (!edible) continue;
       const d = Math.hypot(o.x - self.x, o.y - self.y);
       if (d < bestD) {
@@ -125,6 +130,7 @@ export class CpmCellBehavior {
         y: c.y,
         vol: c.pixels,
         phagocytic: caps?.phagocytic ?? 0,
+        motility: caps?.motility ?? 0,
       });
     }
 
