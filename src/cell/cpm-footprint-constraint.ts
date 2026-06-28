@@ -18,10 +18,15 @@ export class CpmFootprintConstraint extends SoftConstraint {
   private mark: Uint8Array;
   private hostId = 0;
   private lambda = 0;
+  /** Bits the grid uses to pack (x,y) -> index: p2i = (x << yBits) + y. The mask
+   *  MUST be keyed by this same packed index, because deltaH receives `tgt_i` as
+   *  that packed IndexCoordinate (not y*field+x). */
+  private readonly yBits: number;
 
   constructor(field: number) {
     super({});
-    this.mark = new Uint8Array(field * field);
+    this.yBits = 1 + Math.floor(Math.log2(field - 1));
+    this.mark = new Uint8Array(field << this.yBits);
   }
 
   /** Replace the footprint mask for this frame (all big organelles share one
@@ -34,7 +39,9 @@ export class CpmFootprintConstraint extends SoftConstraint {
   ): void {
     this.mark.fill(0);
     for (const [x, y] of cells) {
-      if (x >= 0 && x < field && y >= 0 && y < field) this.mark[y * field + x] = 1;
+      if (x >= 0 && x < field && y >= 0 && y < field) {
+        this.mark[(x << this.yBits) + y] = 1;
+      }
     }
     this.hostId = hostId;
     this.lambda = lambda;
