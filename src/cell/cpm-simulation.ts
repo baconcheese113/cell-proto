@@ -22,6 +22,7 @@ import {
 } from "../vendor/artistoo";
 import { PerCellAttractionConstraint } from "./per-cell-attraction-constraint";
 import { CpmFootprintConstraint } from "./cpm-footprint-constraint";
+import { CpmFlowConstraint } from "./cpm-flow-constraint";
 import type { CpmCellProfile, CpmWorldConfig } from "./cpm-config";
 
 export interface CellRecord {
@@ -47,6 +48,8 @@ export class CpmSimulation {
   private readonly perimeter: PerimeterConstraint;
   private readonly attraction: PerCellAttractionConstraint;
   private readonly footprint: CpmFootprintConstraint;
+  /** The vessel current (heart pump). Public so the scene sets dir + pulse. */
+  readonly flow: CpmFlowConstraint;
   private readonly conf: SteerConf;
   /** Per-kind baseline target perimeter (a solid blob); the host's live budget is
    *  this plus the perimeter its enclosed compartments add. */
@@ -158,6 +161,9 @@ export class CpmSimulation {
     // bodies (nucleus): the host is penalized for not covering their footprint.
     this.footprint = new CpmFootprintConstraint(this.field);
     this.cpm.add(this.footprint);
+    // The vessel current: pushes flowing (lumen) kinds along the heart-pump flow.
+    this.flow = new CpmFlowConstraint();
+    this.cpm.add(this.flow);
     // Cohesion: a soft penalty for disconnecting a cell. Resists spontaneous
     // "lava-lamp" fragmentation; strong force / adverse conditions can still
     // overcome it (condition-gated tearing).
