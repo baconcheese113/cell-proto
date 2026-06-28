@@ -14,7 +14,6 @@
 import {
   CPM,
   GridManipulator,
-  SoftConnectivityConstraint,
   ConnectedComponentsByCell,
   type CellId,
   type ActivityConstraint,
@@ -164,12 +163,12 @@ export class CpmSimulation {
     // The vessel current: pushes flowing (lumen) kinds along the heart-pump flow.
     this.flow = new CpmFlowConstraint();
     this.cpm.add(this.flow);
-    // Cohesion: a soft penalty for disconnecting a cell. Resists spontaneous
-    // "lava-lamp" fragmentation; strong force / adverse conditions can still
-    // overcome it (condition-gated tearing).
-    this.cpm.add(
-      new SoftConnectivityConstraint({ LAMBDA_CONNECTIVITY })
-    );
+    // NOTE: no SoftConnectivityConstraint. Profiling showed it was ~72% of the CPM
+    // step cost (a per-copy-attempt local flood-fill), and it was leftover from the
+    // old embedded-compartment era — the solid cell + soft-body nucleus stays
+    // cohesive from volume + perimeter tension alone (verified: 0 fragmentation
+    // under hard steering). Removing it ~tripled the step rate (27ms -> 9ms). If a
+    // future cell type needs anti-fragmentation, raise its LAMBDA_P instead.
 
     this.conf = this.cpm.conf as unknown as SteerConf;
     this.gm = new GridManipulator(this.cpm);
