@@ -187,9 +187,49 @@ export interface CpmWorldConfig {
 
 export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
   fieldSize: 220,
-  worldPerPixel: 4,
+  // 5 (was 4) enlarges the simulated bubble (220*5 = 1100 world px) so its
+  // streaming boundary sits OFF-SCREEN — without growing fieldSize (which would
+  // scale cpm.step). Camera zoom is tuned to match in the scene.
+  worldPerPixel: 5,
   temperature: 16,
   stepsPerFrame: 2,
   recenterMargin: 0.22,
   seed: 1,
+};
+
+/** An ENDOTHELIAL lining cell: cohesive + sessile, forms the vessel wall. Big-ish
+ *  so a couple span the lining band; sticks tightly to neighbours so the lining
+ *  holds against the pump (containment is the cells themselves, not a wall mask). */
+export const ENDOTHELIAL_PROFILE: CpmCellProfile = {
+  name: "endothelial",
+  color: 0x8a6f9e,
+  volume: 600,
+  lambdaV: 50,
+  perimeter: 280,
+  lambdaP: 2,
+  maxAct: 0,
+  lambdaAct: 0,
+  lambdaActRest: 0,
+  lambdaConnectivity: 25,
+  steerLambda: 0,
+  jWithMedium: 22,
+  jWithOther: 8, // very sticky -> a continuous, sealing lining
+};
+
+/** A FIBROBLAST: the tissue beyond the lining (the "other space"). Sessile,
+ *  cohesive, slightly smaller. Minimal in this build (a thin layer). */
+export const FIBROBLAST_PROFILE: CpmCellProfile = {
+  name: "fibroblast",
+  color: 0x5d7d6a,
+  volume: 460,
+  lambdaV: 50,
+  perimeter: 240,
+  lambdaP: 2,
+  maxAct: 0,
+  lambdaAct: 0,
+  lambdaActRest: 0,
+  lambdaConnectivity: 22,
+  steerLambda: 0,
+  jWithMedium: 20,
+  jWithOther: 12,
 };

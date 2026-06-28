@@ -16,23 +16,34 @@ import { CpmProfiler } from "./cpm-profiler";
 import { CpmLife } from "./cpm-life";
 import { CellComposition } from "./cell-composition";
 import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
+import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
   TISSUE_PROFILE,
   MICROBE_PROFILE,
+  ENDOTHELIAL_PROFILE,
+  FIBROBLAST_PROFILE,
   DIGESTING_PROFILE,
 } from "./cpm-config";
 
 // Kinds = physics bodies only (NOT identities — a cell's identity is its
 // composition). CONTROLLED is the macrophage body reserved for the player's cell
-// so its rest-by-default Act toggle doesn't move autonomous macrophages (same
-// body, separate Act group). Map a preset's BodyKey -> kind via bodyKind().
+// (its own Act group). Map a preset's BodyKey -> kind via bodyKind().
 const CONTROLLED_KIND = 1; // macrophage body, player-driven
 const MACROPHAGE_KIND = 2; // macrophage body, autonomous
 const EPITHELIAL_KIND = 3;
 const MICROBE_KIND = 4;
-const DIGEST_KIND = 5;
+const ENDOTHELIAL_KIND = 5; // vessel lining
+const FIBROBLAST_KIND = 6; // tissue beyond
+const DIGEST_KIND = 7;
+
+/** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
+function heartbeat(timeSec: number, bpm = 70): number {
+  const phase = (timeSec * (bpm / 60)) % 1; // 0..1 per beat
+  const s = Math.sin(phase * Math.PI); // up then down within the beat
+  return s > 0 ? s * s * s : 0; // sharpened surge, near-zero lull
+}
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: CpmSimulation;
@@ -44,6 +55,10 @@ export class CpmWorldScene extends Phaser.Scene {
   private signal!: CpmField;
   private grid!: CpmDeformGrid;
   private bigOrganelles!: CpmBigOrganelles;
+  private vessel!: CpmVessel;
+  /** Player's parameter along the loop (for windowed nearest-point + flow dir). */
+  private playerT = 0;
+  private vesselMaintainAccum = 0;
   /** A cell IS its composition. The registry maps every live cell -> its mutable
    *  composition; behaviour + life + (later) the factory all read from here. */
   private readonly compositions = new Map<number, CellComposition>();
@@ -84,12 +99,15 @@ export class CpmWorldScene extends Phaser.Scene {
       PLAYER_PROFILE, // 2 MACROPHAGE
       TISSUE_PROFILE, // 3 EPITHELIAL
       MICROBE_PROFILE, // 4 MICROBE
-      DIGESTING_PROFILE, // 5 DIGEST
+      ENDOTHELIAL_PROFILE, // 5 ENDOTHELIAL (lining)
+      FIBROBLAST_PROFILE, // 6 FIBROBLAST (tissue)
+      DIGESTING_PROFILE, // 7 DIGEST
     ]);
-    // Anchor the bubble so its centre maps to world (0,0).
+    // Anchor the bubble so its centre maps to world (0,0) — the loop's start.
     const center = Math.floor(cfg.fieldSize / 2);
     this.sim.originWX = -center * this.sim.scale;
     this.sim.originWY = -center * this.sim.scale;
+    this.vessel = new CpmVessel(DEFAULT_VESSEL);
 
     this.makeBackground();
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
@@ -100,10 +118,20 @@ export class CpmWorldScene extends Phaser.Scene {
       ignore: (id) => this.combat.isConsuming(id),
     });
 
-    // Autonomous motile kinds protrude (Act on); the behaviour controller steers
-    // them. The CONTROLLED kind is toggled by player input (rest-by-default).
+    // Motile kinds protrude (Act on). In the vessel the controlled cell is always
+    // active too — it's continuously being pumped (carried by the current), not
+    // resting; input just directs it. Sessile wall kinds get no Act.
+    this.sim.setKindActive(CONTROLLED_KIND, true);
     this.sim.setKindActive(MACROPHAGE_KIND, true);
     this.sim.setKindActive(MICROBE_KIND, true);
+
+    // The current carries the lumen dwellers (incl. the player), not the walls.
+    this.sim.flow.setFlowingKinds([CONTROLLED_KIND, MACROPHAGE_KIND, MICROBE_KIND]);
+    // Lining + tissue are procedurally maintained, so drop (don't remember) them
+    // when they stream out; the vessel maintainer refills ahead.
+    this.sim.setTransient(ENDOTHELIAL_KIND);
+    this.sim.setTransient(FIBROBLAST_KIND);
+    this.sim.setTransient(MICROBE_KIND);
 
     this.behavior = new CpmCellBehavior(this.sim, {
       controlledId: () => this.controlledCellId,
@@ -124,11 +152,12 @@ export class CpmWorldScene extends Phaser.Scene {
       onDigested: (wx, wy) => this.spawnDeathFx(wx, wy, 26, 0xffe066),
     });
 
-    // The controlled cell (a macrophage) at centre, grown to size; then a living
-    // population around it — autonomous macrophages, epithelial tissue, microbes.
+    // The controlled cell (a macrophage) starts in the lumen at the loop's start
+    // (world 0,0), grown to size. Then lay the vessel lining + tissue + a little
+    // lumen traffic around it.
     this.controlledCellId = this.spawnPreset("macrophage", center, center, true)!;
     for (let i = 0; i < 110; i++) this.sim.step();
-    this.populateWorld(center);
+    this.maintainVessel(true);
 
     // Shape-conforming internal build grid. Organelles are structures placed in
     // slots that exist only where there's cytoplasm — so the cell's size/shape
@@ -144,8 +173,10 @@ export class CpmWorldScene extends Phaser.Scene {
       this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
     }
 
+    // Zoom so the visible window is well inside the (now larger) bubble — its
+    // streaming boundary stays off-screen.
     this.cameras.main.setZoom(1.8);
-    this.cameras.main.setBackgroundColor("#070b10");
+    this.cameras.main.setBackgroundColor("#1a0d12"); // deep tissue red-brown
     this.cameras.main.centerOn(0, 0);
 
     this.hud = this.add
@@ -249,6 +280,10 @@ export class CpmWorldScene extends Phaser.Scene {
         return EPITHELIAL_KIND;
       case "microbe":
         return MICROBE_KIND;
+      case "endothelial":
+        return ENDOTHELIAL_KIND;
+      case "fibroblast":
+        return FIBROBLAST_KIND;
     }
   }
 
@@ -269,24 +304,46 @@ export class CpmWorldScene extends Phaser.Scene {
     return rec.id;
   }
 
-  /** Seed a living population around the controlled cell. */
-  private populateWorld(center: number): void {
-    const scatter = (
-      preset: string,
-      count: number,
-      rMin: number,
-      rMax: number
-    ): void => {
-      for (let i = 0; i < count; i++) {
-        const ang = Math.random() * Math.PI * 2;
-        const r = rMin + Math.random() * (rMax - rMin);
-        this.spawnPreset(preset, center + Math.cos(ang) * r, center + Math.sin(ang) * r);
-      }
-    };
-    scatter("microbe", 12, 30, 92);
-    scatter("macrophage", 3, 45, 90);
-    scatter("epithelial", 8, 40, 88);
-    for (let i = 0; i < 40; i++) this.sim.step(); // let them take shape
+  /** Keep the vessel lining + tissue populated around the player's current arc,
+   *  and sprinkle a little lumen traffic. Empty wall slots (lattice background)
+   *  within the bubble interior get filled; streaming demotes ones left behind.
+   *  Cheap: throttled (called periodically), and only the local arc is generated. */
+  private maintainVessel(initial = false): void {
+    const f = this.sim.field;
+    const margin = 16;
+    const span = 0.16; // radians of loop arc to cover around the player
+    const spacing = this.vessel.cfg.lumenR * 0.7; // world px between wall slots
+    const slots = this.vessel.slots(this.playerT, span, spacing);
+    for (const s of slots) {
+      const [lx, ly] = this.sim.worldToLattice(s.x, s.y);
+      const xi = Math.round(lx);
+      const yi = Math.round(ly);
+      if (xi < margin || xi >= f - margin || yi < margin || yi >= f - margin) continue;
+      if (this.sim.ownerAtLattice(xi, yi) !== 0) continue; // already occupied
+      this.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", xi, yi);
+    }
+
+    // A little lumen traffic (microbes) drifting with the current.
+    const want = initial ? 6 : 1;
+    for (let i = 0; i < want; i++) {
+      // A point in the lumen ahead of the player along the flow.
+      const t = this.playerT + (Math.random() - 0.5) * span;
+      const p = this.vessel.pathPoint(t);
+      const jitter = (Math.random() - 0.5) * this.vessel.cfg.lumenR * 1.2;
+      const tan = this.vessel.tangent(t);
+      const nx = -tan.y;
+      const ny = tan.x;
+      const wx = p.x + nx * jitter;
+      const wy = p.y + ny * jitter;
+      const [lx, ly] = this.sim.worldToLattice(wx, wy);
+      const xi = Math.round(lx);
+      const yi = Math.round(ly);
+      if (xi < margin || xi >= f - margin || yi < margin || yi >= f - margin) continue;
+      if (this.sim.ownerAtLattice(xi, yi) !== 0) continue;
+      this.spawnPreset("microbe", xi, yi);
+    }
+
+    if (initial) for (let i = 0; i < 40; i++) this.sim.step(); // let them take shape
   }
 
   /** Bind player input + camera + the (controlled-cell-only) interior to `id`. */
@@ -363,18 +420,28 @@ export class CpmWorldScene extends Phaser.Scene {
   override update(): void {
     const pointer = this.input.activePointer;
 
-    // Hold left mouse button -> steer the controlled cell toward the cursor. The
-    // CONTROLLED kind is its own Act group, so toggling rest doesn't freeze the
-    // autonomous macrophages.
+    // The controlled cell is always Act-on (it's being pumped, not resting). Hold
+    // LMB to steer it across/along the current toward the cursor; release and the
+    // current carries it.
     this.steering = pointer.leftButtonDown();
     const kind = this.controlledKind();
     if (this.steering) {
       const [lx, ly] = this.sim.worldToLattice(pointer.worldX, pointer.worldY);
-      this.sim.setKindActive(kind, true);
       this.sim.steerCell(this.controlledCellId, lx, ly);
     } else {
-      if (kind === CONTROLLED_KIND) this.sim.setKindActive(kind, false);
       this.sim.restCell(this.controlledCellId);
+    }
+
+    // The vessel current (heart pump): flow direction = the loop tangent at the
+    // player; magnitude pulses with the heartbeat. Carries every flowing kind.
+    const pc0 = this.sim.centroidLattice(this.controlledCellId);
+    if (pc0) {
+      const [pwx, pwy] = this.sim.latticeToWorld(pc0.x, pc0.y);
+      this.playerT = this.vessel.nearestT(pwx, pwy, this.playerT).t;
+      const dir = this.vessel.tangent(this.playerT);
+      const pulse = heartbeat(this.time.now / 1000);
+      const FLOW_BASE = 14;
+      this.sim.flow.setFlow(dir.x, dir.y, FLOW_BASE * (0.25 + 0.75 * pulse));
     }
 
     // ONE centroid pass for all cells, shared by every system (was the dominant
@@ -402,6 +469,13 @@ export class CpmWorldScene extends Phaser.Scene {
     for (const id of demoted) {
       this.cpmRenderer.forgetCell(id);
       this.rules.forget(id); // dormant != dead
+    }
+
+    // Vessel upkeep: refill lining/tissue ahead + a little lumen traffic. Throttled
+    // (a few times a second) — the walls don't need per-frame attention.
+    if (++this.vesselMaintainAccum >= 12) {
+      this.vesselMaintainAccum = 0;
+      this.prof.measure("vessel", () => this.maintainVessel());
     }
 
     // Deforming grid: small organelles flow/regroup with the cell's current shape.
@@ -477,13 +551,13 @@ export class CpmWorldScene extends Phaser.Scene {
     let activeCells = 0;
     let borderPixels = 0;
     let macrophages = 0;
-    let epithelial = 0;
+    let lining = 0;
     let microbes = 0;
     for (const rec of this.sim.getCells()) {
       activeCells++;
       borderPixels += this.sim.cellPerimeter(rec.id);
       if (rec.kind === CONTROLLED_KIND || rec.kind === MACROPHAGE_KIND) macrophages++;
-      else if (rec.kind === EPITHELIAL_KIND) epithelial++;
+      else if (rec.kind === ENDOTHELIAL_KIND || rec.kind === FIBROBLAST_KIND) lining++;
       else if (rec.kind === MICROBE_KIND) microbes++;
     }
 
@@ -497,9 +571,9 @@ export class CpmWorldScene extends Phaser.Scene {
     const energy = Math.round(this.life.energyOf(this.controlledCellId));
     const hp = Math.round(this.rules.healthFraction(this.controlledCellId) * 100);
     this.hud.setText(
-      `Living cell world — ${combatStatus}   LMB move · RMB engulf   ` +
+      `Vessel world — ${combatStatus}   LMB steer · RMB engulf   ` +
         `you: hp ${hp} energy ${energy}\n` +
-        `world:  macrophages ${macrophages}   epithelial ${epithelial}   ` +
+        `world:  macrophages ${macrophages}   vessel-wall ${lining}   ` +
         `microbes ${microbes}   nutrients ${this.combat.nutrients}`
     );
 

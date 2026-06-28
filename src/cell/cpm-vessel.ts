@@ -23,13 +23,16 @@ export interface VesselConfig {
   tissueW: number;
 }
 
+// Dimensions are WORLD px. With worldPerPixel ~5 a cell of radius ~20 lattice px
+// is ~100 world px, so lumenR ~260 leaves room for the player + a few cells
+// abreast. radius is large (a long loop = a real journey before you return).
 export const DEFAULT_VESSEL: VesselConfig = {
-  radius: 1400,
-  wobbleAmp: 220,
+  radius: 2200,
+  wobbleAmp: 320,
   wobbleK: 3,
-  lumenR: 170,
-  liningW: 90,
-  tissueW: 70,
+  lumenR: 260,
+  liningW: 170,
+  tissueW: 120,
 };
 
 export type Region = "lumen" | "lining" | "tissue" | "outside";

@@ -12,7 +12,12 @@
 import type { Component, ComponentKind, Rng } from "./cell-composition";
 
 /** Which base CPM physics profile a preset's body uses (resolved in the scene). */
-export type BodyKey = "macrophage" | "epithelial" | "microbe";
+export type BodyKey =
+  | "macrophage"
+  | "epithelial"
+  | "microbe"
+  | "endothelial"
+  | "fibroblast";
 
 interface ComponentSpec {
   kind: ComponentKind;
@@ -61,6 +66,27 @@ export const PRESETS: Record<string, CellPreset> = {
       { kind: "nucleus", min: 0.7, max: 1.0 },
       { kind: "mitochondrion", min: 0.9, max: 1.4 },
       { kind: "flagellum", min: 1.0, max: 1.6 },
+    ],
+  },
+  // The vessel lining: sessile, cohesive, slow metabolism (net ~neutral so the
+  // wall turns over slowly rather than over-dividing). No motility/phagocytosis.
+  endothelial: {
+    name: "endothelial",
+    body: "endothelial",
+    components: [
+      { kind: "nucleus", min: 0.9, max: 1.1 },
+      { kind: "mitochondrion", min: 0.7, max: 1.0 },
+      { kind: "ribosome", min: 0.9, max: 1.2, count: 2 },
+    ],
+  },
+  // Tissue beyond the lining. Same sessile/cohesive shape, slightly leaner.
+  fibroblast: {
+    name: "fibroblast",
+    body: "fibroblast",
+    components: [
+      { kind: "nucleus", min: 0.8, max: 1.0 },
+      { kind: "mitochondrion", min: 0.7, max: 1.0 },
+      { kind: "ribosome", min: 0.8, max: 1.1, count: 2 },
     ],
   },
 };
