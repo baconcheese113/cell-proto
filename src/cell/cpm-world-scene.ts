@@ -38,6 +38,12 @@ const ENDOTHELIAL_KIND = 5; // vessel lining
 const FIBROBLAST_KIND = 6; // tissue beyond
 const DIGEST_KIND = 7;
 
+// DEV: freeze the player-anchored streaming bubble so the whole fixed lattice is
+// visible and stable to study (camera fits the map + mouse-wheel zoom). Flowing
+// traffic is culled at the lattice edge instead of streamed out. Re-enable
+// streaming for the infinite world later.
+const DEV_FREEZE_STREAMING = true;
+
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
 function heartbeat(timeSec: number, bpm = 70): number {
   const phase = (timeSec * (bpm / 60)) % 1; // 0..1 per beat
@@ -74,6 +80,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private deaths = 0;
   private camCx: number | undefined;
   private camCy: number | undefined;
+  private camZoom = 1.8;
 
   // Lightweight-organelle prototype: a couple of organelle "kinds" with a colour
   // and size, placed as entities on the cytoplasm rather than as CPM sub-cells.
@@ -142,14 +149,11 @@ export class CpmWorldScene extends Phaser.Scene {
       registerChild: (cid, comp) => this.compositions.set(cid, comp),
       damage: (id, amt) => this.rules.applyDamage(id, amt),
       onStarve: (id) => this.onCellDeath(id, "dissolved"),
-      // The player's body doesn't auto-split into uncontrolled copies, and the
-      // structural vessel cells (lining/tissue) don't divide into the lumen — the
-      // maintainer keeps their population, so the passage stays open.
-      canDivide: (id) => {
-        if (id === this.controlledCellId) return false;
-        const k = this.sim.getCell(id)?.kind;
-        return k !== ENDOTHELIAL_KIND && k !== FIBROBLAST_KIND;
-      },
+      // Nothing in the vessel auto-divides: the player body shouldn't split, the
+      // lining/tissue are structural (the maintainer keeps them), and lumen traffic
+      // (bacteria/RBC) is spawned-and-culled, not bred — a few dividing microbes do
+      // NOT clog an artery. (Resident breeding populations return with tissue/M2.)
+      canDivide: () => false,
     });
     this.combat = new CpmCombat(this.sim, {
       playerKind: CONTROLLED_KIND,
@@ -181,10 +185,24 @@ export class CpmWorldScene extends Phaser.Scene {
       this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
     }
 
-    // Zoom so the visible window is well inside the (now larger) bubble — its
-    // streaming boundary stays off-screen.
-    this.cameras.main.setZoom(1.8);
+    // Camera. In dev (streaming frozen) fit the whole fixed lattice in view and
+    // let the mouse wheel zoom; otherwise follow the player.
+    const worldSize = cfg.fieldSize * this.sim.scale;
+    this.camZoom = DEV_FREEZE_STREAMING
+      ? (Math.min(this.scale.width, this.scale.height) / worldSize) * 0.95
+      : 1.8;
+    this.cameras.main.setZoom(this.camZoom);
     this.cameras.main.setBackgroundColor("#1a0d12"); // deep tissue red-brown
+    this.cameras.main.centerOn(0, 0);
+    // Mouse wheel = zoom in/out (clamped).
+    this.input.on(
+      "wheel",
+      (_p: unknown, _o: unknown, _dx: number, dy: number) => {
+        this.camZoom *= dy > 0 ? 0.9 : 1.1;
+        this.camZoom = Math.max(0.2, Math.min(6, this.camZoom));
+        this.cameras.main.setZoom(this.camZoom);
+      }
+    );
     this.cameras.main.centerOn(0, 0);
 
     this.hud = this.add
@@ -312,16 +330,19 @@ export class CpmWorldScene extends Phaser.Scene {
     return rec.id;
   }
 
-  /** Keep the vessel lining + tissue populated around the player's current arc,
-   *  and sprinkle a little lumen traffic. Empty wall slots (lattice background)
-   *  within the bubble interior get filled; streaming demotes ones left behind.
-   *  Cheap: throttled (called periodically), and only the local arc is generated. */
+  /** Keep the vessel lining + tissue populated across the visible vessel arc, and
+   *  sprinkle a little lumen traffic. Empty wall slots (lattice background) get
+   *  filled. Centred on the lattice MIDDLE (the stable dev view shows a fixed
+   *  segment), with a span wide enough to cover the whole window. */
   private maintainVessel(initial = false): void {
     const f = this.sim.field;
     const margin = 16;
-    const span = 0.24; // radians of loop arc to cover around the player
-    const spacing = this.vessel.cfg.lumenR * 0.5; // world px between wall slots
-    const slots = this.vessel.slots(this.playerT, span, spacing);
+    // The vessel parameter at the centre of the visible lattice.
+    const [mwx, mwy] = this.sim.latticeToWorld(f / 2, f / 2);
+    const centerT = this.vessel.nearestT(mwx, mwy).t; // stable (global search)
+    const span = 0.42; // wide enough to line the whole visible window
+    const spacing = this.vessel.cfg.lumenR * 0.45; // world px between wall slots
+    const slots = this.vessel.slots(centerT, span, spacing);
     for (const s of slots) {
       const [lx, ly] = this.sim.worldToLattice(s.x, s.y);
       const xi = Math.round(lx);
@@ -331,16 +352,16 @@ export class CpmWorldScene extends Phaser.Scene {
       this.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", xi, yi);
     }
 
-    // A little lumen traffic (microbes) drifting with the current — kept SPARSE so
-    // the channel stays open and the pump can actually move things (a packed lumen
-    // jams bumper-to-bumper).
+    // A little lumen traffic (microbes), kept SPARSE so the channel stays open and
+    // the pump can move things. Spawned upstream so they flow through and are culled
+    // at the downstream edge (circulation).
     let microbeCount = 0;
     for (const rec of this.sim.getCells()) if (rec.kind === MICROBE_KIND) microbeCount++;
-    const cap = 10;
-    const want = initial ? 6 : microbeCount < cap && Math.random() < 0.34 ? 1 : 0;
+    const cap = 8;
+    const want = initial ? 5 : microbeCount < cap && Math.random() < 0.3 ? 1 : 0;
     for (let i = 0; i < want; i++) {
-      // A point in the lumen ahead of the player along the flow.
-      const t = this.playerT + (Math.random() - 0.5) * span;
+      // A point in the lumen across the visible arc.
+      const t = centerT + (Math.random() - 0.5) * span;
       const p = this.vessel.pathPoint(t);
       const jitter = (Math.random() - 0.5) * this.vessel.cfg.lumenR * 1.2;
       const tan = this.vessel.tangent(t);
@@ -357,6 +378,30 @@ export class CpmWorldScene extends Phaser.Scene {
     }
 
     if (initial) for (let i = 0; i < 40; i++) this.sim.step(); // let them take shape
+  }
+
+  /** Remove a cell with no death FX/handoff (e.g. traffic flowing off the edge). */
+  private despawnCell(id: number): void {
+    this.sim.killCell(id);
+    this.cpmRenderer.forgetCell(id);
+    this.compositions.delete(id);
+  }
+
+  /** With streaming frozen, cull lumen traffic (microbes) that has flowed to the
+   *  lattice edge so the passage keeps circulating instead of piling up. */
+  private cullEdgeTraffic(
+    centroids: Map<number, { x: number; y: number; pixels: number }>
+  ): void {
+    const f = this.sim.field;
+    const band = 10;
+    for (const rec of [...this.sim.getCells()]) {
+      if (rec.kind !== MICROBE_KIND) continue;
+      const c = centroids.get(rec.id);
+      if (!c) continue;
+      if (c.x < band || c.x > f - band || c.y < band || c.y > f - band) {
+        this.despawnCell(rec.id);
+      }
+    }
   }
 
   /** Bind player input + camera + the (controlled-cell-only) interior to `id`. */
@@ -477,13 +522,23 @@ export class CpmWorldScene extends Phaser.Scene {
     this.prof.measure("cpm.step", () => this.sim.step());
 
     // Infinite-world streaming: recenter the bubble on the player, demote cells
-    // that left, re-activate ones that returned.
-    const { demoted, shiftX, shiftY } = this.prof.measure("stream", () =>
-      this.sim.streamAround(this.controlledCellId)
-    );
-    for (const id of demoted) {
-      this.cpmRenderer.forgetCell(id);
-      this.rules.forget(id); // dormant != dead
+    // that left, re-activate ones that returned. (Frozen in dev — see below.)
+    let shiftX = 0;
+    let shiftY = 0;
+    if (!DEV_FREEZE_STREAMING) {
+      const r = this.prof.measure("stream", () =>
+        this.sim.streamAround(this.controlledCellId)
+      );
+      shiftX = r.shiftX;
+      shiftY = r.shiftY;
+      for (const id of r.demoted) {
+        this.cpmRenderer.forgetCell(id);
+        this.rules.forget(id); // dormant != dead
+      }
+    } else {
+      // Cull flowing traffic that reaches the lattice edge so the lumen keeps
+      // circulating (spawn upstream -> flow -> remove downstream) without streaming.
+      this.cullEdgeTraffic(centroids);
     }
 
     // Vessel upkeep: refill lining/tissue ahead + a little lumen traffic. Throttled
@@ -546,16 +601,19 @@ export class CpmWorldScene extends Phaser.Scene {
       this.drawInterior();
     });
 
-    // Camera follows the player, but with a little lag so the cell visibly drifts
-    // as it crawls instead of being pinned dead-centre (gives the interior life).
-    const c = this.sim.centroidLattice(this.controlledCellId);
-    if (c) {
-      const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
-      const cx = this.camCx;
-      const cy = this.camCy;
-      this.camCx = cx === undefined ? wx : cx + (wx - cx) * 0.1;
-      this.camCy = cy === undefined ? wy : cy + (wy - cy) * 0.1;
-      this.cameras.main.centerOn(this.camCx, this.camCy);
+    // Camera. In dev (streaming frozen) the camera stays put on the map centre so
+    // the whole sim is stable to study (wheel zooms). Otherwise follow the player
+    // with a little lag.
+    if (!DEV_FREEZE_STREAMING) {
+      const c = this.sim.centroidLattice(this.controlledCellId);
+      if (c) {
+        const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+        const cx = this.camCx;
+        const cy = this.camCy;
+        this.camCx = cx === undefined ? wx : cx + (wx - cx) * 0.1;
+        this.camCy = cy === undefined ? wy : cy + (wy - cy) * 0.1;
+        this.cameras.main.centerOn(this.camCx, this.camCy);
+      }
     }
 
     // Scroll the grid backdrop with the camera (infinite-world feel).
