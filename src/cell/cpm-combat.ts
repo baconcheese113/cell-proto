@@ -18,10 +18,15 @@ const CONSUME_FRACTION = 0.34; // wrap this much of the prey -> commit to digest
 const DIGEST_RATE = 14; // prey pixels removed per frame while digesting
 
 export interface CpmCombatOptions {
+  /** Kind of the attacking cell (its adhesion to prey is modulated while wrapping).
+   *  In M1 the controlled cell is always this kind; autonomous multi-attacker
+   *  engulfing is a later milestone. */
   playerKind: number;
   enemyKind: number;
   digestKind: number;
-  getPlayerId: () => number;
+  /** The cell currently doing the engulfing — the controlled cell, not a special
+   *  "player". */
+  getAttackerId: () => number;
   /** A prey just became internalized and was converted to the digest kind. */
   onConsumeStart?: (id: number) => void;
   /** A prey finished digesting, at its last world position. */
@@ -56,8 +61,8 @@ export class CpmCombat {
     // the prey is committed (its kind has volume target 0, so it can't regrow).
     this.processDigesting();
 
-    const playerId = this.opts.getPlayerId();
-    const pc = this.sim.centroidLattice(playerId);
+    const attackerId = this.opts.getAttackerId();
+    const pc = this.sim.centroidLattice(attackerId);
     if (!attacking || !pc) {
       this.release();
       return;
@@ -82,7 +87,7 @@ export class CpmCombat {
       this.sim.steerCell(this.grabbedId, pc.x, pc.y, GRAB_LAMBDA_SCALE);
       // Once substantially wrapped, internalize: convert to the inert digest
       // kind (volume target 0 -> no regrowth) and hand off to digestion.
-      if (this.sim.engulfedFraction(this.grabbedId, playerId) >= CONSUME_FRACTION) {
+      if (this.sim.engulfedFraction(this.grabbedId, attackerId) >= CONSUME_FRACTION) {
         const id = this.grabbedId;
         this.sim.setCellKind(id, this.opts.digestKind);
         this.digesting.add(id);

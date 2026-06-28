@@ -36,7 +36,9 @@ export class CpmWorldScene extends Phaser.Scene {
   private bigOrganelles!: CpmBigOrganelles;
   private interiorGfx!: Phaser.GameObjects.Graphics;
   private prof = new CpmProfiler();
-  private playerId = 0;
+  /** The one cell the player input is bound to. NOT special in any other way —
+   *  it runs the same systems as every peer; input just overrides its behavior. */
+  private controlledCellId = 0;
   private bg!: Phaser.GameObjects.TileSprite;
   private hud!: Phaser.GameObjects.Text;
   private profText!: Phaser.GameObjects.Text;
@@ -75,7 +77,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // Player at centre; grow it to full size. The player is ONE solid CPM cell —
     // organelles are lightweight entities (below), not embedded sub-cells, so they
     // can't fragment it. A few enemies around.
-    this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
+    this.controlledCellId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
     for (let i = 0; i < 110; i++) this.sim.step();
     const ring = 78;
     for (const ang of [2.1, 3.14, 4.2]) {
@@ -101,13 +103,13 @@ export class CpmWorldScene extends Phaser.Scene {
     this.sim.setKindActive(ENEMY_KIND, true);
     this.enemyAi = new CpmEnemyAi(this.sim, {
       enemyKind: ENEMY_KIND,
-      getPlayerId: () => this.playerId,
+      getPlayerId: () => this.controlledCellId,
     });
     this.combat = new CpmCombat(this.sim, {
       playerKind: PLAYER_KIND,
       enemyKind: ENEMY_KIND,
       digestKind: DIGEST_KIND,
-      getPlayerId: () => this.playerId,
+      getAttackerId: () => this.controlledCellId,
       // Recolour the prey to the "digesting" tint once internalized.
       onConsumeStart: (id) => this.cpmRenderer.forgetCell(id),
       onDigested: (wx, wy) => this.spawnDeathFx(wx, wy, 26, 0xffe066),
@@ -120,8 +122,8 @@ export class CpmWorldScene extends Phaser.Scene {
     this.interiorGfx = this.add.graphics().setDepth(12);
     // The nucleus is now a controlled soft body (not a grid slot): it recenters
     // on its own, bottlenecks the cell at tight gaps, and ruptures if over-squeezed.
-    this.bigOrganelles = new CpmBigOrganelles(this.sim, () => this.playerId);
-    const pc = this.sim.centroidLattice(this.playerId);
+    this.bigOrganelles = new CpmBigOrganelles(this.sim, () => this.controlledCellId);
+    const pc = this.sim.centroidLattice(this.controlledCellId);
     if (pc) {
       const N = CpmWorldScene.NUCLEUS;
       this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
@@ -166,14 +168,14 @@ export class CpmWorldScene extends Phaser.Scene {
         scene: this,
         combat: this.combat,
         rules: this.rules,
-        getPlayerId: () => this.playerId,
+        getPlayerId: () => this.controlledCellId,
         occupants: () => this.grid.occupants,
         deaths: () => this.deaths,
         perf: () => this.prof.report(),
         nucleus: () => {
           const n = this.bigOrganelles.organelles[0];
           if (!n) return null;
-          const host = this.playerId;
+          const host = this.controlledCellId;
           const inside = (x: number, y: number) =>
             this.sim.ownerAtLattice(x, y) === host;
           const c = n.body.center();
@@ -186,13 +188,14 @@ export class CpmWorldScene extends Phaser.Scene {
           };
         },
         tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
-          this.sim.tearCell(id ?? this.playerId, axis, halfWidth),
+          this.sim.tearCell(id ?? this.controlledCellId, axis, halfWidth),
       };
     }
   }
 
-  /** A cell crossed a fatal threshold (tear / mortal damage). Remove it, play a
-   *  death effect, and respawn the player if it was the one that died. */
+  /** A cell crossed a fatal threshold. EVERY cell dies the same way — the only
+   *  extra step for the controlled cell is handing off control (the world never
+   *  "game over"s; you're reborn as another cell). */
   private onCellDeath(id: number, reason: DeathReason): void {
     const c = this.sim.centroidLattice(id);
     const rec = this.sim.getCell(id);
@@ -202,37 +205,54 @@ export class CpmWorldScene extends Phaser.Scene {
       const radius = Math.sqrt(c.pixels / Math.PI) * this.sim.scale;
       this.spawnDeathFx(wx, wy, radius, color);
     }
-    const wasPlayer = id === this.playerId;
+    const wasControlled = id === this.controlledCellId;
     this.sim.killCell(id);
     this.cpmRenderer.forgetCell(id);
     this.deaths++;
-    console.log(`💀 cell ${id} died (${reason})${wasPlayer ? " — PLAYER" : ""}`);
-    if (wasPlayer) this.respawnPlayer();
+    console.log(`💀 cell ${id} died (${reason})${wasControlled ? " — CONTROLLED" : ""}`);
+    if (wasControlled) this.handoffControl();
   }
 
-  private respawnPlayer(): void {
+  /** Re-bind player input to another cell after the controlled one dies. For now
+   *  we're reborn as a fresh cell at centre; taking over an existing peer is
+   *  enabled by `bindControl` and comes once behaviour/kinds are unified. */
+  private handoffControl(): void {
     const center = Math.floor(this.sim.field / 2);
-    this.playerId = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
+    const id = this.sim.spawnCellAtLattice(PLAYER_KIND, center, center).id;
     for (let i = 0; i < 110; i++) this.sim.step();
-    // Fresh interior: just a nucleus (a new soft body); no small organelles.
+    this.bindControl(id);
+  }
+
+  /** Bind player input + camera + the (controlled-cell-only) interior to `id`. */
+  private bindControl(id: number): void {
+    this.controlledCellId = id;
+    this.camCx = undefined;
+    this.camCy = undefined;
+    // Fresh interior for the newly-controlled cell: just a nucleus soft body.
     this.grid.clear();
     this.bigOrganelles.clear();
-    const pc = this.sim.centroidLattice(this.playerId);
+    const pc = this.sim.centroidLattice(id);
     const N = CpmWorldScene.NUCLEUS;
     if (pc) this.bigOrganelles.add(N.type, N.color, pc.x, pc.y);
+  }
+
+  /** Kind of the controlled cell (so steering activates the right kind's Act,
+   *  whatever cell we're bound to). */
+  private controlledKind(): number {
+    return this.sim.getCell(this.controlledCellId)?.kind ?? PLAYER_KIND;
   }
 
   /** Build interaction: place a lightweight organelle where the cursor points (if
    *  that spot is interior to the cell, else fall back to the centre). Cycles
    *  through buildable types so you can see several kinds coexist. */
   private growOrganelle(): void {
-    const frame = this.sim.cellFrame(this.playerId);
+    const frame = this.sim.cellFrame(this.controlledCellId);
     if (!frame) return;
     const ptr = this.input.activePointer;
     const [lx, ly] = this.sim.worldToLattice(ptr.worldX, ptr.worldY);
     const cx = Math.round(lx);
     const cy = Math.round(ly);
-    const interior = this.sim.ownerAtLattice(cx, cy) === this.playerId;
+    const interior = this.sim.ownerAtLattice(cx, cy) === this.controlledCellId;
     const sx = interior ? cx : Math.round(frame.cx);
     const sy = interior ? cy : Math.round(frame.cy);
     const kind = CpmWorldScene.BUILDABLES[this.buildIndex % CpmWorldScene.BUILDABLES.length];
@@ -279,13 +299,14 @@ export class CpmWorldScene extends Phaser.Scene {
 
     // Hold left mouse button -> steer the player cell toward the cursor.
     this.steering = pointer.leftButtonDown();
+    const kind = this.controlledKind();
     if (this.steering) {
       const [lx, ly] = this.sim.worldToLattice(pointer.worldX, pointer.worldY);
-      this.sim.setKindActive(PLAYER_KIND, true);
-      this.sim.steerCell(this.playerId, lx, ly);
+      this.sim.setKindActive(kind, true);
+      this.sim.steerCell(this.controlledCellId, lx, ly);
     } else {
-      this.sim.setKindActive(PLAYER_KIND, false);
-      this.sim.restCell(this.playerId);
+      if (kind === PLAYER_KIND) this.sim.setKindActive(kind, false);
+      this.sim.restCell(this.controlledCellId);
     }
 
     // Enemy behaviour (per-cell wander/flee), then combat (hold RIGHT mouse to
@@ -308,7 +329,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // Infinite-world streaming: recenter the bubble on the player, demote cells
     // that left, re-activate ones that returned.
     const { demoted, shiftX, shiftY } = this.prof.measure("stream", () =>
-      this.sim.streamAround(this.playerId)
+      this.sim.streamAround(this.controlledCellId)
     );
     for (const id of demoted) {
       this.cpmRenderer.forgetCell(id);
@@ -316,10 +337,10 @@ export class CpmWorldScene extends Phaser.Scene {
     }
 
     // Deforming grid: small organelles flow/regroup with the cell's current shape.
-    const frame = this.sim.cellFrame(this.playerId);
+    const frame = this.sim.cellFrame(this.controlledCellId);
     if (frame) {
       this.grid.shift(shiftX, shiftY);
-      this.grid.step(frame, (x, y) => this.sim.ownerAtLattice(x, y) === this.playerId);
+      this.grid.step(frame, (x, y) => this.sim.ownerAtLattice(x, y) === this.controlledCellId);
     }
 
     // Big organelles (nucleus): step the soft bodies, refresh the footprint
@@ -327,7 +348,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // nucleus trails slightly, and the recenter shift so it rides the world.
     let steerDir: { x: number; y: number } | null = null;
     if (this.steering) {
-      const c = this.sim.centroidLattice(this.playerId);
+      const c = this.sim.centroidLattice(this.controlledCellId);
       const ptr = this.input.activePointer;
       const [lx, ly] = this.sim.worldToLattice(ptr.worldX, ptr.worldY);
       if (c) steerDir = { x: lx - c.x, y: ly - c.y };
@@ -339,13 +360,13 @@ export class CpmWorldScene extends Phaser.Scene {
     if (burst) {
       // The nucleus ruptured under confinement — the player dies (the toy's fail
       // state for forcing too tight a gap).
-      this.onCellDeath(this.playerId, "ruptured");
+      this.onCellDeath(this.controlledCellId, "ruptured");
     }
 
     // Molecular signal field: follow the recenter, re-mask to the current cytosol
     // shape, produce around the nucleus (first occupant), diffuse.
     this.signal.shift(shiftX, shiftY);
-    this.signal.setMask(this.sim.cellPixels(this.playerId));
+    this.signal.setMask(this.sim.cellPixels(this.controlledCellId));
     const nucleus = this.bigOrganelles.organelles[0];
     if (nucleus) {
       const nc = nucleus.body.center();
@@ -370,7 +391,7 @@ export class CpmWorldScene extends Phaser.Scene {
 
     // Camera follows the player, but with a little lag so the cell visibly drifts
     // as it crawls instead of being pinned dead-centre (gives the interior life).
-    const c = this.sim.centroidLattice(this.playerId);
+    const c = this.sim.centroidLattice(this.controlledCellId);
     if (c) {
       const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
       const cx = this.camCx;
@@ -391,7 +412,7 @@ export class CpmWorldScene extends Phaser.Scene {
         : this.steering
           ? "STEERING (hold LMB)"
           : "resting";
-    const hp = Math.round(this.rules.healthFraction(this.playerId) * 100);
+    const hp = Math.round(this.rules.healthFraction(this.controlledCellId) * 100);
     const stressed = this.grid.compressedCount;
     const nucInteg = Math.round((1 - this.bigOrganelles.maxStress()) * 100);
     this.hud.setText(
@@ -421,7 +442,7 @@ export class CpmWorldScene extends Phaser.Scene {
     const g = this.interiorGfx;
     g.clear();
     const s = this.sim.scale;
-    const c = this.sim.centroidLattice(this.playerId);
+    const c = this.sim.centroidLattice(this.controlledCellId);
     if (!c) return;
 
     // Small organelles as distinct, placed structures on the deforming grid.
