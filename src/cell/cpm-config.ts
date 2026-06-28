@@ -122,6 +122,51 @@ export const NUCLEUS_PROFILE: CpmCellProfile = {
   jWithOther: 12,
 };
 
+/** A TISSUE cell: the body is packed with these. They form a cohesive sheet the
+ *  player must SQUEEZE BETWEEN to migrate (amoeboid migration through tissue).
+ *  Roughly the player's size so wedging between two neighbours is the skill;
+ *  passive (no protrusion), deformable, and sticky to each other (cohesive) but
+ *  pushable by a protruding player. */
+export const TISSUE_PROFILE: CpmCellProfile = {
+  name: "tissue",
+  color: 0x6b8f9c,
+  volume: 700,
+  lambdaV: 45,
+  // Deformable (low lambdaP) so the player can wedge them apart and they reflow.
+  perimeter: 300,
+  lambdaP: 2,
+  maxAct: 0,
+  lambdaAct: 0,
+  lambdaActRest: 0,
+  // Cohesive enough to hold the sheet together while being shoved, not so stiff
+  // that the player can't open a gap.
+  lambdaConnectivity: 20,
+  steerLambda: 0,
+  jWithMedium: 20,
+  // Sticky to each other (low) -> a continuous tissue; the player overcomes this
+  // locally to squeeze through a junction.
+  jWithOther: 14,
+};
+
+/** A MICROBE body: small, fast, motile prey that multiplies and flees. The
+ *  flagellum component (composition) is what grants its speed; this profile is
+ *  just the physical body it animates. */
+export const MICROBE_PROFILE: CpmCellProfile = {
+  name: "microbe",
+  color: 0xe7d14b,
+  volume: 280,
+  lambdaV: 50,
+  perimeter: 150,
+  lambdaP: 2,
+  maxAct: 60,
+  lambdaAct: 200,
+  lambdaActRest: 10, // drifts on its own
+  lambdaConnectivity: 30,
+  steerLambda: 200,
+  jWithMedium: 20,
+  jWithOther: 22,
+};
+
 export interface CpmWorldConfig {
   /** Square lattice edge in pixels — the "quality" dial. Higher = sharper +
    *  slower. The lattice is the player-anchored bubble, recentered for an
