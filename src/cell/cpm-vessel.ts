@@ -1,0 +1,155 @@
+// cpm-vessel.ts — the blood-vessel WORLD geometry: a closed-loop centerline in
+// world space that the player and cells flow around (and return to start). Pure
+// geometry, no CPM/Phaser — the scene uses it to (1) classify world points as
+// LUMEN (open fluid where cells flow) / LINING (endothelial cells) / TISSUE (the
+// space beyond), (2) get the CURRENT direction (the path tangent) for the pump,
+// and (3) generate the world-space SLOTS where lining + tissue cells are placed
+// and maintained as the simulation bubble streams along the loop.
+//
+// The loop is a wobbly circle: closed (so you come back to where you began),
+// winding (harmonic wobble = gentle turns). Node-testable.
+
+export interface VesselConfig {
+  /** Loop base radius (world px). Large -> a long journey around. */
+  radius: number;
+  /** Wobble amplitude (world px) + integer harmonic (keeps the loop closed). */
+  wobbleAmp: number;
+  wobbleK: number;
+  /** Half-width of the open lumen (world px). */
+  lumenR: number;
+  /** Width of the endothelial lining band (world px). */
+  liningW: number;
+  /** Width of the tissue band beyond the lining (world px). */
+  tissueW: number;
+}
+
+export const DEFAULT_VESSEL: VesselConfig = {
+  radius: 1400,
+  wobbleAmp: 220,
+  wobbleK: 3,
+  lumenR: 170,
+  liningW: 90,
+  tissueW: 70,
+};
+
+export type Region = "lumen" | "lining" | "tissue" | "outside";
+
+export class CpmVessel {
+  readonly cfg: VesselConfig;
+  /** Loop centre, chosen so the start point P(0) sits at world (0,0). */
+  private readonly cx: number;
+  private readonly cy: number;
+
+  constructor(cfg: VesselConfig = DEFAULT_VESSEL) {
+    this.cfg = cfg;
+    // P(0) = centre + (radius + wobble(0)) * (1, 0); wobble(0)=0 -> centre.x = -radius.
+    this.cx = -cfg.radius;
+    this.cy = 0;
+  }
+
+  private wobble(t: number): number {
+    return this.cfg.wobbleAmp * Math.sin(this.cfg.wobbleK * t);
+  }
+
+  /** Centerline point at parameter t in [0, 2*PI). */
+  pathPoint(t: number): { x: number; y: number } {
+    const r = this.cfg.radius + this.wobble(t);
+    return { x: this.cx + r * Math.cos(t), y: this.cy + r * Math.sin(t) };
+  }
+
+  /** Unit tangent (direction of flow) at t, in the +t (downstream) direction. */
+  tangent(t: number): { x: number; y: number } {
+    // d/dt of (cx + r(t)cos t, cy + r(t)sin t), r(t)=R+wobble.
+    const r = this.cfg.radius + this.wobble(t);
+    const dr = this.cfg.wobbleAmp * this.cfg.wobbleK * Math.cos(this.cfg.wobbleK * t);
+    const dx = dr * Math.cos(t) - r * Math.sin(t);
+    const dy = dr * Math.sin(t) + r * Math.cos(t);
+    const m = Math.hypot(dx, dy) || 1;
+    return { x: dx / m, y: dy / m };
+  }
+
+  /** Nearest parameter t to a world point, searched over the whole loop (coarse)
+   *  or, if `aroundT`/`window` given, only a local arc (cheap — all active cells
+   *  sit near the player's arc). Returns t and the distance to the centerline. */
+  nearestT(
+    wx: number,
+    wy: number,
+    aroundT?: number,
+    window = Math.PI / 6
+  ): { t: number; dist: number } {
+    const TWO_PI = Math.PI * 2;
+    let lo = 0;
+    let hi = TWO_PI;
+    let steps = 240;
+    if (aroundT !== undefined) {
+      lo = aroundT - window;
+      hi = aroundT + window;
+      steps = 60;
+    }
+    let bestT = lo;
+    let bestD = Infinity;
+    for (let i = 0; i <= steps; i++) {
+      const t = lo + ((hi - lo) * i) / steps;
+      const p = this.pathPoint(t);
+      const d = Math.hypot(p.x - wx, p.y - wy);
+      if (d < bestD) {
+        bestD = d;
+        bestT = t;
+      }
+    }
+    // Normalize t into [0, 2*PI).
+    let nt = bestT % TWO_PI;
+    if (nt < 0) nt += TWO_PI;
+    return { t: nt, dist: bestD };
+  }
+
+  /** Flow (current) direction at a world point — the tangent at the nearest t. */
+  flowDirAt(wx: number, wy: number, aroundT?: number): { x: number; y: number } {
+    return this.tangent(this.nearestT(wx, wy, aroundT).t);
+  }
+
+  /** Classify a world point by its distance to the centerline. */
+  classify(wx: number, wy: number, aroundT?: number): { region: Region; dist: number } {
+    const { dist } = this.nearestT(wx, wy, aroundT);
+    const { lumenR, liningW, tissueW } = this.cfg;
+    let region: Region;
+    if (dist <= lumenR) region = "lumen";
+    else if (dist <= lumenR + liningW) region = "lining";
+    else if (dist <= lumenR + liningW + tissueW) region = "tissue";
+    else region = "outside";
+    return { region, dist };
+  }
+
+  /** Generate the world-space cell SLOTS (lining + tissue) for the arc spanning
+   *  [centerT - span, centerT + span], at roughly `spacing`-world-px intervals
+   *  along the path, offset perpendicular to the path on both walls. The scene
+   *  fills any empty slot with the appropriate cell and lets streaming demote
+   *  ones that fall behind. */
+  slots(
+    centerT: number,
+    span: number,
+    spacing: number
+  ): Array<{ x: number; y: number; role: "lining" | "tissue" }> {
+    const out: Array<{ x: number; y: number; role: "lining" | "tissue" }> = [];
+    const { lumenR, liningW, tissueW } = this.cfg;
+    // Arc length per radian ~ radius; choose dt so steps are ~spacing apart.
+    const dt = spacing / Math.max(1, this.cfg.radius);
+    for (let t = centerT - span; t <= centerT + span; t += dt) {
+      const p = this.pathPoint(t);
+      const tan = this.tangent(t);
+      // Perpendicular (normal) to the path.
+      const nx = -tan.y;
+      const ny = tan.x;
+      for (const side of [1, -1]) {
+        // Lining: one or two cells deep across the lining band.
+        for (let off = lumenR + liningW * 0.35; off < lumenR + liningW; off += liningW * 0.55) {
+          out.push({ x: p.x + nx * side * off, y: p.y + ny * side * off, role: "lining" });
+        }
+        // Tissue: a thin layer beyond the lining.
+        const tOff = lumenR + liningW + tissueW * 0.5;
+        out.push({ x: p.x + nx * side * tOff, y: p.y + ny * side * tOff, role: "tissue" });
+      }
+    }
+    return out;
+  }
+}
