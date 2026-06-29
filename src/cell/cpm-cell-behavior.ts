@@ -87,7 +87,6 @@ const WANDER_RADIUS = 45;
 const RETARGET_MIN = 1.2;
 const RETARGET_MAX = 2.8;
 const FLEE_RETARGET = 0.4;
-const LEASH = 82; // keep active cells loitering near the bubble centre
 
 interface AiState {
   retargetIn: number;
@@ -167,16 +166,9 @@ export class CpmCellBehavior {
         st.retargetIn = RETARGET_MIN + Math.random() * (RETARGET_MAX - RETARGET_MIN);
       }
 
-      // Leash toward bubble centre so active cells loiter in view (until proper
-      // procedural refill in a later milestone).
-      const c = this.sim.field / 2;
-      const lx = tx - c;
-      const ly = ty - c;
-      const d = Math.hypot(lx, ly);
-      if (d > LEASH) {
-        tx = c + (lx / d) * LEASH;
-        ty = c + (ly / d) * LEASH;
-      }
+      // No leash: promoted cells hunt/flee freely; when they leave the bubble's
+      // demote radius they hand back to the agent tier and keep going (the agent
+      // tier owns the persistent world now, so cells are never "stuck near view").
       this.sim.steerCell(self.id, tx, ty);
     }
 

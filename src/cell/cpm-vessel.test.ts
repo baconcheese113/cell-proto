@@ -51,6 +51,21 @@ test("generated lining slots actually classify as lining; tissue as tissue", () 
   }
 });
 
+test("confinement: a point inside the lumen needs no correction", () => {
+  const c = v.confinement(0, 0); // origin is lumen centre
+  assert.equal(c.over, 0);
+});
+
+test("confinement: a point far outside is pushed back toward the lumen", () => {
+  // The loop centre is at (-radius, 0); the origin sits at polar angle 0, distance
+  // = radius. Moving +x increases distance from the centre, so x just past the outer
+  // lumen wall is outside -> correction points inward (-x, back toward the centre).
+  const farOut = DEFAULT_VESSEL.lumenR + 400; // distance radius + lumenR + 400 from centre
+  const c = v.confinement(farOut, 0);
+  assert.ok(c.over > 300, `over=${c.over}`);
+  assert.ok(c.nx < -0.5, `should push -x (inward toward centre), nx=${c.nx}`);
+});
+
 test("nearestT windowed search agrees with full search near the player's arc", () => {
   const p = v.pathPoint(0.5);
   const full = v.nearestT(p.x, p.y);

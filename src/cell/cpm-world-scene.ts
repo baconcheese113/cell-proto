@@ -396,6 +396,24 @@ export class CpmWorldScene extends Phaser.Scene {
     }
   }
 
+  /** Keep wandering motile agents inside the vessel lumen (the cheap tier has no hard
+   *  walls, only soft separation, so traffic would otherwise drift into tissue/void).
+   *  Sessile wall agents are left where they're placed (they ARE the lining/tissue). */
+  private confineAgentsToVessel(): void {
+    for (const a of this.agentWorld.all()) {
+      if (a.comp.capabilities.motility <= 0.05) continue; // walls / sessile stay put
+      const c = this.vessel.confinement(a.x, a.y);
+      if (c.over <= 0) continue;
+      // Nudge velocity inward + hard-correct position a little so it can't accumulate
+      // outside the lumen over time.
+      const push = Math.min(c.over, 40);
+      a.vx += c.nx * push * 0.03;
+      a.vy += c.ny * push * 0.03;
+      a.x += c.nx * Math.min(c.over, 10);
+      a.y += c.ny * Math.min(c.over, 10);
+    }
+  }
+
   /** Spawn one lumen-traffic agent (mostly microbes, some immune cells) at loop
    *  parameter `t`, jittered across the lumen width. */
   private spawnLumenTraffic(t: number): void {
@@ -692,7 +710,10 @@ export class CpmWorldScene extends Phaser.Scene {
     // BEYOND the CPM detail bubble — zooming out reveals agents, not a lattice edge.
     // (LW2-A: agents own walls/traffic; the player is the only CPM cell until the
     // bubble manager promotes nearby agents in LW2-B.)
-    this.prof.measure("agents", () => this.agentWorld.step(dtSec));
+    this.prof.measure("agents", () => {
+      this.agentWorld.step(dtSec);
+      this.confineAgentsToVessel();
+    });
     // Stream the vessel ahead of the player + cull behind (a few times a second).
     this.streamAccumMs += dtSec * 1000;
     if (this.streamAccumMs >= 150) {

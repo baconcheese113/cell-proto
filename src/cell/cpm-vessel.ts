@@ -143,26 +143,68 @@ export class CpmVessel {
     spacing: number
   ): Array<{ x: number; y: number; role: "lining" | "tissue" }> {
     const out: Array<{ x: number; y: number; role: "lining" | "tissue" }> = [];
-    const { lumenR, liningW, tissueW, liningInset } = this.cfg;
-    // Arc length per radian ~ radius; choose dt so steps are ~spacing apart.
-    const dt = spacing / Math.max(1, this.cfg.radius);
-    for (let t = centerT - span; t <= centerT + span; t += dt) {
+    const { lumenR, liningW, tissueW, liningInset, radius } = this.cfg;
+
+    // The rows to lay on each wall (perpendicular offsets from the centerline).
+    const rows: Array<{ off: number; role: "lining" | "tissue" }> = [];
+    for (let off = lumenR + liningInset; off < lumenR + liningW; off += liningInset * 1.25) {
+      rows.push({ off, role: "lining" });
+    }
+    rows.push({ off: lumenR + liningW + tissueW * 0.5, role: "tissue" });
+
+    // Walk t finely (fine enough for the OUTERMOST row's larger radius) and place a
+    // cell in each (side,row) only when it's >= `spacing` world px from the last cell
+    // placed in THAT row. This spaces every row evenly regardless of its radius —
+    // outer rows (longer arc) get proportionally more cells, so no gaps on the outer
+    // edge of curves (and no clumping on the inner edge).
+    const outerR = radius + lumenR + liningW + tissueW;
+    const dtFine = (spacing * 0.5) / Math.max(1, outerR);
+    const sp2 = spacing * spacing;
+    const last = new Map<number, { x: number; y: number }>();
+    for (let t = centerT - span; t <= centerT + span; t += dtFine) {
       const p = this.pathPoint(t);
       const tan = this.tangent(t);
-      // Perpendicular (normal) to the path.
       const nx = -tan.y;
       const ny = tan.x;
       for (const side of [1, -1]) {
-        // Lining cells seeded OUTSIDE the lumen (first row's inner edge ~ lumenR),
-        // stepping outward across the band so they don't grow into the passage.
-        for (let off = lumenR + liningInset; off < lumenR + liningW; off += liningInset * 1.25) {
-          out.push({ x: p.x + nx * side * off, y: p.y + ny * side * off, role: "lining" });
+        for (let ri = 0; ri < rows.length; ri++) {
+          const off = rows[ri].off;
+          const x = p.x + nx * side * off;
+          const y = p.y + ny * side * off;
+          const key = (side + 1) * 100 + ri;
+          const l = last.get(key);
+          if (!l || (x - l.x) * (x - l.x) + (y - l.y) * (y - l.y) >= sp2) {
+            out.push({ x, y, role: rows[ri].role });
+            last.set(key, { x, y });
+          }
         }
-        // Tissue: a thin layer beyond the lining.
-        const tOff = lumenR + liningW + tissueW * 0.5;
-        out.push({ x: p.x + nx * side * tOff, y: p.y + ny * side * tOff, role: "tissue" });
       }
     }
     return out;
+  }
+
+  /** Cheap radial confinement toward the lumen, for keeping wandering AGENT-tier
+   *  traffic inside the vessel without a per-agent nearestT search. The path point at
+   *  polar angle `t` from the loop centre sits at radius `radius + wobble(t)`, and the
+   *  parametrization's t IS that polar angle — so a point's polar distance from the
+   *  centre maps directly onto the lumen band. Returns a unit-ish inward/outward
+   *  correction and how far (world px) the point lies outside the lumen (0 if inside). */
+  confinement(x: number, y: number): { nx: number; ny: number; over: number } {
+    const dx = x - this.cx;
+    const dy = y - this.cy;
+    const dist = Math.hypot(dx, dy) || 1;
+    const ang = Math.atan2(dy, dx);
+    const rLocal = this.cfg.radius + this.wobble(ang);
+    const inner = rLocal - this.cfg.lumenR;
+    const outer = rLocal + this.cfg.lumenR;
+    if (dist > outer) {
+      // too far out -> push inward (toward centre)
+      return { nx: -dx / dist, ny: -dy / dist, over: dist - outer };
+    }
+    if (dist < inner) {
+      // too far in -> push outward (away from centre)
+      return { nx: dx / dist, ny: dy / dist, over: inner - dist };
+    }
+    return { nx: 0, ny: 0, over: 0 };
   }
 }
