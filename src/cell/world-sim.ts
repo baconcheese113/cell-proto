@@ -47,7 +47,7 @@ export const DEV_FREEZE_STREAMING = false;
 
 // Fixed-timestep clock: advance the CPM sim at a CONSTANT real-time rate so movement
 // speed is independent of render FPS.
-const TARGET_MCS_PER_SEC = 240;
+const TARGET_MCS_PER_SEC = 90;
 const MS_PER_MCS = 1000 / TARGET_MCS_PER_SEC;
 // Cap per tick -> bounded work, no spiral of death (simStepsFor drops any backlog past
 // this). Raised 6 -> 10: at a heavy ~24-30Hz tick rate the old cap of 6 ran only 180
