@@ -65,6 +65,18 @@ const BUILDABLES = [
 const MICROBE_CAP = 110;
 const IMMUNE_CAP = 14;
 
+/** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
+const FIELD_FULL = 8;
+
+/** Agent-tier render colour by body (mirrors the CPM profiles; was in the scene). */
+const AGENT_COLOR: Record<BodyKey, number> = {
+  macrophage: 0x49d0ff,
+  epithelial: 0x6b8f9c,
+  microbe: 0xe7d14b,
+  endothelial: 0x8a6f9e,
+  fibroblast: 0x5d7d6a,
+};
+
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
 function heartbeat(timeSec: number, bpm = 70): number {
   const phase = (timeSec * (bpm / 60)) % 1;
@@ -81,13 +93,62 @@ export interface WorldInput {
   viewHalfDiag: number; // world px from screen centre to a corner (bubble promote radius)
 }
 
-/** Plain callbacks for things that need the render/Phaser layer. WorldSim stays
- *  DOM-free; the scene plays the FX / resets the camera. */
-export interface WorldSimHooks {
-  onDeathFx?: (wx: number, wy: number, radius: number, color: number) => void;
-  onDigestFx?: (wx: number, wy: number, radius: number, color: number) => void;
-  onCellGone?: (id: number) => void; // drop renderer colour cache
-  onControlChanged?: () => void; // camera should reset its follow
+/** A one-shot visual effect to play on the render thread (a death/digest pop). */
+export interface SnapshotFx {
+  kind: "death" | "digest";
+  wx: number;
+  wy: number;
+  radius: number;
+  color: number;
+}
+
+/** An agent-tier cell as a render disc (world coords + radius + colour). */
+export interface SnapshotAgent {
+  x: number;
+  y: number;
+  r: number;
+  color: number;
+}
+
+/** A small deform-grid organelle, pre-projected to world coords. */
+export interface SnapshotOccupant {
+  type: string;
+  color: number;
+  radius: number;
+  x: number; // lattice x (for the mitochondrion angle hash)
+  y: number;
+  compressed: number;
+  wx: number;
+  wy: number;
+}
+
+/** A big soft-body organelle (nucleus), pre-projected to world coords. */
+export interface SnapshotOrganelle {
+  type: string;
+  color: number;
+  stress: number;
+  nodes: Array<{ x: number; y: number }>; // world coords, polygon outline
+  cx: number; // world centre
+  cy: number;
+  restRadiusW: number; // restRadius * scale * 0.35 (nucleolus dot)
+}
+
+/** Everything the render thread needs for one frame — a pure data object so the
+ *  whole sim can run on a worker and post this across the boundary. */
+export interface WorldSnapshot {
+  framebuffer: Uint32Array; // RGBA lattice, field*field
+  field: number;
+  originWX: number;
+  originWY: number;
+  scale: number;
+  agents: SnapshotAgent[];
+  occupants: SnapshotOccupant[];
+  organelles: SnapshotOrganelle[];
+  playerWorld: { x: number; y: number } | null;
+  stats: WorldHudStats;
+  profOverlay: string;
+  fx: SnapshotFx[];
+  controlChanged: boolean;
 }
 
 export interface WorldHudStats {
@@ -124,7 +185,12 @@ export class WorldSim {
     macrophages: 0, lining: 0, microbes: 0, nutrients: 0, energy: 0, hp: 0, combatStatus: "resting",
   };
 
-  private readonly hooks: WorldSimHooks;
+  // Render state owned by the sim so the snapshot is self-contained (worker-ready).
+  private readonly framebuffer: Uint32Array;
+  private readonly colorCache = new Map<number, { r: number; g: number; b: number; maxAct: number }>();
+  private fxQueue: SnapshotFx[] = [];
+  private controlChangedFlag = false;
+
   private playerT = 0;
   private simAccumMs = 0;
   private streamAccumMs = 0;
@@ -132,9 +198,9 @@ export class WorldSim {
   private buildIndex = 0;
   private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, viewHalfDiag: 600 };
 
-  constructor(hooks: WorldSimHooks = {}, config: CpmWorldConfig = DEFAULT_WORLD_CONFIG) {
-    this.hooks = hooks;
+  constructor(config: CpmWorldConfig = DEFAULT_WORLD_CONFIG) {
     const cfg = config;
+    this.framebuffer = new Uint32Array(cfg.fieldSize * cfg.fieldSize);
     this.sim = new CpmSimulation(cfg, [
       PLAYER_PROFILE, // 1 CONTROLLED
       PLAYER_PROFILE, // 2 MACROPHAGE
@@ -179,8 +245,8 @@ export class WorldSim {
       enemyKind: MICROBE_KIND,
       digestKind: DIGEST_KIND,
       getAttackerId: () => this.controlledCellId,
-      onConsumeStart: (id) => this.hooks.onCellGone?.(id),
-      onDigested: (wx, wy) => this.hooks.onDigestFx?.(wx, wy, 26, 0xffe066),
+      onConsumeStart: (id) => this.forgetColor(id),
+      onDigested: (wx, wy) => this.fxQueue.push({ kind: "digest", wx, wy, radius: 26, color: 0xffe066 }),
     });
 
     this.controlledCellId = this.spawnPreset("macrophage", center, center, true)!;
@@ -203,6 +269,127 @@ export class WorldSim {
     if (!c) return null;
     const [x, y] = this.sim.latticeToWorld(c.x, c.y);
     return { x, y };
+  }
+
+  // ---- rendering (pure; produces RGBA + a render snapshot) -----------------
+
+  /** Drop a cell's cached colour (death/leave/consume). */
+  private forgetColor(id: number): void {
+    this.colorCache.delete(id);
+  }
+
+  private channels(id: number): { r: number; g: number; b: number; maxAct: number } {
+    let c = this.colorCache.get(id);
+    if (!c) {
+      const rec = this.sim.getCell(id);
+      const color = rec ? rec.profile.color : 0x888888;
+      c = {
+        r: (color >> 16) & 0xff,
+        g: (color >> 8) & 0xff,
+        b: color & 0xff,
+        maxAct: rec ? rec.profile.maxAct || 1 : 1,
+      };
+      this.colorCache.set(id, c);
+    }
+    return c;
+  }
+
+  /** Paint the CPM lattice into the framebuffer (RGBA). Pure pixel math, lifted
+   *  verbatim from CpmRenderer so it can run on a worker. */
+  private renderLattice(): void {
+    const buf = this.framebuffer;
+    buf.fill(0);
+    const grid = this.sim.cpm.grid;
+    const field = this.sim.field;
+    const molField = this.signal;
+    for (const [[x, y], id] of grid.pixels()) {
+      const c = this.channels(id);
+      const a = this.sim.activityAtIndex(grid.p2i([x, y])) / c.maxAct;
+      const t = a > 1 ? 1 : a < 0 ? 0 : a;
+      let r = (c.r + (255 - c.r) * t) | 0;
+      let g = (c.g + (245 - c.g) * t) | 0;
+      let b = (c.b + (200 - c.b) * t) | 0;
+      const right = grid.pixt([x + 1, y]);
+      const down = grid.pixt([x, y + 1]);
+      if ((right !== id && right !== 0) || (down !== id && down !== 0)) {
+        r = (r * 0.32) | 0;
+        g = (g * 0.32) | 0;
+        b = (b * 0.32) | 0;
+      }
+      const fv = molField.valueAt(x, y) / FIELD_FULL;
+      if (fv > 0) {
+        const m = fv > 1 ? 1 : fv;
+        r = (r * (1 - 0.5 * m)) | 0;
+        g = Math.min(255, g + 210 * m) | 0;
+        b = (b * (1 - 0.3 * m)) | 0;
+      }
+      buf[y * field + x] = (0xff << 24) | (b << 16) | (g << 8) | r;
+    }
+  }
+
+  /** Build a self-contained render snapshot (worker-ready). Renders the lattice,
+   *  projects agents + interior to world coords, drains FX + control-change. */
+  snapshot(): WorldSnapshot {
+    this.renderLattice();
+
+    const scale = this.sim.scale;
+    const agents: SnapshotAgent[] = [];
+    for (const a of this.agentWorld.all()) {
+      agents.push({
+        x: a.x,
+        y: a.y,
+        r: Math.sqrt(a.vol / Math.PI) * scale,
+        color: AGENT_COLOR[a.bodyKind] ?? 0x888888,
+      });
+    }
+
+    // Interior (small organelles + nucleus soft body) — only meaningful relative
+    // to the controlled cell, mirroring drawInterior's early-out.
+    const occupants: SnapshotOccupant[] = [];
+    const organelles: SnapshotOrganelle[] = [];
+    if (this.sim.centroidLattice(this.controlledCellId)) {
+      for (const o of this.grid.occupants) {
+        const [wx, wy] = this.sim.latticeToWorld(o.x, o.y);
+        occupants.push({
+          type: o.type, color: o.color, radius: o.radius,
+          x: o.x, y: o.y, compressed: o.compressed, wx, wy,
+        });
+      }
+      for (const big of this.bigOrganelles.organelles) {
+        const nodes: Array<{ x: number; y: number }> = [];
+        for (const nd of big.body.nodes) {
+          const [wx, wy] = this.sim.latticeToWorld(nd.x, nd.y);
+          nodes.push({ x: wx, y: wy });
+        }
+        const nc = big.body.center();
+        const [cwx, cwy] = this.sim.latticeToWorld(nc.x, nc.y);
+        organelles.push({
+          type: big.type, color: big.color, stress: big.stress,
+          nodes, cx: cwx, cy: cwy, restRadiusW: big.body.cfg.restRadius * scale * 0.35,
+        });
+      }
+    }
+
+    const fx = this.fxQueue;
+    this.fxQueue = [];
+    const controlChanged = this.controlChangedFlag;
+    this.controlChangedFlag = false;
+
+    return {
+      framebuffer: this.framebuffer,
+      field: this.sim.field,
+      originWX: this.sim.originWX,
+      originWY: this.sim.originWY,
+      scale,
+      agents,
+      occupants,
+      organelles,
+      playerWorld: this.playerWorldPos(),
+      stats: this.stats,
+      profOverlay: this.prof.overlayText(),
+      fx,
+      controlChanged,
+    };
   }
 
   // ---- the one fixed-timestep tick ----------------------------------------
@@ -256,7 +443,7 @@ export class WorldSim {
       shiftX = r.shiftX;
       shiftY = r.shiftY;
       for (const id of r.demoted) {
-        this.hooks.onCellGone?.(id);
+        this.forgetColor(id);
         this.rules.forget(id); // dormant != dead
       }
     } else {
@@ -400,7 +587,7 @@ export class WorldSim {
       }
       this.sim.killCell(id);
       this.compositions.delete(id);
-      this.hooks.onCellGone?.(id);
+      this.forgetColor(id);
       this.rules.forget(id);
       this.promoted.delete(id);
     }
@@ -414,11 +601,11 @@ export class WorldSim {
     if (c) {
       const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
       const radius = Math.sqrt(c.pixels / Math.PI) * this.sim.scale;
-      this.hooks.onDeathFx?.(wx, wy, radius, color);
+      this.fxQueue.push({ kind: "death", wx, wy, radius, color });
     }
     const wasControlled = id === this.controlledCellId;
     this.sim.killCell(id);
-    this.hooks.onCellGone?.(id);
+    this.forgetColor(id);
     this.compositions.delete(id);
     this.deaths++;
     console.log(`💀 cell ${id} died (${reason})${wasControlled ? " — CONTROLLED" : ""}`);
@@ -439,7 +626,7 @@ export class WorldSim {
     this.bigOrganelles.clear();
     const pc = this.sim.centroidLattice(id);
     if (pc) this.bigOrganelles.add(NUCLEUS.type, NUCLEUS.color, pc.x, pc.y);
-    this.hooks.onControlChanged?.();
+    this.controlChangedFlag = true;
   }
 
   private controlledKind(): number {
@@ -553,7 +740,7 @@ export class WorldSim {
 
   private despawnCell(id: number): void {
     this.sim.killCell(id);
-    this.hooks.onCellGone?.(id);
+    this.forgetColor(id);
     this.compositions.delete(id);
   }
 

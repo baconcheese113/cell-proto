@@ -6,7 +6,7 @@
 import Phaser from "phaser";
 import { CpmRenderer } from "./cpm-renderer";
 import { WorldSim, DEV_FREEZE_STREAMING } from "./world-sim";
-import type { BodyKey } from "./cell-presets";
+import type { WorldSnapshot, SnapshotOccupant } from "./world-sim";
 
 export class CpmWorldScene extends Phaser.Scene {
   private worldSim!: WorldSim;
@@ -20,35 +20,18 @@ export class CpmWorldScene extends Phaser.Scene {
   private camCy: number | undefined;
   private camZoom = 1.8;
 
-  /** Body -> render colour for agents (mirrors the CPM profiles). */
-  private static readonly BODY_COLOR: Record<BodyKey, number> = {
-    macrophage: 0x49d0ff,
-    epithelial: 0x6b8f9c,
-    microbe: 0xe7d14b,
-    endothelial: 0x8a6f9e,
-    fibroblast: 0x5d7d6a,
-  };
-
   create(): void {
     this.makeBackground();
 
-    // The whole simulation. FX/control-change come back as plain callbacks so the
-    // sim core stays Phaser-free.
-    this.worldSim = new WorldSim({
-      onDeathFx: (wx, wy, r, c) => this.spawnDeathFx(wx, wy, r, c),
-      onDigestFx: (wx, wy, r, c) => this.spawnDeathFx(wx, wy, r, c),
-      onCellGone: (id) => this.cpmRenderer?.forgetCell(id),
-      onControlChanged: () => {
-        this.camCx = undefined;
-        this.camCy = undefined;
-      },
-    });
+    // The whole simulation. It is Phaser-free; the scene drives it via setInput/tick
+    // and renders from snapshot() (FX + control-change arrive as snapshot data, not
+    // callbacks) — the boundary a Web Worker will sit on.
+    this.worldSim = new WorldSim();
 
     // Agent tier drawn BELOW the CPM lattice (depth 8 < 10) so promoted CPM detail
     // draws over agents where they coincide.
     this.agentGfx = this.add.graphics().setDepth(8);
-    this.cpmRenderer = new CpmRenderer(this, this.worldSim.sim, 10);
-    this.cpmRenderer.setField(this.worldSim.signal);
+    this.cpmRenderer = new CpmRenderer(this, this.worldSim.sim.field, this.worldSim.sim.scale, 10);
     this.interiorGfx = this.add.graphics().setDepth(12);
 
     // Camera. Dev-freeze fits the whole lattice; otherwise follow the player.
@@ -124,32 +107,40 @@ export class CpmWorldScene extends Phaser.Scene {
     });
 
     this.worldSim.tick(dtSec);
+    // Everything below renders from a self-contained snapshot — NOT the live sim. This
+    // is the worker boundary: in W3 the snapshot arrives by postMessage instead.
+    this.renderSnapshot(this.worldSim.snapshot());
+  }
 
-    // Render the latest sim state.
-    this.worldSim.prof.measure("render", () => {
-      this.cpmRenderer.render();
-      this.drawInterior();
-    });
-    this.worldSim.prof.measure("agentRender", () => this.renderAgents());
+  /** Draw one frame purely from a WorldSnapshot (lattice blit + agents + interior +
+   *  camera + HUD + FX). The render thread never touches the sim. */
+  private renderSnapshot(snap: WorldSnapshot): void {
+    this.cpmRenderer.blit(snap.framebuffer, snap.originWX, snap.originWY);
+    this.drawInterior(snap);
+    this.renderAgents(snap);
+
+    for (const fx of snap.fx) this.spawnDeathFx(fx.wx, fx.wy, fx.radius, fx.color);
+    if (snap.controlChanged) {
+      this.camCx = undefined;
+      this.camCy = undefined;
+    }
 
     // Camera follows the player (with lag) unless frozen for study.
-    if (!DEV_FREEZE_STREAMING) {
-      const p = this.worldSim.playerWorldPos();
-      if (p) {
-        this.camCx = this.camCx === undefined ? p.x : this.camCx + (p.x - this.camCx) * 0.1;
-        this.camCy = this.camCy === undefined ? p.y : this.camCy + (p.y - this.camCy) * 0.1;
-        this.cameras.main.centerOn(this.camCx, this.camCy);
-      }
+    if (!DEV_FREEZE_STREAMING && snap.playerWorld) {
+      const p = snap.playerWorld;
+      this.camCx = this.camCx === undefined ? p.x : this.camCx + (p.x - this.camCx) * 0.1;
+      this.camCy = this.camCy === undefined ? p.y : this.camCy + (p.y - this.camCy) * 0.1;
+      this.cameras.main.centerOn(this.camCx, this.camCy);
     }
     this.bg.tilePositionX = this.cameras.main.scrollX;
     this.bg.tilePositionY = this.cameras.main.scrollY;
 
-    const s = this.worldSim.stats;
+    const s = snap.stats;
     this.hud.setText(
       `Vessel world — ${s.combatStatus}   LMB steer · RMB engulf   you: hp ${s.hp} energy ${s.energy}\n` +
         `world:  macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`
     );
-    this.profText.setText(this.worldSim.prof.overlayText());
+    this.profText.setText(snap.profOverlay);
   }
 
   private makeBackground(): void {
@@ -178,39 +169,31 @@ export class CpmWorldScene extends Phaser.Scene {
     });
   }
 
-  /** Draw every agent as a simple body-coloured disc in world space. */
-  private renderAgents(): void {
+  /** Draw every agent as a simple body-coloured disc in world space (from snapshot). */
+  private renderAgents(snap: WorldSnapshot): void {
     const g = this.agentGfx;
     g.clear();
-    const scale = this.worldSim.sim.scale;
-    for (const a of this.worldSim.agentWorld.all()) {
-      g.fillStyle(CpmWorldScene.BODY_COLOR[a.bodyKind] ?? 0x888888, 1);
-      g.fillCircle(a.x, a.y, Math.sqrt(a.vol / Math.PI) * scale);
+    for (const a of snap.agents) {
+      g.fillStyle(a.color, 1);
+      g.fillCircle(a.x, a.y, a.r);
     }
   }
 
-  /** Draw the deforming-grid small organelles + the nucleus soft body. */
-  private drawInterior(): void {
-    const ws = this.worldSim;
+  /** Draw the deforming-grid small organelles + the nucleus soft body (from snapshot,
+   *  all coords already world-projected). */
+  private drawInterior(snap: WorldSnapshot): void {
     const g = this.interiorGfx;
     g.clear();
-    const s = ws.sim.scale;
-    const c = ws.sim.centroidLattice(ws.controlledCellId);
-    if (!c) return;
+    const s = snap.scale;
 
-    for (const o of ws.grid.occupants) {
-      const [wx, wy] = ws.sim.latticeToWorld(o.x, o.y);
-      this.drawStructure(g, o, wx, wy, s);
+    for (const o of snap.occupants) {
+      this.drawStructure(g, o, o.wx, o.wy, s);
     }
 
-    for (const big of ws.bigOrganelles.organelles) {
-      const nodes = big.body.nodes;
+    for (const big of snap.organelles) {
+      const pts = big.nodes;
+      if (pts.length === 0) continue;
       const stress = big.stress;
-      const pts: Phaser.Math.Vector2[] = [];
-      for (const nd of nodes) {
-        const [wx, wy] = ws.sim.latticeToWorld(nd.x, nd.y);
-        pts.push(new Phaser.Math.Vector2(wx, wy));
-      }
       g.fillStyle(big.color, 0.9);
       g.lineStyle(Math.max(1, s * 0.35), stress > 0.01 ? 0xff5d5d : 0x2a1a4a, 0.7 + 0.3 * stress);
       g.beginPath();
@@ -220,17 +203,15 @@ export class CpmWorldScene extends Phaser.Scene {
       g.fillPath();
       g.strokePath();
       if (big.type === "nucleus") {
-        const nc = big.body.center();
-        const [cwx, cwy] = ws.sim.latticeToWorld(nc.x, nc.y);
         g.fillStyle(0x5b2f9e, 0.9);
-        g.fillCircle(cwx, cwy, big.body.cfg.restRadius * s * 0.35);
+        g.fillCircle(big.cx, big.cy, big.restRadiusW);
       }
     }
   }
 
   private drawStructure(
     g: Phaser.GameObjects.Graphics,
-    o: { type: string; color: number; radius: number; x: number; y: number; compressed: number },
+    o: SnapshotOccupant,
     wx: number,
     wy: number,
     s: number
