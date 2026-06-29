@@ -50,7 +50,7 @@ const DEV_FREEZE_STREAMING = false;
 
 // Fixed-timestep clock: advance the CPM sim at a CONSTANT real-time rate so movement
 // speed is independent of render FPS (a frame hitch must not slow the cell down).
-const TARGET_MCS_PER_SEC = 180; // = the old 60fps x stepsPerFrame 3 feel
+const TARGET_MCS_PER_SEC = 240; // snappier crawl; affordable at the new ~79fps headroom
 const MS_PER_MCS = 1000 / TARGET_MCS_PER_SEC;
 const MAX_CATCHUP_STEPS = 6; // cap per frame -> bounded slow-mo, no spiral of death
 
@@ -90,6 +90,8 @@ export class CpmWorldScene extends Phaser.Scene {
   private playerT = 0;
   /** Accumulated real ms for the fixed-timestep sim clock. */
   private simAccumMs = 0;
+  /** Accumulated real ms for streaming the agent vessel ahead of the player. */
+  private streamAccumMs = 0;
   /** A cell IS its composition. The registry maps every live cell -> its mutable
    *  composition; behaviour + life + (later) the factory all read from here. */
   private readonly compositions = new Map<number, CellComposition>();
@@ -379,7 +381,7 @@ export class CpmWorldScene extends Phaser.Scene {
     const v = this.vessel;
     const centerT = 0; // player starts at the loop start (world 0,0)
     const span = 1.2;
-    const spacing = v.cfg.lumenR * 0.45;
+    const spacing = v.cfg.lumenR * 0.7;
     for (const s of v.slots(centerT, span, spacing)) {
       this.agentWorld.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", s.x, s.y);
     }
@@ -396,6 +398,56 @@ export class CpmWorldScene extends Phaser.Scene {
         );
       }
     }
+  }
+
+  /** Stream the agent vessel to follow the player: fill empty wall slots in an arc
+   *  around the player's current loop position (so cells appear AHEAD as you travel,
+   *  off-screen — no pop), sprinkle sparse lumen traffic, and cull agents far behind
+   *  to bound the population. Cheap, run a few times a second. */
+  private maintainAgentVessel(): void {
+    const pc = this.sim.centroidLattice(this.controlledCellId);
+    if (!pc) return;
+    const [pwx, pwy] = this.sim.latticeToWorld(pc.x, pc.y);
+    const v = this.vessel;
+    const pt = v.nearestT(pwx, pwy, this.playerT).t;
+    const span = 1.0;
+    const spacing = v.cfg.lumenR * 0.7;
+    for (const s of v.slots(pt, span, spacing)) {
+      // Occupied check must span BOTH tiers: a slot near the player may be held by a
+      // PROMOTED CPM cell (removed from the agent world), which hasNear can't see —
+      // without this, those slots look empty and get re-seeded every tick (flood).
+      if (this.agentWorld.hasNear(s.x, s.y, spacing * 0.6)) continue;
+      if (this.cpmOccupiesWorld(s.x, s.y)) continue;
+      this.agentWorld.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", s.x, s.y);
+    }
+    if (Math.random() < 0.5) {
+      const t = pt + (Math.random() - 0.5) * span;
+      const p = v.pathPoint(t);
+      const tan = v.tangent(t);
+      const j = (Math.random() - 0.5) * v.cfg.lumenR * 1.2;
+      const wx = p.x - tan.y * j;
+      const wy = p.y + tan.x * j;
+      if (!this.agentWorld.hasNear(wx, wy, 120) && !this.cpmOccupiesWorld(wx, wy)) {
+        this.agentWorld.spawnPreset(Math.random() < 0.85 ? "microbe" : "macrophage", wx, wy);
+      }
+    }
+    this.agentWorld.cullBeyond(pwx, pwy, 2800);
+  }
+
+  /** True if a CPM cell occupies the lattice near a world point (so streaming doesn't
+   *  re-seed a slot already held by a promoted cell). Samples the centre + a small
+   *  ring so a sparse stamp doesn't read as empty. */
+  private cpmOccupiesWorld(wx: number, wy: number): boolean {
+    const [lx, ly] = this.sim.worldToLattice(wx, wy);
+    const cx = Math.round(lx);
+    const cy = Math.round(ly);
+    if (this.sim.ownerAtLattice(cx, cy) !== 0) return true;
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2;
+      if (this.sim.ownerAtLattice(cx + Math.round(Math.cos(a) * 8), cy + Math.round(Math.sin(a) * 8)) !== 0)
+        return true;
+    }
+    return false;
   }
 
   /** Draw every agent as a simple body-coloured disc in world space. Agents that got
@@ -668,6 +720,12 @@ export class CpmWorldScene extends Phaser.Scene {
     // (LW2-A: agents own walls/traffic; the player is the only CPM cell until the
     // bubble manager promotes nearby agents in LW2-B.)
     this.prof.measure("agents", () => this.agentWorld.step(dtSec));
+    // Stream the vessel ahead of the player + cull behind (a few times a second).
+    this.streamAccumMs += dtSec * 1000;
+    if (this.streamAccumMs >= 150) {
+      this.streamAccumMs = 0;
+      this.prof.measure("vessel", () => this.maintainAgentVessel());
+    }
     this.prof.measure("agentRender", () => this.renderAgents());
 
     // Deforming grid: small organelles flow/regroup with the cell's current shape.

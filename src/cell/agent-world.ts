@@ -36,7 +36,7 @@ const BODY_VOL: Record<BodyKey, number> = {
   macrophage: 560,
   epithelial: 500,
   microbe: 140,
-  endothelial: 900,
+  endothelial: 1500,
   fibroblast: 460,
 };
 
@@ -100,6 +100,29 @@ export class AgentWorld {
     };
     this.cells.set(id, c);
     return c;
+  }
+
+  /** True if any agent sits within `r` of (x,y) — used to avoid double-seeding wall
+   *  slots when streaming the vessel ahead of the player. */
+  hasNear(x: number, y: number, r: number): boolean {
+    const r2 = r * r;
+    for (const c of this.cells.values()) {
+      const dx = c.x - x;
+      const dy = c.y - y;
+      if (dx * dx + dy * dy <= r2) return true;
+    }
+    return false;
+  }
+
+  /** Drop agents farther than `dist` from (x,y) — bounds the population to a region
+   *  around the player as it travels the loop. */
+  cullBeyond(x: number, y: number, dist: number): void {
+    const d2 = dist * dist;
+    for (const [id, c] of this.cells) {
+      const dx = c.x - x;
+      const dy = c.y - y;
+      if (dx * dx + dy * dy > d2) this.cells.delete(id);
+    }
   }
 
   /** Remove an agent and return its record (for promotion into the CPM bubble). */

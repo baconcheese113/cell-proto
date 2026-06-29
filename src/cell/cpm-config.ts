@@ -215,9 +215,9 @@ export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
 export const ENDOTHELIAL_PROFILE: CpmCellProfile = {
   name: "endothelial",
   color: 0x8a6f9e,
-  volume: 900,
+  volume: 1500,
   lambdaV: 50,
-  perimeter: 320,
+  perimeter: 420,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,

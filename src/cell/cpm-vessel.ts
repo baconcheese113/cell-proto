@@ -39,7 +39,9 @@ export const DEFAULT_VESSEL: VesselConfig = {
   lumenR: 340,
   liningW: 200,
   tissueW: 120,
-  liningInset: 75, // ~ endothelial cell radius in world px
+  // Larger -> fewer, bigger wall cells (each is a full CPM cell when promoted, so
+  // fewer = cheaper + still a continuous seal). ~ endothelial cell radius in world px.
+  liningInset: 110,
 };
 
 export type Region = "lumen" | "lining" | "tissue" | "outside";
