@@ -16,7 +16,6 @@ import {
   DIVIDE_THRESHOLD,
   DIVIDE_RETAIN,
   FEED_GAIN,
-  FEED_DAMAGE,
   START_ENERGY,
   MAX_ENERGY,
 } from "./cpm-life";
@@ -37,29 +36,49 @@ const BODY_VOL: Record<BodyKey, number> = {
   epithelial: 500,
   microbe: 140,
   endothelial: 1500,
-  fibroblast: 460,
+  fibroblast: 1100,
 };
 
-const SEP_RADIUS = 18; // crowding distance (world units)
-const SEP_ACCEL = 0.6;
-const STEER_ACCEL = 0.5;
+const SEP_RADIUS = 55; // crowding distance (world px) ~ a cell radius, so they don't overlap
+const SEP_ACCEL = 0.5;
+const STEER_ACCEL = 0.85;
 const DAMPING = 0.86;
-const SPEED_SCALE = 1.1; // max speed per unit motility
-const WANDER_ACCEL = 0.25;
+const SPEED_SCALE = 1.9; // max speed per unit motility (world px/frame)
+const HUNT_SPEED_BONUS = 1.4; // predators close distance faster than fleeing prey
+const WANDER_ACCEL = 0.4;
+const SENSE_BASE = 300; // how far a predator detects prey / prey detects a threat (world px)
+const FLEE_PANIC = 130; // prey only bolts when a predator is this close (else it roams)
+const HEADING_DRIFT = 0.45; // how fast the roaming heading turns (persistence = roaming, not jitter)
+// Spatial-hash cell size must COVER the sense range, or neighbour queries silently
+// cap hunting/fleeing to the hash radius (the bug that made far agents only jitter).
+const BEHAVIOR_CELL = SENSE_BASE;
+const AGENT_FEED_DAMAGE = 9; // visible kills (a ~50-energy microbe dies in ~6 bites)
 const CHILD_OFFSET = 6;
 
 export class AgentWorld {
   private readonly cells = new Map<number, WorldCell>();
-  private readonly hash = new SpatialHash(SEP_RADIUS * 2);
+  private readonly hash = new SpatialHash(BEHAVIOR_CELL);
+  /** Persistent roaming heading per cell (radians) — a slowly-turning direction so
+   *  wandering agents ROAM across the world instead of jittering in place. */
+  private readonly heading = new Map<number, number>();
   private readonly rng: Rng;
   private readonly maxCells: number;
   private nextId = 1;
   private readonly enableDivision: boolean;
+  /** World px per lattice px — so feeding touch tests (positions are world px, vol is
+   *  lattice area) use real world radii. */
+  private readonly worldScale: number;
 
-  constructor(maxCells = 6000, rng: Rng = Math.random, enableDivision = true) {
+  constructor(
+    maxCells = 6000,
+    rng: Rng = Math.random,
+    enableDivision = true,
+    worldScale = 1
+  ) {
     this.maxCells = maxCells;
     this.rng = rng;
     this.enableDivision = enableDivision;
+    this.worldScale = worldScale;
   }
 
   get count(): number {
@@ -128,7 +147,10 @@ export class AgentWorld {
   /** Remove an agent and return its record (for promotion into the CPM bubble). */
   remove(id: number): WorldCell | undefined {
     const c = this.cells.get(id);
-    if (c) this.cells.delete(id);
+    if (c) {
+      this.cells.delete(id);
+      this.heading.delete(id);
+    }
     return c;
   }
 
@@ -198,21 +220,29 @@ export class AgentWorld {
       let ax = sep.sx * SEP_ACCEL;
       let ay = sep.sy * SEP_ACCEL;
 
-      const sense = 60 + caps.chemotaxis * 34;
-      const fleeDist = 40 + caps.motility * 14;
+      const sense = SENSE_BASE + caps.chemotaxis * 40;
+      const fleeDist = FLEE_PANIC + caps.motility * 10;
       const choice = chooseSteer(agents[i], neighborAgents, sense, fleeDist);
+      let speed = maxSpeed;
       if (choice) {
         const dx = choice.x - c.x;
         const dy = choice.y - c.y;
         const d = Math.hypot(dx, dy) || 1;
         ax += (dx / d) * STEER_ACCEL;
         ay += (dy / d) * STEER_ACCEL;
+        if (choice.mode === "hunt") speed = maxSpeed * HUNT_SPEED_BONUS;
       } else {
-        ax += (this.rng() * 2 - 1) * WANDER_ACCEL;
-        ay += (this.rng() * 2 - 1) * WANDER_ACCEL;
+        // Roam: cruise along a persistent, slowly-turning heading (NOT a fresh random
+        // direction each frame, which cancels out into a stationary wiggle).
+        let hd = this.heading.get(c.id);
+        if (hd === undefined) hd = this.rng() * Math.PI * 2;
+        hd += (this.rng() * 2 - 1) * HEADING_DRIFT;
+        this.heading.set(c.id, hd);
+        ax += Math.cos(hd) * WANDER_ACCEL;
+        ay += Math.sin(hd) * WANDER_ACCEL;
       }
 
-      const v = stepVelocity(c, ax, ay, DAMPING, maxSpeed);
+      const v = stepVelocity(c, ax, ay, DAMPING, speed);
       c.vx = v.vx;
       c.vy = v.vy;
       c.x += v.vx * dt * 60;
@@ -226,15 +256,17 @@ export class AgentWorld {
     }
 
     // --- feeding: predators drain touching edible prey ----------------------------
+    // Radius in WORLD px (positions are world px; vol is lattice area) — use worldScale
+    // or the touch test never fires. cellSize must exceed the largest touch distance.
     const feeders: FeedAgent[] = new Array(n);
     for (let i = 0; i < n; i++) {
-      feeders[i] = { ...agents[i], r: Math.sqrt(list[i].vol / Math.PI) };
+      feeders[i] = { ...agents[i], r: Math.sqrt(list[i].vol / Math.PI) * this.worldScale };
     }
-    for (const ev of feedingEvents(feeders)) {
+    for (const ev of feedingEvents(feeders, 1.0, BEHAVIOR_CELL)) {
       const prey = this.cells.get(ev.prey);
       const pred = this.cells.get(ev.predator);
       if (!prey || !pred) continue;
-      prey.energy -= FEED_DAMAGE;
+      prey.energy -= AGENT_FEED_DAMAGE;
       pred.energy = Math.min(MAX_ENERGY, pred.energy + FEED_GAIN);
     }
 
@@ -242,6 +274,7 @@ export class AgentWorld {
     for (const c of list) {
       if (c.energy <= 0) {
         this.cells.delete(c.id);
+        this.heading.delete(c.id);
         continue;
       }
       if (this.enableDivision && c.energy >= DIVIDE_THRESHOLD && this.cells.size < this.maxCells) {

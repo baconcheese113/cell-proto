@@ -233,9 +233,11 @@ export const ENDOTHELIAL_PROFILE: CpmCellProfile = {
 export const FIBROBLAST_PROFILE: CpmCellProfile = {
   name: "fibroblast",
   color: 0x5d7d6a,
-  volume: 460,
+  // Sized comparably to the endothelium so the tissue layer reads as a wall, not tiny
+  // dots behind big cells (was 460 — looked out of place next to the 1500 lining).
+  volume: 1100,
   lambdaV: 50,
-  perimeter: 240,
+  perimeter: 360,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,

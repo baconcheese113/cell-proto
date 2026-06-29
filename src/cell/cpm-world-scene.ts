@@ -57,8 +57,10 @@ const MAX_CATCHUP_STEPS = 6; // cap per frame -> bounded slow-mo, no spiral of d
 // Bubble manager LOD radii (world px from the player). Agents within R_PROMOTE become
 // full CPM cells (physical: collide/engulf/squeeze); CPM cells beyond R_DEMOTE revert
 // to cheap agents. Both sit inside the lattice interior; the gap is hysteresis.
-const R_PROMOTE = 560;
-const R_DEMOTE = 660;
+const R_PROMOTE = 560; // minimum promote radius (covers the default-zoom viewport)
+// Max promote radius: cells must fit inside the lattice (field*scale/2 minus margin).
+// Beyond this the player is zoomed out into the overview, where agents are the point.
+const R_PROMOTE_MAX = 700;
 
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
 function heartbeat(timeSec: number, bpm = 70): number {
@@ -148,7 +150,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // 8 < 10) so promoted CPM detail draws over agents where they coincide. Division
     // is OFF — vessel cells don't breed (walls are structural, traffic is spawned, not
     // bred); resident dividing populations return with the factory milestone.
-    this.agentWorld = new AgentWorld(2000, Math.random, false);
+    this.agentWorld = new AgentWorld(2000, Math.random, false, this.sim.scale);
     this.agentGfx = this.add.graphics().setDepth(8);
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
     this.signal = new CpmField(cfg.fieldSize);
@@ -482,6 +484,14 @@ export class CpmWorldScene extends Phaser.Scene {
     if (!pc) return;
     const [pwx, pwy] = this.sim.latticeToWorld(pc.x, pc.y);
 
+    // Promote everything the player can SEE: track the viewport half-diagonal so all
+    // on-screen cells are real CPM cells, clamped to fit inside the lattice (beyond
+    // that — very zoomed out — cells stay agents, which IS the overview LOD).
+    const cam = this.cameras.main;
+    const viewHalfDiag = Math.hypot(cam.width / cam.zoom, cam.height / cam.zoom) / 2;
+    const rPromote = Math.min(Math.max(viewHalfDiag + 80, R_PROMOTE), R_PROMOTE_MAX);
+    const rDemote = rPromote + 100;
+
     const agentPos: Array<{ id: number; x: number; y: number }> = [];
     for (const a of this.agentWorld.all()) agentPos.push({ id: a.id, x: a.x, y: a.y });
 
@@ -496,7 +506,7 @@ export class CpmWorldScene extends Phaser.Scene {
       promotedPos.push({ id, x: wx, y: wy });
     }
 
-    const plan = planPromotions({ x: pwx, y: pwy }, agentPos, promotedPos, R_PROMOTE, R_DEMOTE);
+    const plan = planPromotions({ x: pwx, y: pwy }, agentPos, promotedPos, rPromote, rDemote);
     const f = this.sim.field;
 
     for (const id of plan.promote) {
