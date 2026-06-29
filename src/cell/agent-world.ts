@@ -54,10 +54,12 @@ export class AgentWorld {
   private readonly rng: Rng;
   private readonly maxCells: number;
   private nextId = 1;
+  private readonly enableDivision: boolean;
 
-  constructor(maxCells = 6000, rng: Rng = Math.random) {
+  constructor(maxCells = 6000, rng: Rng = Math.random, enableDivision = true) {
     this.maxCells = maxCells;
     this.rng = rng;
+    this.enableDivision = enableDivision;
   }
 
   get count(): number {
@@ -98,6 +100,25 @@ export class AgentWorld {
     };
     this.cells.set(id, c);
     return c;
+  }
+
+  /** Remove an agent and return its record (for promotion into the CPM bubble). */
+  remove(id: number): WorldCell | undefined {
+    const c = this.cells.get(id);
+    if (c) this.cells.delete(id);
+    return c;
+  }
+
+  /** Re-insert a cell from baked CPM state (demotion). Preserves its composition +
+   *  energy so the cell's life continues seamlessly across the tier handoff. */
+  adopt(
+    comp: CellComposition,
+    bodyKind: BodyKey,
+    x: number,
+    y: number,
+    energy: number
+  ): WorldCell {
+    return this.add(comp, bodyKind, x, y, energy);
   }
 
   /** Census by a label derived from capabilities (for the gate / HUD). */
@@ -200,7 +221,7 @@ export class AgentWorld {
         this.cells.delete(c.id);
         continue;
       }
-      if (c.energy >= DIVIDE_THRESHOLD && this.cells.size < this.maxCells) {
+      if (this.enableDivision && c.energy >= DIVIDE_THRESHOLD && this.cells.size < this.maxCells) {
         const ang = this.rng() * Math.PI * 2;
         this.add(
           c.comp.childComposition(this.rng),

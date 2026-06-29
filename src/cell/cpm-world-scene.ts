@@ -19,6 +19,7 @@ import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import { simStepsFor } from "./sim-clock";
 import { AgentWorld } from "./agent-world";
+import { planPromotions } from "./bubble-manager-core";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -53,6 +54,12 @@ const TARGET_MCS_PER_SEC = 180; // = the old 60fps x stepsPerFrame 3 feel
 const MS_PER_MCS = 1000 / TARGET_MCS_PER_SEC;
 const MAX_CATCHUP_STEPS = 6; // cap per frame -> bounded slow-mo, no spiral of death
 
+// Bubble manager LOD radii (world px from the player). Agents within R_PROMOTE become
+// full CPM cells (physical: collide/engulf/squeeze); CPM cells beyond R_DEMOTE revert
+// to cheap agents. Both sit inside the lattice interior; the gap is hysteresis.
+const R_PROMOTE = 560;
+const R_DEMOTE = 660;
+
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
 function heartbeat(timeSec: number, bpm = 70): number {
   const phase = (timeSec * (bpm / 60)) % 1; // 0..1 per beat
@@ -76,6 +83,9 @@ export class CpmWorldScene extends Phaser.Scene {
   private agentWorld!: AgentWorld;
   /** World-space layer that draws agents as simple body-coloured shapes. */
   private agentGfx!: Phaser.GameObjects.Graphics;
+  /** CPM cell ids that were PROMOTED from agents (so we know which to demote back).
+   *  The controlled player is NOT in here — it's permanently CPM. */
+  private readonly promoted = new Set<number>();
   /** Player's parameter along the loop (for windowed nearest-point + flow dir). */
   private playerT = 0;
   /** Accumulated real ms for the fixed-timestep sim clock. */
@@ -133,8 +143,10 @@ export class CpmWorldScene extends Phaser.Scene {
 
     this.makeBackground();
     // Agent tier: the cheap off-lattice world. Rendered BELOW the CPM lattice (depth
-    // 8 < 10) so promoted CPM detail draws over agents where they coincide.
-    this.agentWorld = new AgentWorld();
+    // 8 < 10) so promoted CPM detail draws over agents where they coincide. Division
+    // is OFF — vessel cells don't breed (walls are structural, traffic is spawned, not
+    // bred); resident dividing populations return with the factory milestone.
+    this.agentWorld = new AgentWorld(2000, Math.random, false);
     this.agentGfx = this.add.graphics().setDepth(8);
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
     this.signal = new CpmField(cfg.fieldSize);
@@ -386,7 +398,9 @@ export class CpmWorldScene extends Phaser.Scene {
     }
   }
 
-  /** Draw every agent as a simple body-coloured disc in world space. */
+  /** Draw every agent as a simple body-coloured disc in world space. Agents that got
+   *  promoted to CPM this frame are gone from the agent world, so they aren't drawn
+   *  twice (the CPM renderer draws them as detailed cells instead). */
   private renderAgents(): void {
     const g = this.agentGfx;
     g.clear();
@@ -394,6 +408,86 @@ export class CpmWorldScene extends Phaser.Scene {
     for (const a of this.agentWorld.all()) {
       g.fillStyle(CpmWorldScene.BODY_COLOR[a.bodyKind] ?? 0x888888, 1);
       g.fillCircle(a.x, a.y, Math.sqrt(a.vol / Math.PI) * scale);
+    }
+  }
+
+  /** Reverse of bodyKind(): a promoted CPM cell's kind -> its BodyKey, so demotion
+   *  re-creates the right kind of agent. */
+  private kindToBody(kind: number): BodyKey {
+    switch (kind) {
+      case MACROPHAGE_KIND:
+        return "macrophage";
+      case EPITHELIAL_KIND:
+        return "epithelial";
+      case MICROBE_KIND:
+        return "microbe";
+      case ENDOTHELIAL_KIND:
+        return "endothelial";
+      default:
+        return "fibroblast";
+    }
+  }
+
+  /** LOD handoff: promote agents near the player into physical CPM cells and demote
+   *  far CPM cells back to agents, preserving composition + energy both ways. The
+   *  promoted cell is stamped at the agent's size so the disc->cell swap is
+   *  size-preserving (no bloom/pop). */
+  private bubbleManagerStep(
+    centroids: Map<number, { x: number; y: number; pixels: number }>
+  ): void {
+    const pc = centroids.get(this.controlledCellId);
+    if (!pc) return;
+    const [pwx, pwy] = this.sim.latticeToWorld(pc.x, pc.y);
+
+    const agentPos: Array<{ id: number; x: number; y: number }> = [];
+    for (const a of this.agentWorld.all()) agentPos.push({ id: a.id, x: a.x, y: a.y });
+
+    const promotedPos: Array<{ id: number; x: number; y: number }> = [];
+    for (const id of this.promoted) {
+      const c = centroids.get(id);
+      if (!c) {
+        this.promoted.delete(id); // died / gone
+        continue;
+      }
+      const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+      promotedPos.push({ id, x: wx, y: wy });
+    }
+
+    const plan = planPromotions({ x: pwx, y: pwy }, agentPos, promotedPos, R_PROMOTE, R_DEMOTE);
+    const f = this.sim.field;
+
+    for (const id of plan.promote) {
+      const wc = this.agentWorld.remove(id);
+      if (!wc) continue;
+      const [lx, ly] = this.sim.worldToLattice(wc.x, wc.y);
+      const xi = Math.round(lx);
+      const yi = Math.round(ly);
+      // Must fit inside the lattice interior; otherwise leave it an agent.
+      if (xi < 22 || xi >= f - 22 || yi < 22 || yi >= f - 22) {
+        this.agentWorld.adopt(wc.comp, wc.bodyKind, wc.x, wc.y, wc.energy);
+        continue;
+      }
+      const kind = this.bodyKind(wc.bodyKind, false);
+      const radius = Math.sqrt(wc.vol / Math.PI);
+      const rec = this.sim.spawnCellFilled(kind, xi, yi, radius);
+      this.compositions.set(rec.id, wc.comp);
+      this.life.seed(rec.id, wc.energy);
+      this.promoted.add(rec.id);
+    }
+
+    for (const id of plan.demote) {
+      const c = centroids.get(id);
+      const comp = this.compositions.get(id);
+      const rec = this.sim.getCell(id);
+      if (c && comp && rec) {
+        const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+        this.agentWorld.adopt(comp, this.kindToBody(rec.kind), wx, wy, this.life.energyOf(id));
+      }
+      this.sim.killCell(id);
+      this.compositions.delete(id);
+      this.cpmRenderer.forgetCell(id);
+      this.rules.forget(id);
+      this.promoted.delete(id);
     }
   }
 
@@ -530,6 +624,8 @@ export class CpmWorldScene extends Phaser.Scene {
     // autonomous stack: behaviour (hunt/flee/sit by capability) then life
     // (metabolize/feed/divide/starve). Combat is the player's manual engulf (RMB).
     const centroids = this.prof.measure("centroids", () => this.sim.centroidsAll());
+    // LOD handoff: promote nearby agents to physical CPM cells, demote far ones back.
+    this.prof.measure("bubble", () => this.bubbleManagerStep(centroids));
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
     this.combat.update(pointer.rightButtonDown());

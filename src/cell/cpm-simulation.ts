@@ -184,6 +184,28 @@ export class CpmSimulation {
     return rec;
   }
 
+  /** Spawn a cell ALREADY GROWN to ~`radius` lattice px (a stamped disc over free
+   *  background pixels), instead of a 1px seed that visibly blooms. Used when
+   *  promoting an off-lattice agent into the bubble: the agent was already drawn as a
+   *  disc of this size, so the swap to a CPM cell is size-preserving (no pop). */
+  spawnCellFilled(kind: number, x: number, y: number, radius: number): CellRecord {
+    const rec = this.spawnCellAtLattice(kind, x, y);
+    const r = Math.max(1, Math.round(radius));
+    const r2 = r * r;
+    const cx = Math.round(x);
+    const cy = Math.round(y);
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r2) continue;
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || nx >= this.field || ny < 0 || ny >= this.field) continue;
+        if (this.cpm.pixt([nx, ny]) === 0) this.cpm.setpix([nx, ny], rec.id);
+      }
+    }
+    return rec;
+  }
+
   /** Spawn a cell at a WORLD position (converted to lattice). */
   spawnCellAtWorld(kind: number, wx: number, wy: number): CellRecord {
     const [lx, ly] = this.worldToLattice(wx, wy);
