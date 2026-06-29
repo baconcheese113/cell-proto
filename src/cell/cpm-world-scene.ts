@@ -375,10 +375,19 @@ export class CpmWorldScene extends Phaser.Scene {
     fibroblast: 0x5d7d6a,
   };
 
-  /** Lumen-traffic population target for the WHOLE loop (microbes + immune cells).
-   *  Topped back up globally as immune cells eat microbes — so the world stays lively
-   *  everywhere, not just around the player. */
-  private static readonly TRAFFIC_CAP = 140;
+  // Separate population caps for the whole loop. Immune cells are net energy-positive
+  // (mitochondria > upkeep) so they never starve — without a SEPARATE low cap they
+  // accumulate without bound as the top-up keeps adding them. In blood, immune cells
+  // are far rarer than the cells they patrol, so a low cap is realistic too.
+  private static readonly MICROBE_CAP = 110;
+  private static readonly IMMUNE_CAP = 14;
+  /** Wall-slot spacing. NOTE: closing the lining gaps needs spacing < a wall cell's
+   *  diameter (overlap), but with the current large cells that promotes too many CPM
+   *  cells and tanks FPS — the real fix is smaller cells (Artistoo-scale). Kept at a
+   *  perf-safe value until the small-cell pivot. */
+  private wallSpacing(): number {
+    return this.vessel.cfg.lumenR * 0.7;
+  }
 
   /** Seed the agent tier across the ENTIRE vessel loop (t: 0..2*PI), once. The whole
    *  world is a persistent simulation: walls everywhere, immune cells + microbes
@@ -387,14 +396,16 @@ export class CpmWorldScene extends Phaser.Scene {
    *  bubble manager promotes only the nearby agents to CPM for physical interaction. */
   private populateAgentVessel(): void {
     const v = this.vessel;
-    const spacing = v.cfg.lumenR * 0.7;
-    // Walls: lining + tissue slots around the full circumference.
-    for (const s of v.slots(Math.PI, Math.PI, spacing)) {
+    // Walls: lining + tissue slots around the full circumference (overlapping).
+    for (const s of v.slots(Math.PI, Math.PI, this.wallSpacing())) {
       this.agentWorld.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", s.x, s.y);
     }
-    // Lumen traffic distributed around the whole loop.
-    for (let i = 0; i < CpmWorldScene.TRAFFIC_CAP; i++) {
-      this.spawnLumenTraffic(Math.random() * Math.PI * 2);
+    // Lumen traffic distributed around the whole loop (mostly microbes, few immune).
+    for (let i = 0; i < CpmWorldScene.MICROBE_CAP; i++) {
+      this.spawnLumenTraffic("microbe", Math.random() * Math.PI * 2);
+    }
+    for (let i = 0; i < CpmWorldScene.IMMUNE_CAP; i++) {
+      this.spawnLumenTraffic("macrophage", Math.random() * Math.PI * 2);
     }
   }
 
@@ -416,30 +427,32 @@ export class CpmWorldScene extends Phaser.Scene {
     }
   }
 
-  /** Spawn one lumen-traffic agent (mostly microbes, some immune cells) at loop
-   *  parameter `t`, jittered across the lumen width. */
-  private spawnLumenTraffic(t: number): void {
+  /** Spawn one lumen-traffic agent of `body` at loop parameter `t`, jittered across
+   *  the lumen width. */
+  private spawnLumenTraffic(body: "microbe" | "macrophage", t: number): void {
     const v = this.vessel;
     const p = v.pathPoint(t);
     const tan = v.tangent(t);
     const j = (Math.random() - 0.5) * v.cfg.lumenR * 1.4;
-    this.agentWorld.spawnPreset(
-      Math.random() < 0.8 ? "microbe" : "macrophage",
-      p.x - tan.y * j,
-      p.y + tan.x * j
-    );
+    this.agentWorld.spawnPreset(body, p.x - tan.y * j, p.y + tan.x * j);
   }
 
-  /** Keep the whole-loop traffic topped up as immune cells eat microbes. Global (not
-   *  player-anchored) so the world stays alive everywhere. Walls are permanent (seeded
-   *  once, never culled) so they need no upkeep. Cheap; run a few times a second. */
+  /** Keep the whole-loop traffic topped up to its per-type cap as immune cells eat
+   *  microbes. Global (not player-anchored) so the world stays alive everywhere. Walls
+   *  are permanent (seeded once, never culled). Cheap; run a few times a second. */
   private maintainAgentVessel(): void {
-    let traffic = 0;
+    let microbes = 0;
+    let immune = 0;
     for (const a of this.agentWorld.all()) {
-      if (a.bodyKind === "microbe" || a.bodyKind === "macrophage") traffic++;
+      if (a.bodyKind === "microbe") microbes++;
+      else if (a.bodyKind === "macrophage") immune++;
     }
-    if (traffic < CpmWorldScene.TRAFFIC_CAP && Math.random() < 0.5) {
-      this.spawnLumenTraffic(Math.random() * Math.PI * 2);
+    if (microbes < CpmWorldScene.MICROBE_CAP && Math.random() < 0.6) {
+      this.spawnLumenTraffic("microbe", Math.random() * Math.PI * 2);
+    }
+    // Immune top-up is rare (they rarely die) — just replaces the occasional loss.
+    if (immune < CpmWorldScene.IMMUNE_CAP && Math.random() < 0.05) {
+      this.spawnLumenTraffic("macrophage", Math.random() * Math.PI * 2);
     }
   }
 
