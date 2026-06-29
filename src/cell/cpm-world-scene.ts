@@ -18,6 +18,7 @@ import { CellComposition } from "./cell-composition";
 import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import { simStepsFor } from "./sim-clock";
+import { AgentWorld } from "./agent-world";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -70,9 +71,13 @@ export class CpmWorldScene extends Phaser.Scene {
   private grid!: CpmDeformGrid;
   private bigOrganelles!: CpmBigOrganelles;
   private vessel!: CpmVessel;
+  /** The always-on agent tier: the cheap, off-lattice source of truth for every cell
+   *  in the world. The CPM bubble is a detail window that promotes nearby agents. */
+  private agentWorld!: AgentWorld;
+  /** World-space layer that draws agents as simple body-coloured shapes. */
+  private agentGfx!: Phaser.GameObjects.Graphics;
   /** Player's parameter along the loop (for windowed nearest-point + flow dir). */
   private playerT = 0;
-  private vesselMaintainAccum = 0;
   /** Accumulated real ms for the fixed-timestep sim clock. */
   private simAccumMs = 0;
   /** A cell IS its composition. The registry maps every live cell -> its mutable
@@ -127,6 +132,10 @@ export class CpmWorldScene extends Phaser.Scene {
     this.vessel = new CpmVessel(DEFAULT_VESSEL);
 
     this.makeBackground();
+    // Agent tier: the cheap off-lattice world. Rendered BELOW the CPM lattice (depth
+    // 8 < 10) so promoted CPM detail draws over agents where they coincide.
+    this.agentWorld = new AgentWorld();
+    this.agentGfx = this.add.graphics().setDepth(8);
     this.cpmRenderer = new CpmRenderer(this, this.sim, 10);
     this.signal = new CpmField(cfg.fieldSize);
     this.cpmRenderer.setField(this.signal);
@@ -180,7 +189,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // lumen traffic around it.
     this.controlledCellId = this.spawnPreset("macrophage", center, center, true)!;
     for (let i = 0; i < 110; i++) this.sim.step();
-    this.maintainVessel(true);
+    this.populateAgentVessel();
 
     // Shape-conforming internal build grid. Organelles are structures placed in
     // slots that exist only where there's cytoplasm — so the cell's size/shape
@@ -341,63 +350,51 @@ export class CpmWorldScene extends Phaser.Scene {
     return rec.id;
   }
 
-  /** Keep the vessel lining + tissue populated across the visible vessel arc, and
-   *  sprinkle a little lumen traffic. Empty wall slots (lattice background) get
-   *  filled. Centred on the lattice MIDDLE (the stable dev view shows a fixed
-   *  segment), with a span wide enough to cover the whole window. */
-  private maintainVessel(initial = false): void {
-    const f = this.sim.field;
-    const margin = 16;
-    // The vessel parameter at the centre of the visible lattice.
-    const [mwx, mwy] = this.sim.latticeToWorld(f / 2, f / 2);
-    const centerT = this.vessel.nearestT(mwx, mwy).t; // stable (global search)
-    const span = 0.62; // wide enough to line the whole (larger) visible window
-    const spacing = this.vessel.cfg.lumenR * 0.45; // world px between wall slots
-    const slots = this.vessel.slots(centerT, span, spacing);
-    for (const s of slots) {
-      const [lx, ly] = this.sim.worldToLattice(s.x, s.y);
-      const xi = Math.round(lx);
-      const yi = Math.round(ly);
-      if (xi < margin || xi >= f - margin || yi < margin || yi >= f - margin) continue;
-      if (this.sim.ownerAtLattice(xi, yi) !== 0) continue; // already occupied
-      this.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", xi, yi);
-    }
+  /** Body -> render colour for agents (mirrors the CPM profiles). */
+  private static readonly BODY_COLOR: Record<BodyKey, number> = {
+    macrophage: 0x49d0ff,
+    epithelial: 0x6b8f9c,
+    microbe: 0xe7d14b,
+    endothelial: 0x8a6f9e,
+    fibroblast: 0x5d7d6a,
+  };
 
-    // Lumen traffic, kept SPARSE so the channel stays open: bacteria (prey) +
-    // a few autonomous immune cells (WBCs that hunt the bacteria — the world feels
-    // alive, and it sets up diapedesis). Spawned across the visible arc; they flow
-    // and are culled at the edge (circulation).
-    let microbeCount = 0;
-    let wbcCount = 0;
-    for (const rec of this.sim.getCells()) {
-      if (rec.kind === MICROBE_KIND) microbeCount++;
-      else if (rec.kind === MACROPHAGE_KIND) wbcCount++;
+  /** Seed the agent tier along the vessel: lining + tissue walls and a little lumen
+   *  traffic, across a WIDE arc around the loop start so a zoomed-out view is full of
+   *  cells (no empty void / lattice edge). Agents are cheap; the bubble manager
+   *  (LW2-B) promotes the ones near the player to CPM for physical interaction. */
+  private populateAgentVessel(): void {
+    const v = this.vessel;
+    const centerT = 0; // player starts at the loop start (world 0,0)
+    const span = 1.2;
+    const spacing = v.cfg.lumenR * 0.45;
+    for (const s of v.slots(centerT, span, spacing)) {
+      this.agentWorld.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", s.x, s.y);
     }
-    const spawnInLumen = (preset: string): void => {
-      const t = centerT + (Math.random() - 0.5) * span;
-      const p = this.vessel.pathPoint(t);
-      const jitter = (Math.random() - 0.5) * this.vessel.cfg.lumenR * 1.2;
-      const tan = this.vessel.tangent(t);
-      const wx = p.x + -tan.y * jitter;
-      const wy = p.y + tan.x * jitter;
-      const [lx, ly] = this.sim.worldToLattice(wx, wy);
-      const xi = Math.round(lx);
-      const yi = Math.round(ly);
-      if (xi < margin || xi >= f - margin || yi < margin || yi >= f - margin) return;
-      if (this.sim.ownerAtLattice(xi, yi) !== 0) return;
-      this.spawnPreset(preset, xi, yi);
-    };
-    const microbeCap = 8;
-    const wbcCap = 3;
-    if (initial) {
-      for (let i = 0; i < 5; i++) spawnInLumen("microbe");
-      for (let i = 0; i < 2; i++) spawnInLumen("macrophage");
-    } else {
-      if (microbeCount < microbeCap && Math.random() < 0.3) spawnInLumen("microbe");
-      if (wbcCount < wbcCap && Math.random() < 0.12) spawnInLumen("macrophage");
+    const dt = spacing / Math.max(1, v.cfg.radius);
+    for (let t = centerT - span; t <= centerT + span; t += dt) {
+      if (Math.random() < 0.25) {
+        const p = v.pathPoint(t);
+        const tan = v.tangent(t);
+        const j = (Math.random() - 0.5) * v.cfg.lumenR * 1.4;
+        this.agentWorld.spawnPreset(
+          Math.random() < 0.85 ? "microbe" : "macrophage",
+          p.x - tan.y * j,
+          p.y + tan.x * j
+        );
+      }
     }
+  }
 
-    if (initial) for (let i = 0; i < 40; i++) this.sim.step(); // let them take shape
+  /** Draw every agent as a simple body-coloured disc in world space. */
+  private renderAgents(): void {
+    const g = this.agentGfx;
+    g.clear();
+    const scale = this.sim.scale;
+    for (const a of this.agentWorld.all()) {
+      g.fillStyle(CpmWorldScene.BODY_COLOR[a.bodyKind] ?? 0x888888, 1);
+      g.fillCircle(a.x, a.y, Math.sqrt(a.vol / Math.PI) * scale);
+    }
   }
 
   /** Remove a cell with no death FX/handoff (e.g. traffic flowing off the edge). */
@@ -570,12 +567,12 @@ export class CpmWorldScene extends Phaser.Scene {
       this.cullEdgeTraffic(centroids);
     }
 
-    // Vessel upkeep: refill lining/tissue ahead + a little lumen traffic. Throttled
-    // (a few times a second) — the walls don't need per-frame attention.
-    if (++this.vesselMaintainAccum >= 12) {
-      this.vesselMaintainAccum = 0;
-      this.prof.measure("vessel", () => this.maintainVessel());
-    }
+    // Agent tier: step every off-lattice cell (cheap) + draw it. This is the world
+    // BEYOND the CPM detail bubble — zooming out reveals agents, not a lattice edge.
+    // (LW2-A: agents own walls/traffic; the player is the only CPM cell until the
+    // bubble manager promotes nearby agents in LW2-B.)
+    this.prof.measure("agents", () => this.agentWorld.step(dtSec));
+    this.prof.measure("agentRender", () => this.renderAgents());
 
     // Deforming grid: small organelles flow/regroup with the cell's current shape.
     const frame = this.sim.cellFrame(this.controlledCellId);
