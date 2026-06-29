@@ -17,6 +17,7 @@ import { CpmLife } from "./cpm-life";
 import { CellComposition } from "./cell-composition";
 import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
+import { simStepsFor } from "./sim-clock";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -45,6 +46,12 @@ const DIGEST_KIND = 7;
 // playable zoom (fit-to-map makes the cell tiny and movement feel glacial).
 const DEV_FREEZE_STREAMING = false;
 
+// Fixed-timestep clock: advance the CPM sim at a CONSTANT real-time rate so movement
+// speed is independent of render FPS (a frame hitch must not slow the cell down).
+const TARGET_MCS_PER_SEC = 180; // = the old 60fps x stepsPerFrame 3 feel
+const MS_PER_MCS = 1000 / TARGET_MCS_PER_SEC;
+const MAX_CATCHUP_STEPS = 6; // cap per frame -> bounded slow-mo, no spiral of death
+
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
 function heartbeat(timeSec: number, bpm = 70): number {
   const phase = (timeSec * (bpm / 60)) % 1; // 0..1 per beat
@@ -66,6 +73,8 @@ export class CpmWorldScene extends Phaser.Scene {
   /** Player's parameter along the loop (for windowed nearest-point + flow dir). */
   private playerT = 0;
   private vesselMaintainAccum = 0;
+  /** Accumulated real ms for the fixed-timestep sim clock. */
+  private simAccumMs = 0;
   /** A cell IS its composition. The registry maps every live cell -> its mutable
    *  composition; behaviour + life + (later) the factory all read from here. */
   private readonly compositions = new Map<number, CellComposition>();
@@ -342,7 +351,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // The vessel parameter at the centre of the visible lattice.
     const [mwx, mwy] = this.sim.latticeToWorld(f / 2, f / 2);
     const centerT = this.vessel.nearestT(mwx, mwy).t; // stable (global search)
-    const span = 0.42; // wide enough to line the whole visible window
+    const span = 0.62; // wide enough to line the whole (larger) visible window
     const spacing = this.vessel.cfg.lumenR * 0.45; // world px between wall slots
     const slots = this.vessel.slots(centerT, span, spacing);
     for (const s of slots) {
@@ -487,8 +496,10 @@ export class CpmWorldScene extends Phaser.Scene {
     });
   }
 
-  override update(): void {
+  override update(_time: number, delta: number): void {
     const pointer = this.input.activePointer;
+    // Real-time dt (s), clamped so a big hitch/tab-stall can't lurch everything.
+    const dtSec = Math.min(delta, 100) / 1000;
 
     // The controlled cell RESTS by default and only protrudes while steered, so with
     // no input it holds still (just Monte-Carlo wiggle) and never drifts. Hold LMB to
@@ -522,7 +533,7 @@ export class CpmWorldScene extends Phaser.Scene {
     // autonomous stack: behaviour (hunt/flee/sit by capability) then life
     // (metabolize/feed/divide/starve). Combat is the player's manual engulf (RMB).
     const centroids = this.prof.measure("centroids", () => this.sim.centroidsAll());
-    this.prof.measure("behavior", () => this.behavior.update(1 / 60, centroids));
+    this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
     this.combat.update(pointer.rightButtonDown());
 
@@ -532,7 +543,12 @@ export class CpmWorldScene extends Phaser.Scene {
       this.sim.basePerimeter(kind) + this.sim.compartmentPerimeterSum([DIGEST_KIND])
     );
 
-    this.prof.measure("cpm.step", () => this.sim.step());
+    // Fixed-timestep: advance the sim at a constant real-time rate (decoupled from
+    // render FPS), so movement speed no longer depends on frame latency.
+    this.simAccumMs += dtSec * 1000;
+    const plan = simStepsFor(this.simAccumMs, MS_PER_MCS, MAX_CATCHUP_STEPS);
+    this.simAccumMs = plan.remainderMs;
+    this.prof.measure("cpm.step", () => this.sim.stepN(plan.steps));
 
     // Infinite-world streaming: recenter the bubble on the player, demote cells
     // that left, re-activate ones that returned. (Frozen in dev — see below.)

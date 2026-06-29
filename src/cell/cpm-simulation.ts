@@ -213,6 +213,12 @@ export class CpmSimulation {
     for (let i = 0; i < this.stepsPerFrame; i++) this.cpm.timeStep();
   }
 
+  /** Advance exactly `n` Monte-Carlo steps. Used by the scene's fixed-timestep clock
+   *  so the sim advances at a constant rate in real time, independent of render FPS. */
+  stepN(n: number): void {
+    for (let i = 0; i < n; i++) this.cpm.timeStep();
+  }
+
   /** Command a single cell toward a lattice point at its profile's strength. */
   steerCell(id: CellId, x: number, y: number, lambdaScale = 1): void {
     const rec = this.cells.get(id);

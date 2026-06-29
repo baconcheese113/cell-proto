@@ -193,10 +193,11 @@ export interface CpmWorldConfig {
 }
 
 export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
-  fieldSize: 220,
-  // 5 (was 4) enlarges the simulated bubble (220*5 = 1100 world px) so its
-  // streaming boundary sits OFF-SCREEN — without growing fieldSize (which would
-  // scale cpm.step). Camera zoom is tuned to match in the scene.
+  // 320 (was 220): a bigger simulated bubble (320*5 = 1600 world px) pushes the
+  // streaming boundary further OFF-SCREEN, cutting visible pop-in/recenter
+  // artifacts. Cost scales ~with the cells the wall fills here, so this is a
+  // stopgap — the no-cost large-area answer is the agent-tier render (LW2).
+  fieldSize: 320,
   worldPerPixel: 5,
   temperature: 16,
   // 3 (was 2): movement is sim-rate-bound, so more MCS/frame = snappier crawl per
