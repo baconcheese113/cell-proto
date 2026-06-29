@@ -149,6 +149,10 @@ export interface WorldSnapshot {
   profOverlay: string;
   fx: SnapshotFx[];
   controlChanged: boolean;
+  /** Monotonic sim clock + tick count — lets the render thread verify the sim keeps
+   *  advancing independently of render FPS (worker decoupling check). */
+  simTimeSec: number;
+  tickSeq: number;
 }
 
 export interface WorldHudStats {
@@ -192,6 +196,7 @@ export class WorldSim {
   private controlChangedFlag = false;
 
   private playerT = 0;
+  private tickSeq = 0;
   private simAccumMs = 0;
   private streamAccumMs = 0;
   private timeSec = 0;
@@ -389,12 +394,15 @@ export class WorldSim {
       profOverlay: this.prof.overlayText(),
       fx,
       controlChanged,
+      simTimeSec: this.timeSec,
+      tickSeq: this.tickSeq,
     };
   }
 
   // ---- the one fixed-timestep tick ----------------------------------------
   tick(dtSec: number): void {
     this.timeSec += dtSec;
+    this.tickSeq++;
     const input = this.input;
 
     // Controlled cell: rests by default, protrudes + steers only while LMB held.

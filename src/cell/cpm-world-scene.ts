@@ -1,16 +1,20 @@
-// CpmWorldScene — the Phaser render/input CLIENT for the CPM cell world. All the
-// simulation lives in the Phaser-free `WorldSim` (so it can later move to a Web
-// Worker); this scene only: captures input → feeds it to WorldSim, ticks it, renders
-// the lattice/agents/interior, follows the camera, draws the HUD, and plays FX.
+// CpmWorldScene — the Phaser render/input CLIENT for the CPM cell world. The whole
+// simulation runs behind a SimClient: by default on a Web Worker (render FPS decoupled
+// from cpm.step), or inline on the render thread with ?local (debug/fallback, where
+// __cpm exposes the live WorldSim). This scene only: captures input → forwards it to the
+// client, renders the latest snapshot (lattice/agents/interior), follows the camera,
+// draws the HUD, and plays FX.
 
 import Phaser from "phaser";
 import { CpmRenderer } from "./cpm-renderer";
-import { WorldSim, DEV_FREEZE_STREAMING } from "./world-sim";
+import { DEV_FREEZE_STREAMING } from "./world-sim";
 import type { WorldSnapshot, SnapshotOccupant } from "./world-sim";
+import { LocalSimClient, WorkerSimClient, type SimClient } from "./sim-client";
 
 export class CpmWorldScene extends Phaser.Scene {
-  private worldSim!: WorldSim;
-  private cpmRenderer!: CpmRenderer;
+  private sim!: SimClient;
+  private cpmRenderer?: CpmRenderer; // created lazily from the first snapshot
+  private lastSnap?: WorldSnapshot;
   private agentGfx!: Phaser.GameObjects.Graphics;
   private interiorGfx!: Phaser.GameObjects.Graphics;
   private bg!: Phaser.GameObjects.TileSprite;
@@ -23,22 +27,20 @@ export class CpmWorldScene extends Phaser.Scene {
   create(): void {
     this.makeBackground();
 
-    // The whole simulation. It is Phaser-free; the scene drives it via setInput/tick
-    // and renders from snapshot() (FX + control-change arrive as snapshot data, not
-    // callbacks) — the boundary a Web Worker will sit on.
-    this.worldSim = new WorldSim();
+    // The whole simulation, behind the client boundary. Worker by default; ?local runs
+    // it inline (so __cpm can reach the live WorldSim for debugging).
+    const useLocal = new URLSearchParams(location.search).has("local");
+    this.sim = useLocal ? new LocalSimClient() : new WorkerSimClient();
 
     // Agent tier drawn BELOW the CPM lattice (depth 8 < 10) so promoted CPM detail
-    // draws over agents where they coincide.
+    // draws over agents where they coincide. The lattice renderer is created lazily
+    // once the first snapshot tells us the field size + scale.
     this.agentGfx = this.add.graphics().setDepth(8);
-    this.cpmRenderer = new CpmRenderer(this, this.worldSim.sim.field, this.worldSim.sim.scale, 10);
     this.interiorGfx = this.add.graphics().setDepth(12);
 
-    // Camera. Dev-freeze fits the whole lattice; otherwise follow the player.
-    const worldSize = this.worldSim.sim.field * this.worldSim.sim.scale;
-    this.camZoom = DEV_FREEZE_STREAMING
-      ? (Math.min(this.scale.width, this.scale.height) / worldSize) * 0.95
-      : 1.8;
+    // Camera. Non-frozen follows the player; dev-freeze fit is applied lazily when the
+    // first snapshot arrives (it needs the field size).
+    this.camZoom = 1.8;
     this.cameras.main.setZoom(this.camZoom);
     this.cameras.main.setBackgroundColor("#1a0d12");
     this.cameras.main.centerOn(0, 0);
@@ -64,14 +66,28 @@ export class CpmWorldScene extends Phaser.Scene {
     this.input.mouse?.disableContextMenu();
     this.input.keyboard?.on("keydown-B", () => {
       const ptr = this.input.activePointer;
-      this.worldSim.growOrganelleAt(ptr.worldX, ptr.worldY);
+      this.sim.build(ptr.worldX, ptr.worldY);
     });
 
-    if (import.meta.env.DEV) {
-      const ws = this.worldSim;
-      (window as unknown as { __cpm?: unknown }).__cpm = {
+    if (import.meta.env.DEV) this.installDebugHandle();
+  }
+
+  /** Expose a `window.__cpm` debug handle. In ?local mode it reaches the live WorldSim;
+   *  in worker mode only render-thread state (latest snapshot) is reachable. */
+  private installDebugHandle(): void {
+    const base: Record<string, unknown> = {
+      scene: this,
+      mode: this.sim instanceof LocalSimClient ? "local" : "worker",
+      snapshot: () => this.lastSnap,
+      // Render-thread view of the sim clock — verifies the worker keeps advancing
+      // independently of render FPS.
+      simTime: () => ({ simTimeSec: this.lastSnap?.simTimeSec, tickSeq: this.lastSnap?.tickSeq }),
+      stats: () => this.lastSnap?.stats,
+    };
+    if (this.sim instanceof LocalSimClient) {
+      const ws = this.sim.worldSim;
+      Object.assign(base, {
         sim: ws.sim,
-        scene: this,
         worldSim: ws,
         combat: ws.combat,
         rules: ws.rules,
@@ -89,16 +105,16 @@ export class CpmWorldScene extends Phaser.Scene {
         },
         tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
           ws.sim.tearCell(id ?? ws.controlledCellId, axis, halfWidth),
-      };
+      });
     }
+    (window as unknown as { __cpm?: unknown }).__cpm = base;
   }
 
-  override update(_time: number, delta: number): void {
-    const dtSec = Math.min(delta, 100) / 1000;
+  override update(): void {
     const pointer = this.input.activePointer;
     const cam = this.cameras.main;
 
-    this.worldSim.setInput({
+    this.sim.setInput({
       steering: pointer.leftButtonDown(),
       pointerWX: pointer.worldX,
       pointerWY: pointer.worldY,
@@ -106,15 +122,27 @@ export class CpmWorldScene extends Phaser.Scene {
       viewHalfDiag: Math.hypot(cam.width / cam.zoom, cam.height / cam.zoom) / 2,
     });
 
-    this.worldSim.tick(dtSec);
-    // Everything below renders from a self-contained snapshot — NOT the live sim. This
-    // is the worker boundary: in W3 the snapshot arrives by postMessage instead.
-    this.renderSnapshot(this.worldSim.snapshot());
+    // Render the freshest snapshot we have. In worker mode the sim ticks on its own
+    // thread, so the render rate is independent of cpm.step cost; here we just re-draw
+    // the latest frame each rAF.
+    const snap = this.sim.takeSnapshot();
+    if (snap) this.renderSnapshot(snap);
   }
 
   /** Draw one frame purely from a WorldSnapshot (lattice blit + agents + interior +
    *  camera + HUD + FX). The render thread never touches the sim. */
   private renderSnapshot(snap: WorldSnapshot): void {
+    this.lastSnap = snap;
+    // Lazily build the lattice renderer + apply dev-freeze fit once we know field/scale.
+    if (!this.cpmRenderer) {
+      this.cpmRenderer = new CpmRenderer(this, snap.field, snap.scale, 10);
+      if (DEV_FREEZE_STREAMING) {
+        const worldSize = snap.field * snap.scale;
+        this.camZoom = (Math.min(this.scale.width, this.scale.height) / worldSize) * 0.95;
+        this.cameras.main.setZoom(this.camZoom);
+        this.cameras.main.centerOn(0, 0);
+      }
+    }
     this.cpmRenderer.blit(snap.framebuffer, snap.originWX, snap.originWY);
     this.drawInterior(snap);
     this.renderAgents(snap);
