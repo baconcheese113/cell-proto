@@ -373,81 +373,54 @@ export class CpmWorldScene extends Phaser.Scene {
     fibroblast: 0x5d7d6a,
   };
 
-  /** Seed the agent tier along the vessel: lining + tissue walls and a little lumen
-   *  traffic, across a WIDE arc around the loop start so a zoomed-out view is full of
-   *  cells (no empty void / lattice edge). Agents are cheap; the bubble manager
-   *  (LW2-B) promotes the ones near the player to CPM for physical interaction. */
+  /** Lumen-traffic population target for the WHOLE loop (microbes + immune cells).
+   *  Topped back up globally as immune cells eat microbes — so the world stays lively
+   *  everywhere, not just around the player. */
+  private static readonly TRAFFIC_CAP = 140;
+
+  /** Seed the agent tier across the ENTIRE vessel loop (t: 0..2*PI), once. The whole
+   *  world is a persistent simulation: walls everywhere, immune cells + microbes
+   *  scattered around the full loop, all stepping every frame regardless of where the
+   *  player is. The player is just a body moving THROUGH this pre-existing world; the
+   *  bubble manager promotes only the nearby agents to CPM for physical interaction. */
   private populateAgentVessel(): void {
     const v = this.vessel;
-    const centerT = 0; // player starts at the loop start (world 0,0)
-    const span = 1.2;
     const spacing = v.cfg.lumenR * 0.7;
-    for (const s of v.slots(centerT, span, spacing)) {
+    // Walls: lining + tissue slots around the full circumference.
+    for (const s of v.slots(Math.PI, Math.PI, spacing)) {
       this.agentWorld.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", s.x, s.y);
     }
-    const dt = spacing / Math.max(1, v.cfg.radius);
-    for (let t = centerT - span; t <= centerT + span; t += dt) {
-      if (Math.random() < 0.25) {
-        const p = v.pathPoint(t);
-        const tan = v.tangent(t);
-        const j = (Math.random() - 0.5) * v.cfg.lumenR * 1.4;
-        this.agentWorld.spawnPreset(
-          Math.random() < 0.85 ? "microbe" : "macrophage",
-          p.x - tan.y * j,
-          p.y + tan.x * j
-        );
-      }
+    // Lumen traffic distributed around the whole loop.
+    for (let i = 0; i < CpmWorldScene.TRAFFIC_CAP; i++) {
+      this.spawnLumenTraffic(Math.random() * Math.PI * 2);
     }
   }
 
-  /** Stream the agent vessel to follow the player: fill empty wall slots in an arc
-   *  around the player's current loop position (so cells appear AHEAD as you travel,
-   *  off-screen — no pop), sprinkle sparse lumen traffic, and cull agents far behind
-   *  to bound the population. Cheap, run a few times a second. */
-  private maintainAgentVessel(): void {
-    const pc = this.sim.centroidLattice(this.controlledCellId);
-    if (!pc) return;
-    const [pwx, pwy] = this.sim.latticeToWorld(pc.x, pc.y);
+  /** Spawn one lumen-traffic agent (mostly microbes, some immune cells) at loop
+   *  parameter `t`, jittered across the lumen width. */
+  private spawnLumenTraffic(t: number): void {
     const v = this.vessel;
-    const pt = v.nearestT(pwx, pwy, this.playerT).t;
-    const span = 1.0;
-    const spacing = v.cfg.lumenR * 0.7;
-    for (const s of v.slots(pt, span, spacing)) {
-      // Occupied check must span BOTH tiers: a slot near the player may be held by a
-      // PROMOTED CPM cell (removed from the agent world), which hasNear can't see —
-      // without this, those slots look empty and get re-seeded every tick (flood).
-      if (this.agentWorld.hasNear(s.x, s.y, spacing * 0.6)) continue;
-      if (this.cpmOccupiesWorld(s.x, s.y)) continue;
-      this.agentWorld.spawnPreset(s.role === "lining" ? "endothelial" : "fibroblast", s.x, s.y);
-    }
-    if (Math.random() < 0.5) {
-      const t = pt + (Math.random() - 0.5) * span;
-      const p = v.pathPoint(t);
-      const tan = v.tangent(t);
-      const j = (Math.random() - 0.5) * v.cfg.lumenR * 1.2;
-      const wx = p.x - tan.y * j;
-      const wy = p.y + tan.x * j;
-      if (!this.agentWorld.hasNear(wx, wy, 120) && !this.cpmOccupiesWorld(wx, wy)) {
-        this.agentWorld.spawnPreset(Math.random() < 0.85 ? "microbe" : "macrophage", wx, wy);
-      }
-    }
-    this.agentWorld.cullBeyond(pwx, pwy, 2800);
+    const p = v.pathPoint(t);
+    const tan = v.tangent(t);
+    const j = (Math.random() - 0.5) * v.cfg.lumenR * 1.4;
+    this.agentWorld.spawnPreset(
+      Math.random() < 0.8 ? "microbe" : "macrophage",
+      p.x - tan.y * j,
+      p.y + tan.x * j
+    );
   }
 
-  /** True if a CPM cell occupies the lattice near a world point (so streaming doesn't
-   *  re-seed a slot already held by a promoted cell). Samples the centre + a small
-   *  ring so a sparse stamp doesn't read as empty. */
-  private cpmOccupiesWorld(wx: number, wy: number): boolean {
-    const [lx, ly] = this.sim.worldToLattice(wx, wy);
-    const cx = Math.round(lx);
-    const cy = Math.round(ly);
-    if (this.sim.ownerAtLattice(cx, cy) !== 0) return true;
-    for (let k = 0; k < 4; k++) {
-      const a = (k / 4) * Math.PI * 2;
-      if (this.sim.ownerAtLattice(cx + Math.round(Math.cos(a) * 8), cy + Math.round(Math.sin(a) * 8)) !== 0)
-        return true;
+  /** Keep the whole-loop traffic topped up as immune cells eat microbes. Global (not
+   *  player-anchored) so the world stays alive everywhere. Walls are permanent (seeded
+   *  once, never culled) so they need no upkeep. Cheap; run a few times a second. */
+  private maintainAgentVessel(): void {
+    let traffic = 0;
+    for (const a of this.agentWorld.all()) {
+      if (a.bodyKind === "microbe" || a.bodyKind === "macrophage") traffic++;
     }
-    return false;
+    if (traffic < CpmWorldScene.TRAFFIC_CAP && Math.random() < 0.5) {
+      this.spawnLumenTraffic(Math.random() * Math.PI * 2);
+    }
   }
 
   /** Draw every agent as a simple body-coloured disc in world space. Agents that got
