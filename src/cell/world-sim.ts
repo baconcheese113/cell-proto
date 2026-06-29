@@ -49,7 +49,11 @@ export const DEV_FREEZE_STREAMING = false;
 // speed is independent of render FPS.
 const TARGET_MCS_PER_SEC = 240;
 const MS_PER_MCS = 1000 / TARGET_MCS_PER_SEC;
-const MAX_CATCHUP_STEPS = 6; // cap per frame -> bounded slow-mo, no spiral of death
+// Cap per tick -> bounded work, no spiral of death (simStepsFor drops any backlog past
+// this). Raised 6 -> 10: at a heavy ~24-30Hz tick rate the old cap of 6 ran only 180
+// MCS/s vs the 240 target, i.e. visible SLOW-MOTION on top of the low frame rate. 10
+// lets the sim hold true speed down to ~24Hz; only below that does it gracefully slow.
+const MAX_CATCHUP_STEPS = 10;
 
 // Bubble manager LOD radii (world px from the player).
 const R_PROMOTE = 560;

@@ -24,18 +24,29 @@ ctx.onmessage = (e) => {
   else if (m.t === "build") sim.growOrganelleAt(m.wx, m.wy);
 };
 
-const TARGET_MS = 16; // ~60Hz tick when cpm.step allows; the sim clock self-corrects.
+// Cap at ~60Hz but, when the sim is heavy (cycle > budget), reschedule IMMEDIATELY via
+// a MessageChannel instead of setTimeout. Nested setTimeout is clamped to ~4ms minimum,
+// which at a ~30Hz cycle wastes ~12% of the budget as idle; the MessageChannel port
+// posts back with ~0ms latency, so a heavy worker runs flat-out. Only when there is real
+// slack (cheap sim) do we setTimeout the remainder to avoid busy-spinning a core.
+const TARGET_MS = 1000 / 60;
+const pump = new MessageChannel();
+pump.port1.onmessage = () => loop();
+const scheduleNow = (): void => pump.port2.postMessage(0);
+
 let last = performance.now();
 
 function loop(): void {
-  const now = performance.now();
-  const dt = Math.min((now - last) / 1000, 0.1);
-  last = now;
+  const start = performance.now();
+  const dt = Math.min((start - last) / 1000, 0.1);
+  last = start;
   sim.tick(dt);
-  // Structured clone copies the framebuffer; the worker keeps its own buffer to render
-  // into next tick (no transfer/ownership dance).
+  // Structured clone copies the framebuffer (a ~400KB buffer copy — cheaper than the
+  // multi-ms step we moved off-thread); the worker keeps its own buffer for next tick.
   ctx.postMessage({ t: "snapshot", snap: sim.snapshot() });
-  setTimeout(loop, TARGET_MS);
+  const remaining = TARGET_MS - (performance.now() - start);
+  if (remaining > 1) setTimeout(loop, remaining);
+  else scheduleNow();
 }
 
 loop();
