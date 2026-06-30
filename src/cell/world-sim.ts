@@ -147,6 +147,18 @@ export interface SnapshotMarker {
   color: number;
 }
 
+/** The trogocytosis tendril to draw (world coords): from the player to the cursor tip, with
+ *  the grabbed cell's centre (null while still reaching) and a 0..1 stretch for colour. */
+export interface SnapshotTendril {
+  fromWX: number;
+  fromWY: number;
+  toWX: number;
+  toWY: number;
+  grabWX: number | null;
+  grabWY: number | null;
+  taut: number;
+}
+
 /** A small deform-grid organelle, pre-projected to world coords. */
 export interface SnapshotOccupant {
   type: string;
@@ -180,6 +192,7 @@ export interface WorldSnapshot {
   scale: number;
   agents: SnapshotAgent[];
   markers: SnapshotMarker[];
+  tendril: SnapshotTendril | null;
   occupants: SnapshotOccupant[];
   organelles: SnapshotOrganelle[];
   playerWorld: { x: number; y: number } | null;
@@ -312,7 +325,6 @@ export class WorldSim {
       onDigested: (wx, wy) => this.fxQueue.push({ kind: "digest", wx, wy, radius: 26, color: 0xffe066 }),
     });
     this.trog = new CpmTrogocytosis(this.sim, {
-      playerKind: CONTROLLED_KIND,
       getAttackerId: () => this.controlledCellId,
       // Allegiance-based: rip any cell on a hostile team (never self/ally/neutral/debris).
       isHostile: (id) =>
@@ -482,6 +494,20 @@ export class WorldSim {
       }
     }
 
+    // Trogocytosis tendril (lattice -> world). Only while the player is a ripper.
+    let tendril: SnapshotTendril | null = null;
+    const t = this.trog.tendril;
+    if (t && this.playerPrefersTrog()) {
+      const [fwx, fwy] = this.sim.latticeToWorld(t.fromLX, t.fromLY);
+      const [twx, twy] = this.sim.latticeToWorld(t.toLX, t.toLY);
+      let gwx: number | null = null;
+      let gwy: number | null = null;
+      if (t.grabLX !== null && t.grabLY !== null) {
+        [gwx, gwy] = this.sim.latticeToWorld(t.grabLX, t.grabLY);
+      }
+      tendril = { fromWX: fwx, fromWY: fwy, toWX: twx, toWY: twy, grabWX: gwx, grabWY: gwy, taut: t.taut };
+    }
+
     const fx = this.fxQueue;
     this.fxQueue = [];
     const controlChanged = this.controlChangedFlag;
@@ -495,6 +521,7 @@ export class WorldSim {
       scale,
       agents,
       markers,
+      tendril,
       occupants,
       organelles,
       playerWorld: this.playerWorldPos(),
@@ -546,7 +573,7 @@ export class WorldSim {
     // dominant offensive capability (its composition decides which verb it can use).
     if (this.playerPrefersTrog()) {
       const [clx, cly] = this.sim.worldToLattice(input.pointerWX, input.pointerWY);
-      this.trog.update(input.engulf, clx, cly, input.pointerSpeed, dtSec * 1000);
+      this.trog.update(input.engulf, clx, cly, dtSec * 1000);
     } else {
       this.combat.update(input.engulf);
     }
@@ -666,9 +693,9 @@ export class WorldSim {
       hp: Math.round(this.rules.healthFraction(this.controlledCellId) * 100),
       combatStatus: this.playerPrefersTrog()
         ? this.trog.latched
-          ? "TROG: latched — FLICK to rip"
+          ? "TROG: grabbed — PULL the cursor away to rip"
           : this.input.engulf
-            ? "TROG: reaching (hold RMB)"
+            ? "TROG: reaching… (hold RMB, aim at a microbe)"
             : this.input.steering
               ? "STEERING (hold LMB)"
               : "resting"
