@@ -34,6 +34,10 @@ export class CpmWorldScene extends Phaser.Scene {
   private renderFps = 0;
   private hzTick0 = 0;
   private workerHz = 0;
+  // Previous cursor world position, to derive pointer SPEED (world px/sec) for the
+  // trogocytosis rip flick.
+  private prevPointerWX: number | undefined;
+  private prevPointerWY: number | undefined;
 
   create(): void {
     this.makeBackground();
@@ -122,20 +126,32 @@ export class CpmWorldScene extends Phaser.Scene {
         // T1 gate: rip a conserved fragment off the nearest cell; returns mass before +
         // moved + remaining (assert before === moved + remaining) and the fragment id.
         rip: (count = 30) => ws.debugRip(count),
+        // T2 gate: inspect/drive the trogocytosis pseudopod + flick control.
+        trog: () => ({ status: ws.trog.status, latched: ws.trog.latched }),
       });
     }
     (window as unknown as { __cpm?: unknown }).__cpm = base;
   }
 
-  override update(): void {
+  override update(_time: number, delta: number): void {
     const pointer = this.input.activePointer;
     const cam = this.cameras.main;
+
+    // Cursor speed (world px/sec) for the trogocytosis rip flick.
+    const dtSec = delta > 0 ? delta / 1000 : 1 / 60;
+    let pointerSpeed = 0;
+    if (this.prevPointerWX !== undefined && this.prevPointerWY !== undefined) {
+      pointerSpeed = Math.hypot(pointer.worldX - this.prevPointerWX, pointer.worldY - this.prevPointerWY) / dtSec;
+    }
+    this.prevPointerWX = pointer.worldX;
+    this.prevPointerWY = pointer.worldY;
 
     this.sim.setInput({
       steering: pointer.leftButtonDown(),
       pointerWX: pointer.worldX,
       pointerWY: pointer.worldY,
       engulf: pointer.rightButtonDown(),
+      pointerSpeed,
       viewHalfDiag: Math.hypot(cam.width / cam.zoom, cam.height / cam.zoom) / 2,
     });
 

@@ -10,6 +10,7 @@ import { CpmSimulation } from "./cpm-simulation";
 import { CpmRules, type DeathReason } from "./cpm-rules";
 import { CpmCellBehavior } from "./cpm-cell-behavior";
 import { CpmCombat } from "./cpm-combat";
+import { CpmTrogocytosis } from "./cpm-trogocytosis";
 import { CpmField } from "./cpm-field";
 import { CpmDeformGrid } from "./cpm-deform-grid";
 import { CpmBigOrganelles } from "./cpm-big-organelles";
@@ -105,7 +106,8 @@ export interface WorldInput {
   steering: boolean;
   pointerWX: number;
   pointerWY: number;
-  engulf: boolean; // RMB held
+  engulf: boolean; // RMB held (the unified "grab": engulf or trogocytosis by build)
+  pointerSpeed: number; // cursor speed in world px/sec — drives the trogocytosis rip FLICK
   viewHalfDiag: number; // world px from screen centre to a corner (bubble promote radius)
 }
 
@@ -189,6 +191,7 @@ export class WorldSim {
   readonly behavior: CpmCellBehavior;
   readonly life: CpmLife;
   readonly combat: CpmCombat;
+  readonly trog: CpmTrogocytosis;
   readonly signal: CpmField;
   readonly grid: CpmDeformGrid;
   readonly bigOrganelles: CpmBigOrganelles;
@@ -230,7 +233,10 @@ export class WorldSim {
   private streamAccumMs = 0;
   private timeSec = 0;
   private buildIndex = 0;
-  private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, viewHalfDiag: 600 };
+  private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, pointerSpeed: 0, viewHalfDiag: 600 };
+  /** SPIKE (T2): route the player's RMB "grab" to trogocytosis (rip) instead of engulf.
+   *  T4 will pick engulf-vs-trog from the cell's dominant offensive composition. */
+  private trogMode = true;
 
   constructor(config: CpmWorldConfig = DEFAULT_WORLD_CONFIG) {
     const cfg = config;
@@ -287,6 +293,16 @@ export class WorldSim {
       getAttackerId: () => this.controlledCellId,
       onConsumeStart: (id) => this.forgetColor(id),
       onDigested: (wx, wy) => this.fxQueue.push({ kind: "digest", wx, wy, radius: 26, color: 0xffe066 }),
+    });
+    this.trog = new CpmTrogocytosis(this.sim, {
+      playerKind: CONTROLLED_KIND,
+      getAttackerId: () => this.controlledCellId,
+      // SPIKE: hostile = microbe (T3 swaps this for team-hostility). Never self/debris.
+      isHostile: (id) => {
+        if (id === this.controlledCellId) return false;
+        return this.sim.getCell(id)?.kind === MICROBE_KIND;
+      },
+      rip: (targetId, lx, ly, count) => this.ripFragment(targetId, lx, ly, count),
     });
 
     this.controlledCellId = this.spawnPreset("macrophage", center, center, true)!;
@@ -485,7 +501,14 @@ export class WorldSim {
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
-    this.combat.update(input.engulf);
+    // RMB is the unified "grab": route it to trogocytosis (rip) or engulf. (T4 will pick by
+    // the cell's dominant offensive composition; the spike forces trog via trogMode.)
+    if (this.trogMode) {
+      const [clx, cly] = this.sim.worldToLattice(input.pointerWX, input.pointerWY);
+      this.trog.update(input.engulf, clx, cly, input.pointerSpeed, dtSec * 1000);
+    } else {
+      this.combat.update(input.engulf);
+    }
 
     this.sim.setKindPerimeterTarget(
       kind,
@@ -600,13 +623,21 @@ export class WorldSim {
       nutrients: this.combat.nutrients,
       energy: Math.round(this.life.energyOf(this.controlledCellId)),
       hp: Math.round(this.rules.healthFraction(this.controlledCellId) * 100),
-      combatStatus: this.combat.engulfing
-        ? "ENGULFING"
-        : this.combat.digestingCount > 0
-          ? "DIGESTING"
-          : this.input.steering
-            ? "STEERING (hold LMB)"
-            : "resting",
+      combatStatus: this.trogMode
+        ? this.trog.latched
+          ? "TROG: latched — FLICK to rip"
+          : this.input.engulf
+            ? "TROG: reaching (hold RMB)"
+            : this.input.steering
+              ? "STEERING (hold LMB)"
+              : "resting"
+        : this.combat.engulfing
+          ? "ENGULFING"
+          : this.combat.digestingCount > 0
+            ? "DIGESTING"
+            : this.input.steering
+              ? "STEERING (hold LMB)"
+              : "resting",
     };
     this.prof.metrics.activeCells = activeCells;
     this.prof.metrics.dormantCells = this.sim.dormantCount;
