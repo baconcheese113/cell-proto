@@ -23,13 +23,18 @@ export interface BigOrganelle {
   stress: number;
 }
 
+// Rupture should be the payoff for DELIBERATE over-squeeze (being crushed between
+// walls), NOT a side effect of fast crawling — when the cell moves quickly the nucleus
+// soft body lags and momentarily poke-exposes, which must NOT kill you. So exposure is
+// very forgiving and rupture is driven mainly by sustained extreme ovalness (true
+// compression), with a slow ramp + faster recovery so transient movement spikes bleed off.
 /** Footprint exposure above this (sustained) raises stress. */
-const EXPOSE_THRESHOLD = 0.12;
+const EXPOSE_THRESHOLD = 0.45;
 /** Ovalness above this also raises stress (over-squeezed even if still covered). */
-const OVAL_THRESHOLD = 2.2;
+const OVAL_THRESHOLD = 3.2;
 /** Stress per frame while over-confined / recovering otherwise. */
-const STRESS_RAMP = 0.04;
-const STRESS_RECOVER = 0.02;
+const STRESS_RAMP = 0.02;
+const STRESS_RECOVER = 0.05;
 /** How far behind the heading the target is nudged while steering (px). */
 const REAR_BIAS = 3;
 

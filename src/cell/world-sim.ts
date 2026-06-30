@@ -460,12 +460,35 @@ export class WorldSim {
     let shiftX = 0;
     let shiftY = 0;
     if (!DEV_FREEZE_STREAMING) {
+      // Capture each promoted cell's WORLD position/state BEFORE streaming clips the
+      // lattice, so any cell the recenter pushes off-bubble can be handed BACK to the
+      // agent tier (a persistent world cell) instead of being erased. World coords are
+      // absolute, so they survive the lattice recenter.
+      const promotedWorld = new Map<
+        number,
+        { wx: number; wy: number; comp: CellComposition; kind: number; energy: number }
+      >();
+      for (const id of this.promoted) {
+        const c = centroids.get(id);
+        const comp = this.compositions.get(id);
+        const rec = this.sim.getCell(id);
+        if (!c || !comp || !rec) continue;
+        const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+        promotedWorld.set(id, { wx, wy, comp, kind: rec.kind, energy: this.life.energyOf(id) });
+      }
+
       const r = this.prof.measure("stream", () => this.sim.streamAround(this.controlledCellId));
       shiftX = r.shiftX;
       shiftY = r.shiftY;
       for (const id of r.demoted) {
+        const info = promotedWorld.get(id);
+        if (info) {
+          this.agentWorld.adopt(info.comp, this.kindToBody(info.kind), info.wx, info.wy, info.energy);
+          this.compositions.delete(id);
+          this.promoted.delete(id);
+        }
         this.forgetColor(id);
-        this.rules.forget(id); // dormant != dead
+        this.rules.forget(id);
       }
     } else {
       this.cullEdgeTraffic(centroids);
