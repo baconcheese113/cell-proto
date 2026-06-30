@@ -73,6 +73,9 @@ const IMMUNE_CAP = 14;
 // immune cell thread the junction — then springs back (re-seal). Bacteria can't thread
 // (unfavorable adhesion) and the firm anchor holds them out.
 const WALL_SEAL_LAMBDA = 80;
+// Max lining pixels the steering player carves per tick (active diapedesis). Gradual
+// so it oozes through (not an instant tunnel); the lining regrows behind it.
+const CARVE_BUDGET = 8;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -471,6 +474,7 @@ export class WorldSim {
       this.bubbleManagerStep(centroids);
       this.mirrorShadows(centroids);
       this.resealWalls(centroids);
+      if (input.steering) this.carveDiapedesis(centroids, input);
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
@@ -692,6 +696,40 @@ export class WorldSim {
    *  (biologically the endothelial cell-cell junctions re-forming). The lambda is gentle
    *  enough that a protruding cell CAN force its way through (diapedesis), but the wall
    *  knits back together once it passes. */
+  /** ACTIVE diapedesis: while the player steers, carve a short corridor through the
+   *  lining cell(s) directly in its path, so the immune cell crosses at full crawl
+   *  speed instead of inching against a volume-preserving wall. The lining regrows
+   *  behind it (re-seal). Only the player carves (input-driven) → bacteria, which never
+   *  carve and have unfavorable adhesion, stay blocked. Capped per tick so it's a
+   *  gradual ooze-through, not an instant tunnel. */
+  private carveDiapedesis(
+    centroids: Map<number, { x: number; y: number; pixels: number }>,
+    input: WorldInput
+  ): void {
+    const pc = centroids.get(this.controlledCellId);
+    if (!pc) return;
+    const [px, py] = this.sim.worldToLattice(input.pointerWX, input.pointerWY);
+    let dx = px - pc.x;
+    let dy = py - pc.y;
+    const m = Math.hypot(dx, dy);
+    if (m < 1e-3) return;
+    dx /= m;
+    dy /= m;
+    const r = Math.sqrt(Math.max(1, pc.pixels) / Math.PI); // player radius (lattice)
+    const perpX = -dy;
+    const perpY = dx;
+    const KINDS = [ENDOTHELIAL_KIND, FIBROBLAST_KIND];
+    let carved = 0;
+    // A thin arc just beyond the player's leading edge, across its width.
+    for (let along = r - 1; along < r + 5 && carved < CARVE_BUDGET; along += 1.2) {
+      for (let lat = -r * 0.75; lat <= r * 0.75 && carved < CARVE_BUDGET; lat += 1.2) {
+        const x = Math.round(pc.x + dx * along + perpX * lat);
+        const y = Math.round(pc.y + dy * along + perpY * lat);
+        if (this.sim.carvePixel(x, y, KINDS)) carved++;
+      }
+    }
+  }
+
   private resealWalls(
     centroids: Map<number, { x: number; y: number; pixels: number }>
   ): void {

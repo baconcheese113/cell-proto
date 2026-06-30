@@ -341,6 +341,20 @@ export class CpmSimulation {
     return this.cpm.pixt([x, y]);
   }
 
+  /** Clear the pixel at (x,y) to background IF it belongs to a cell of one of `kinds`.
+   *  Returns true if a pixel was cleared. Used for diapedesis: the immune cell carves a
+   *  corridor through the lining in its path so it crosses at full crawl speed (no
+   *  resistance) instead of inching; the lining regrows behind it = re-seal. */
+  carvePixel(x: number, y: number, kinds: readonly number[]): boolean {
+    if (x < 0 || x >= this.field || y < 0 || y >= this.field) return false;
+    const id = this.cpm.pixt([x, y]);
+    if (id === 0) return false;
+    const k = this.cells.get(id)?.kind;
+    if (k === undefined || !kinds.includes(k)) return false;
+    this.cpm.setpix([x, y], 0);
+    return true;
+  }
+
   activityAtIndex(i: number): number {
     return this.activity.pxact(i);
   }
