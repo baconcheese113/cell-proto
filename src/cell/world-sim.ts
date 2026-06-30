@@ -71,7 +71,10 @@ const IMMUNE_CAP = 14;
 // How firmly a promoted wall cell is pulled back to its home slot (the lining
 // re-sealing force). Gentle enough that a protruding cell can wedge through
 // (diapedesis), firm enough that the wall knits back together once it passes.
-const WALL_SEAL_LAMBDA = 60;
+const WALL_SEAL_LAMBDA = 35;
+// Lattice radius around the steering player within which lining cells relax their
+// home-pull (the junction opens for diapedesis). ~1.5 player radii.
+const WALL_OPEN_RADIUS = 28;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -243,6 +246,25 @@ export class WorldSim {
     this.sim.setKindActive(MACROPHAGE_KIND, true);
     this.sim.setKindActive(MICROBE_KIND, true);
     this.sim.flow.setFlowingKinds([MACROPHAGE_KIND, MICROBE_KIND]);
+
+    // DIAPEDESIS via differential adhesion (the Artistoo CancerInvasion technique):
+    // an immune cell wedges between two endothelial cells when its boundary with the
+    // endothelium is CHEAPER than the endothelium's boundary with itself — so it
+    // happily replaces an endo↔endo junction with two immune↔endo interfaces and
+    // squeezes through. A bacterium with an EXPENSIVE endo interface can't — inserting
+    // would raise energy, so the cohesive lining (+ reseal force) blocks it.
+    const ENDO_COHESION = 7;  // endo↔endo junction strength (sheet holds together)
+    const IMMUNE_ENDO = 0;    // maximally favorable -> immune transmigrates EASILY
+    const MICROBE_ENDO = 45;  // unfavorable -> bacteria can't breach the lining
+    this.sim.setKindAdhesion(ENDOTHELIAL_KIND, ENDOTHELIAL_KIND, ENDO_COHESION);
+    this.sim.setKindAdhesion(FIBROBLAST_KIND, FIBROBLAST_KIND, ENDO_COHESION);
+    for (const immune of [CONTROLLED_KIND, MACROPHAGE_KIND]) {
+      this.sim.setKindAdhesion(immune, ENDOTHELIAL_KIND, IMMUNE_ENDO);
+      this.sim.setKindAdhesion(immune, FIBROBLAST_KIND, IMMUNE_ENDO);
+    }
+    this.sim.setKindAdhesion(MICROBE_KIND, ENDOTHELIAL_KIND, MICROBE_ENDO);
+    this.sim.setKindAdhesion(MICROBE_KIND, FIBROBLAST_KIND, MICROBE_ENDO);
+
     this.sim.setTransient(ENDOTHELIAL_KIND);
     this.sim.setTransient(FIBROBLAST_KIND);
     this.sim.setTransient(MICROBE_KIND);
@@ -450,7 +472,7 @@ export class WorldSim {
     this.prof.measure("bubble", () => {
       this.bubbleManagerStep(centroids);
       this.mirrorShadows(centroids);
-      this.resealWalls(centroids);
+      this.resealWalls(centroids, input.steering);
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
@@ -673,16 +695,31 @@ export class WorldSim {
    *  enough that a protruding cell CAN force its way through (diapedesis), but the wall
    *  knits back together once it passes. */
   private resealWalls(
-    centroids: Map<number, { x: number; y: number; pixels: number }>
+    centroids: Map<number, { x: number; y: number; pixels: number }>,
+    playerPushing: boolean
   ): void {
+    // DIAPEDESIS GATE: while the player is actively pushing (steering), the lining
+    // cells right around it RELAX their home pull, so the junction "opens" and the
+    // immune cell wedges through easily — then re-seals once it passes (the cells snap
+    // back home). Bacteria get no such relaxation (and an unfavorable endo adhesion),
+    // so the cohesive, home-anchored lining blocks them.
+    const pc = playerPushing ? centroids.get(this.controlledCellId) : undefined;
+    const OPEN_R2 = WALL_OPEN_RADIUS * WALL_OPEN_RADIUS;
     for (const [cpmId, agentId] of this.cpmToAgent) {
       const rec = this.sim.getCell(cpmId);
       if (!rec || (rec.kind !== ENDOTHELIAL_KIND && rec.kind !== FIBROBLAST_KIND)) continue;
-      if (!centroids.get(cpmId)) continue; // not on the lattice yet
+      const c = centroids.get(cpmId);
+      if (!c) continue; // not on the lattice yet
       const wc = this.agentWorld.get(agentId);
       if (!wc) continue;
+      let lambda = WALL_SEAL_LAMBDA;
+      if (pc) {
+        const dx = c.x - pc.x;
+        const dy = c.y - pc.y;
+        if (dx * dx + dy * dy < OPEN_R2) lambda = 0; // junction fully opens for the immune cell
+      }
       const [lx, ly] = this.sim.worldToLattice(wc.x, wc.y); // home slot
-      this.sim.attractCellTo(cpmId, Math.round(lx), Math.round(ly), WALL_SEAL_LAMBDA);
+      this.sim.attractCellTo(cpmId, Math.round(lx), Math.round(ly), lambda);
     }
   }
 
@@ -796,11 +833,15 @@ export class WorldSim {
       if (a.comp.capabilities.motility <= 0.05) continue;
       const c = this.vessel.confinement(a.x, a.y);
       if (c.over <= 0) continue;
-      const push = Math.min(c.over, 40);
-      a.vx += c.nx * push * 0.03;
-      a.vy += c.ny * push * 0.03;
-      a.x += c.nx * Math.min(c.over, 10);
-      a.y += c.ny * Math.min(c.over, 10);
+      // The agent tier has no hard walls, so the lining is enforced here. FIRM for
+      // bacteria (they must NOT breach the wall far from the player, where there's no
+      // CPM to block them) — a hard position clamp, not just a nudge. (Diapedesis is a
+      // CPM-bubble mechanic; far autonomous immune cells are confined too for now.)
+      const push = Math.min(c.over, 60);
+      a.vx += c.nx * push * 0.08;
+      a.vy += c.ny * push * 0.08;
+      a.x += c.nx * c.over; // hard-clamp fully back inside the lumen
+      a.y += c.ny * c.over;
     }
   }
 
