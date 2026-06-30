@@ -68,13 +68,11 @@ const BUILDABLES = [
 
 const MICROBE_CAP = 110;
 const IMMUNE_CAP = 14;
-// How firmly a promoted wall cell is pulled back to its home slot (the lining
-// re-sealing force). Gentle enough that a protruding cell can wedge through
-// (diapedesis), firm enough that the wall knits back together once it passes.
-const WALL_SEAL_LAMBDA = 35;
-// Lattice radius around the steering player within which lining cells relax their
-// home-pull (the junction opens for diapedesis). ~1.5 player radii.
-const WALL_OPEN_RADIUS = 28;
+// How firmly a promoted wall cell is anchored to its home slot. FIRM so the cell holds
+// its position (can't be bulldozed out of the wall) and instead DEFORMS to let an
+// immune cell thread the junction — then springs back (re-seal). Bacteria can't thread
+// (unfavorable adhesion) and the firm anchor holds them out.
+const WALL_SEAL_LAMBDA = 80;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -472,7 +470,7 @@ export class WorldSim {
     this.prof.measure("bubble", () => {
       this.bubbleManagerStep(centroids);
       this.mirrorShadows(centroids);
-      this.resealWalls(centroids, input.steering);
+      this.resealWalls(centroids);
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
@@ -695,31 +693,22 @@ export class WorldSim {
    *  enough that a protruding cell CAN force its way through (diapedesis), but the wall
    *  knits back together once it passes. */
   private resealWalls(
-    centroids: Map<number, { x: number; y: number; pixels: number }>,
-    playerPushing: boolean
+    centroids: Map<number, { x: number; y: number; pixels: number }>
   ): void {
-    // DIAPEDESIS GATE: while the player is actively pushing (steering), the lining
-    // cells right around it RELAX their home pull, so the junction "opens" and the
-    // immune cell wedges through easily — then re-seals once it passes (the cells snap
-    // back home). Bacteria get no such relaxation (and an unfavorable endo adhesion),
-    // so the cohesive, home-anchored lining blocks them.
-    const pc = playerPushing ? centroids.get(this.controlledCellId) : undefined;
-    const OPEN_R2 = WALL_OPEN_RADIUS * WALL_OPEN_RADIUS;
+    // Every promoted wall cell is FIRMLY anchored to its home slot — ALWAYS, even right
+    // where the player is pushing. This is the fix for "bulldozing": with a firm anchor
+    // the wall cell can't TRANSLATE out of the way, so the immune cell must thread the
+    // junction BETWEEN cells (which deform/squish locally, then spring back = re-seal),
+    // rather than shoving a whole cell into the lumen. Favorable immune↔endo adhesion
+    // makes threading energetically easy; bacteria (unfavorable) can't.
     for (const [cpmId, agentId] of this.cpmToAgent) {
       const rec = this.sim.getCell(cpmId);
       if (!rec || (rec.kind !== ENDOTHELIAL_KIND && rec.kind !== FIBROBLAST_KIND)) continue;
-      const c = centroids.get(cpmId);
-      if (!c) continue; // not on the lattice yet
+      if (!centroids.get(cpmId)) continue; // not on the lattice yet
       const wc = this.agentWorld.get(agentId);
       if (!wc) continue;
-      let lambda = WALL_SEAL_LAMBDA;
-      if (pc) {
-        const dx = c.x - pc.x;
-        const dy = c.y - pc.y;
-        if (dx * dx + dy * dy < OPEN_R2) lambda = 0; // junction fully opens for the immune cell
-      }
       const [lx, ly] = this.sim.worldToLattice(wc.x, wc.y); // home slot
-      this.sim.attractCellTo(cpmId, Math.round(lx), Math.round(ly), lambda);
+      this.sim.attractCellTo(cpmId, Math.round(lx), Math.round(ly), WALL_SEAL_LAMBDA);
     }
   }
 
