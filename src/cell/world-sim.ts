@@ -186,8 +186,10 @@ export class WorldSim {
 
   /** A cell IS its composition: id -> mutable composition. */
   readonly compositions = new Map<number, CellComposition>();
-  /** CPM ids that were PROMOTED from agents (so we know which to demote back). */
-  readonly promoted = new Set<number>();
+  /** CPM-shadow link: cpmCellId -> the durable agentId it represents. The agent stays in
+   *  agentWorld the whole time (never destroyed by promotion); this just records which
+   *  CPM cell is currently shadowing it so we can mirror it + release it back. */
+  readonly cpmToAgent = new Map<number, number>();
 
   controlledCellId = 0;
   deaths = 0;
@@ -352,6 +354,7 @@ export class WorldSim {
     const scale = this.sim.scale;
     const agents: SnapshotAgent[] = [];
     for (const a of this.agentWorld.all()) {
+      if (a.tier === "cpm") continue; // rendered as its CPM shadow, not a disc
       agents.push({
         x: a.x,
         y: a.y,
@@ -440,7 +443,10 @@ export class WorldSim {
     }
 
     const centroids = this.prof.measure("centroids", () => this.sim.centroidsAll());
-    this.prof.measure("bubble", () => this.bubbleManagerStep(centroids));
+    this.prof.measure("bubble", () => {
+      this.bubbleManagerStep(centroids);
+      this.mirrorShadows(centroids);
+    });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
     this.combat.update(input.engulf);
@@ -460,35 +466,30 @@ export class WorldSim {
     let shiftX = 0;
     let shiftY = 0;
     if (!DEV_FREEZE_STREAMING) {
-      // Capture each promoted cell's WORLD position/state BEFORE streaming clips the
-      // lattice, so any cell the recenter pushes off-bubble can be handed BACK to the
-      // agent tier (a persistent world cell) instead of being erased. World coords are
-      // absolute, so they survive the lattice recenter.
-      const promotedWorld = new Map<
-        number,
-        { wx: number; wy: number; comp: CellComposition; kind: number; energy: number }
-      >();
-      for (const id of this.promoted) {
-        const c = centroids.get(id);
-        const comp = this.compositions.get(id);
-        const rec = this.sim.getCell(id);
-        if (!c || !comp || !rec) continue;
+      // Capture each shadow's absolute WORLD position/energy BEFORE streaming clips the
+      // lattice (the recenter destroys the CPM cell), so any shadow the stream removes is
+      // handed BACK to the agent tier as a disc instead of being erased.
+      const shadowWorld = new Map<number, { wx: number; wy: number; energy: number }>();
+      for (const [cpmId] of this.cpmToAgent) {
+        const c = centroids.get(cpmId);
+        if (!c) continue;
         const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
-        promotedWorld.set(id, { wx, wy, comp, kind: rec.kind, energy: this.life.energyOf(id) });
+        shadowWorld.set(cpmId, { wx, wy, energy: this.life.energyOf(cpmId) });
       }
 
       const r = this.prof.measure("stream", () => this.sim.streamAround(this.controlledCellId));
       shiftX = r.shiftX;
       shiftY = r.shiftY;
       for (const id of r.demoted) {
-        const info = promotedWorld.get(id);
-        if (info) {
-          this.agentWorld.adopt(info.comp, this.kindToBody(info.kind), info.wx, info.wy, info.energy);
-          this.compositions.delete(id);
-          this.promoted.delete(id);
+        const agentId = this.cpmToAgent.get(id);
+        const info = shadowWorld.get(id);
+        if (agentId !== undefined && info) {
+          // streamAround already removed the CPM cell -> killCpm=false.
+          this.releaseToAgent(id, agentId, info.wx, info.wy, info.energy, false);
+        } else {
+          this.forgetColor(id);
+          this.rules.forget(id);
         }
-        this.forgetColor(id);
-        this.rules.forget(id);
       }
     } else {
       this.cullEdgeTraffic(centroids);
@@ -590,43 +591,66 @@ export class WorldSim {
     const inField = (lx: number, ly: number, m: number): boolean =>
       lx >= m && lx < f - m && ly >= m && ly < f - m;
 
-    // Promote every agent that overlaps the lattice interior.
-    const toPromote: number[] = [];
-    for (const a of this.agentWorld.all()) {
-      const [lx, ly] = this.sim.worldToLattice(a.x, a.y);
-      if (inField(lx, ly, PROMOTE_MARGIN)) toPromote.push(a.id);
-    }
-    for (const id of toPromote) {
-      const wc = this.agentWorld.remove(id);
-      if (!wc) continue;
-      const [lx, ly] = this.sim.worldToLattice(wc.x, wc.y);
-      const kind = this.bodyKind(wc.bodyKind, false);
-      const radius = Math.sqrt(wc.vol / Math.PI);
-      const rec = this.sim.spawnCellFilled(kind, Math.round(lx), Math.round(ly), radius);
-      this.compositions.set(rec.id, wc.comp);
-      this.life.seed(rec.id, wc.energy);
-      this.promoted.add(rec.id);
+    // Demote first: any shadow whose centroid left the lattice interior loses its CPM
+    // cell and resumes as an agent disc. (Cells promoted THIS tick aren't in `centroids`
+    // yet, so they're naturally skipped until next tick.)
+    for (const [cpmId, agentId] of [...this.cpmToAgent]) {
+      const c = centroids.get(cpmId);
+      if (!c) continue; // brand-new shadow, or already removed (death handled elsewhere)
+      if (inField(c.x, c.y, DEMOTE_MARGIN)) continue;
+      const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+      this.releaseToAgent(cpmId, agentId, wx, wy, this.life.energyOf(cpmId), true);
     }
 
-    // Demote promoted cells whose centroid has left the lattice interior.
-    for (const id of [...this.promoted]) {
-      const c = centroids.get(id);
-      if (!c) {
-        this.promoted.delete(id);
-        continue;
-      }
-      if (inField(c.x, c.y, DEMOTE_MARGIN)) continue;
-      const comp = this.compositions.get(id);
-      const rec = this.sim.getCell(id);
-      if (comp && rec) {
-        const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
-        this.agentWorld.adopt(comp, this.kindToBody(rec.kind), wx, wy, this.life.energyOf(id));
-      }
-      this.sim.killCell(id);
-      this.compositions.delete(id);
-      this.forgetColor(id);
-      this.rules.forget(id);
-      this.promoted.delete(id);
+    // Promote: every agent overlapping the lattice interior gets a CPM SHADOW. The agent
+    // record stays in agentWorld (durable) — it just stops self-integrating + disc-
+    // rendering while the CPM cell represents it.
+    for (const a of this.agentWorld.all()) {
+      if (a.tier !== "agent") continue;
+      const [lx, ly] = this.sim.worldToLattice(a.x, a.y);
+      if (!inField(lx, ly, PROMOTE_MARGIN)) continue;
+      const kind = this.bodyKind(a.bodyKind, false);
+      const radius = Math.sqrt(a.vol / Math.PI);
+      const rec = this.sim.spawnCellFilled(kind, Math.round(lx), Math.round(ly), radius);
+      this.compositions.set(rec.id, a.comp);
+      this.life.seed(rec.id, a.energy);
+      this.agentWorld.markPromoted(a.id, rec.id);
+      this.cpmToAgent.set(rec.id, a.id);
+    }
+  }
+
+  /** Drop a CPM shadow and hand its durable agent back to the agent tier at a world
+   *  position (so leaving the bubble NEVER deletes a cell — it just becomes a disc). */
+  private releaseToAgent(
+    cpmId: number,
+    agentId: number,
+    wx: number,
+    wy: number,
+    energy: number,
+    killCpm: boolean
+  ): void {
+    this.agentWorld.markDemoted(agentId, wx, wy, energy);
+    this.cpmToAgent.delete(cpmId);
+    if (killCpm) this.sim.killCell(cpmId);
+    this.compositions.delete(cpmId);
+    this.forgetColor(cpmId);
+    this.rules.forget(cpmId);
+  }
+
+  /** Mirror each CPM shadow's centroid + energy onto its durable agent record, so the
+   *  agent tracks the cell and reappears in the right place + state when demoted. */
+  private mirrorShadows(
+    centroids: Map<number, { x: number; y: number; pixels: number }>
+  ): void {
+    for (const [cpmId, agentId] of this.cpmToAgent) {
+      const c = centroids.get(cpmId);
+      if (!c) continue;
+      const wc = this.agentWorld.get(agentId);
+      if (!wc) continue;
+      const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+      wc.x = wx;
+      wc.y = wy;
+      wc.energy = this.life.energyOf(cpmId);
     }
   }
 
@@ -641,6 +665,13 @@ export class WorldSim {
       this.fxQueue.push({ kind: "death", wx, wy, radius, color });
     }
     const wasControlled = id === this.controlledCellId;
+    // A shadow that DIES (digested/dissolved/ruptured) takes its durable agent with it —
+    // it's gone from the world, not demoted back to a disc.
+    const agentId = this.cpmToAgent.get(id);
+    if (agentId !== undefined) {
+      this.agentWorld.remove(agentId);
+      this.cpmToAgent.delete(id);
+    }
     this.sim.killCell(id);
     this.forgetColor(id);
     this.compositions.delete(id);
@@ -701,21 +732,6 @@ export class WorldSim {
     }
   }
 
-  private kindToBody(kind: number): BodyKey {
-    switch (kind) {
-      case MACROPHAGE_KIND:
-        return "macrophage";
-      case EPITHELIAL_KIND:
-        return "epithelial";
-      case MICROBE_KIND:
-        return "microbe";
-      case ENDOTHELIAL_KIND:
-        return "endothelial";
-      default:
-        return "fibroblast";
-    }
-  }
-
   private spawnPreset(presetName: string, lx: number, ly: number, asControlled = false): number | null {
     const preset = PRESETS[presetName];
     if (!preset) return null;
@@ -741,6 +757,7 @@ export class WorldSim {
 
   private confineAgentsToVessel(): void {
     for (const a of this.agentWorld.all()) {
+      if (a.tier === "cpm") continue; // driven by its CPM shadow, not agent physics
       if (a.comp.capabilities.motility <= 0.05) continue;
       const c = this.vessel.confinement(a.x, a.y);
       if (c.over <= 0) continue;

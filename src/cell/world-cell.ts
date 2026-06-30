@@ -32,4 +32,8 @@ export interface WorldCell {
   /** Which CPM body profile / colour to use when promoted + in the overview. */
   bodyKind: BodyKey;
   tier: CellTier;
+  /** While `tier === "cpm"`, the id of the CPM cell shadowing this agent (the agent
+   *  stays in the world; its position is mirrored from the shadow and it renders as the
+   *  CPM cell, not a disc). Undefined while `tier === "agent"`. */
+  cpmId?: number;
 }

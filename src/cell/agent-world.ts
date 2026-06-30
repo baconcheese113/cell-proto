@@ -156,6 +156,33 @@ export class AgentWorld {
     return c;
   }
 
+  get(id: number): WorldCell | undefined {
+    return this.cells.get(id);
+  }
+
+  /** Give an agent a CPM shadow: it STAYS in the world (durable identity) but stops
+   *  self-integrating and stops rendering as a disc — the CPM cell represents it now. */
+  markPromoted(id: number, cpmId: number): void {
+    const c = this.cells.get(id);
+    if (!c) return;
+    c.tier = "cpm";
+    c.cpmId = cpmId;
+  }
+
+  /** Drop an agent's CPM shadow: it resumes self-integration + disc rendering at the
+   *  given world position/energy (baked back from the CPM cell). */
+  markDemoted(id: number, x: number, y: number, energy: number): void {
+    const c = this.cells.get(id);
+    if (!c) return;
+    c.tier = "agent";
+    c.cpmId = undefined;
+    c.x = x;
+    c.y = y;
+    c.vx = 0;
+    c.vy = 0;
+    c.energy = energy;
+  }
+
   /** Re-insert a cell from baked CPM state (demotion). Preserves its composition +
    *  energy so the cell's life continues seamlessly across the tier handoff. */
   adopt(
@@ -182,9 +209,12 @@ export class AgentWorld {
     return { predators, motile, sessile };
   }
 
-  /** One tick: behavior+separation→move, metabolize, feed, divide, starve. */
+  /** One tick: behavior+separation→move, metabolize, feed, divide, starve. Cells with a
+   *  CPM shadow (tier "cpm") are SKIPPED — the CPM bubble drives them; their durable
+   *  record is mirrored from the shadow by the owner each tick. */
   step(dt: number): void {
-    const list = [...this.cells.values()];
+    const list: WorldCell[] = [];
+    for (const c of this.cells.values()) if (c.tier === "agent") list.push(c);
     const n = list.length;
 
     // Shared behavior/feeding snapshots (capabilities are cached on the composition).
