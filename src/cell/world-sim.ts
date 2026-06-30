@@ -767,8 +767,11 @@ export class WorldSim {
       if (a.bodyKind === "microbe") microbes++;
       else if (a.bodyKind === "macrophage") immune++;
     }
-    if (microbes < MICROBE_CAP && Math.random() < 0.6) {
-      this.spawnLumenTraffic("microbe", Math.random() * Math.PI * 2);
+    // Spawn microbes BIASED to the player's stretch of vessel (upstream/downstream of
+    // playerT) so there's always prey to chase nearby — the whole loop is huge, so
+    // uniform spawning left the player with nothing in range. They drift in on the flow.
+    if (microbes < MICROBE_CAP && Math.random() < 0.85) {
+      this.spawnLumenTraffic("microbe", this.playerT + (Math.random() - 0.5) * 1.4);
     }
     if (immune < IMMUNE_CAP && Math.random() < 0.05) {
       this.spawnLumenTraffic("macrophage", Math.random() * Math.PI * 2);
