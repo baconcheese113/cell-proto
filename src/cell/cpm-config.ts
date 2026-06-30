@@ -52,9 +52,9 @@ export const PLAYER_PROFILE: CpmCellProfile = {
   color: 0x49d0ff,
   // A macrophage-sized motile cell. Small enough to crawl responsively; the few
   // big organelles (nucleus soft body) are sized to stay a minority of its area.
-  volume: 560,
+  volume: 274,
   lambdaV: 50,
-  perimeter: 260,
+  perimeter: 182,
   lambdaP: 2,
   maxAct: 80,
   lambdaAct: 220, // active protrusion while steering (above this it self-fragments)
@@ -73,9 +73,9 @@ export const PLAYER_PROFILE: CpmCellProfile = {
 export const ENEMY_PROFILE: CpmCellProfile = {
   name: "enemy",
   color: 0xff5d73,
-  volume: 230,
+  volume: 113,
   lambdaV: 50,
-  perimeter: 165,
+  perimeter: 116,
   lambdaP: 2,
   maxAct: 50,
   lambdaAct: 180,
@@ -116,13 +116,13 @@ export const NUCLEUS_PROFILE: CpmCellProfile = {
   // membrane. At ~26 px, 15+ structures still leave the ~540 px cell mostly
   // cytoplasm. (Distinct organelle kinds with their own sizes — a larger nucleus,
   // tiny ribosomes — come later; for now one shared profile.)
-  volume: 26,
+  volume: 13,
   // Deformable but stable: a firm volume target keeps the compartment from
   // collapsing/merging in the churning interior, while modest perimeter stiffness
   // still lets it squish and flow with the cytoplasm (organic) rather than riding
   // as a rigid pinned blob. (lambdaP is the deform-vs-survive dial.)
   lambdaV: 40,
-  perimeter: 18,
+  perimeter: 13,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,
@@ -141,10 +141,10 @@ export const NUCLEUS_PROFILE: CpmCellProfile = {
 export const TISSUE_PROFILE: CpmCellProfile = {
   name: "tissue",
   color: 0x6b8f9c,
-  volume: 500,
+  volume: 245,
   lambdaV: 45,
   // Deformable (low lambdaP) so the player can wedge them apart and they reflow.
-  perimeter: 255,
+  perimeter: 179,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,
@@ -165,9 +165,9 @@ export const TISSUE_PROFILE: CpmCellProfile = {
 export const MICROBE_PROFILE: CpmCellProfile = {
   name: "microbe",
   color: 0xe7d14b,
-  volume: 140,
+  volume: 69,
   lambdaV: 50,
-  perimeter: 105,
+  perimeter: 74,
   lambdaP: 2,
   maxAct: 60,
   lambdaAct: 200,
@@ -201,8 +201,8 @@ export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
   // streaming boundary further OFF-SCREEN, cutting visible pop-in/recenter
   // artifacts. Cost scales ~with the cells the wall fills here, so this is a
   // stopgap — the no-cost large-area answer is the agent-tier render (LW2).
-  fieldSize: 320,
-  worldPerPixel: 5,
+  fieldSize: 224,
+  worldPerPixel: 7,
   temperature: 16,
   // 3 (was 2): movement is sim-rate-bound, so more MCS/frame = snappier crawl per
   // real second. Affordable now that cpm.step is cheap (post-connectivity-removal).
@@ -219,9 +219,9 @@ export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
 export const ENDOTHELIAL_PROFILE: CpmCellProfile = {
   name: "endothelial",
   color: 0x8a6f9e,
-  volume: 1500,
+  volume: 735,
   lambdaV: 50,
-  perimeter: 420,
+  perimeter: 294,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,
@@ -239,9 +239,9 @@ export const FIBROBLAST_PROFILE: CpmCellProfile = {
   color: 0x5d7d6a,
   // Sized comparably to the endothelium so the tissue layer reads as a wall, not tiny
   // dots behind big cells (was 460 — looked out of place next to the 1500 lining).
-  volume: 1100,
+  volume: 539,
   lambdaV: 50,
-  perimeter: 360,
+  perimeter: 252,
   lambdaP: 2,
   maxAct: 0,
   lambdaAct: 0,

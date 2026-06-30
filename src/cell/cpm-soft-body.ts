@@ -35,9 +35,10 @@ export interface SoftBodyConfig {
 
 export const DEFAULT_NUCLEUS_SOFT_BODY: SoftBodyConfig = {
   nodeCount: 16,
-  // ~5 lattice px (area ~78) keeps the nucleus ~14% of the smaller 560px player —
-  // a coverable footprint (bottleneck/rupture still works), not a body-filling blob.
-  restRadius: 5,
+  // ~4 lattice px (area ~50) keeps the nucleus ~18% of the 274px player at the lower
+  // lattice resolution — a coverable footprint (bottleneck/rupture still works), not a
+  // body-filling blob.
+  restRadius: 4,
   posStiffness: 0.08,
   shapeStiffness: 0.25,
   areaStiffness: 0.2,

@@ -31,12 +31,14 @@ import type { WorldCell } from "./world-cell";
 
 /** Nominal area per body (matches the CPM profiles' target volumes) — drives
  *  predator/prey size relations + the overview render radius. */
+// Lattice areas — scaled with the cpm-config resolution (x0.49) so an agent's render
+// disc and its promoted CPM cell are the same world size.
 const BODY_VOL: Record<BodyKey, number> = {
-  macrophage: 560,
-  epithelial: 500,
-  microbe: 140,
-  endothelial: 1500,
-  fibroblast: 1100,
+  macrophage: 274,
+  epithelial: 245,
+  microbe: 69,
+  endothelial: 735,
+  fibroblast: 539,
 };
 
 const SEP_RADIUS = 55; // crowding distance (world px) ~ a cell radius, so they don't overlap
