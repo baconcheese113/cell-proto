@@ -235,9 +235,6 @@ export class WorldSim {
   private timeSec = 0;
   private buildIndex = 0;
   private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, pointerSpeed: 0, viewHalfDiag: 600 };
-  /** SPIKE (T2): route the player's RMB "grab" to trogocytosis (rip) instead of engulf.
-   *  T4 will pick engulf-vs-trog from the cell's dominant offensive composition. */
-  private trogMode = true;
 
   constructor(config: CpmWorldConfig = DEFAULT_WORLD_CONFIG) {
     const cfg = config;
@@ -331,6 +328,14 @@ export class WorldSim {
     const agentId = this.cpmToAgent.get(cpmId);
     if (agentId !== undefined) return this.agentWorld.get(agentId)?.team ?? TEAM.neutral;
     return TEAM.neutral;
+  }
+
+  /** Which offensive verb the player's RMB "grab" performs, from its composition: rip if
+   *  it's built more for tearing than engulfing, else engulf. (The unified grab — T4.) */
+  private playerPrefersTrog(): boolean {
+    const caps = this.compositions.get(this.controlledCellId)?.capabilities;
+    if (!caps) return false;
+    return caps.tearing > caps.phagocytic;
   }
 
   /** Player's world-space centroid (for the camera to follow). Null if unknown. */
@@ -510,9 +515,9 @@ export class WorldSim {
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
-    // RMB is the unified "grab": route it to trogocytosis (rip) or engulf. (T4 will pick by
-    // the cell's dominant offensive composition; the spike forces trog via trogMode.)
-    if (this.trogMode) {
+    // RMB is the unified "grab": route it to trogocytosis (rip) or engulf by the player's
+    // dominant offensive capability (its composition decides which verb it can use).
+    if (this.playerPrefersTrog()) {
       const [clx, cly] = this.sim.worldToLattice(input.pointerWX, input.pointerWY);
       this.trog.update(input.engulf, clx, cly, input.pointerSpeed, dtSec * 1000);
     } else {
@@ -632,7 +637,7 @@ export class WorldSim {
       nutrients: this.combat.nutrients,
       energy: Math.round(this.life.energyOf(this.controlledCellId)),
       hp: Math.round(this.rules.healthFraction(this.controlledCellId) * 100),
-      combatStatus: this.trogMode
+      combatStatus: this.playerPrefersTrog()
         ? this.trog.latched
           ? "TROG: latched — FLICK to rip"
           : this.input.engulf

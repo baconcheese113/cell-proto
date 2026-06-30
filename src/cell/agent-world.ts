@@ -24,7 +24,9 @@ import {
   separation,
   stepVelocity,
   feedingEvents,
+  tearingEvents,
   type FeedAgent,
+  type TearAgent,
 } from "./agent-world-core";
 import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import type { WorldCell } from "./world-cell";
@@ -70,6 +72,13 @@ const HEADING_DRIFT = 0.45; // how fast the roaming heading turns (persistence =
 const BEHAVIOR_CELL = SENSE_BASE;
 const AGENT_FEED_DAMAGE = 9; // visible kills (a ~50-energy microbe dies in ~6 bites)
 const CHILD_OFFSET = 6;
+// Off-lattice trogocytosis: a tearing cell removes MASS (vol) from a touching hostile
+// cell each tick; below this fraction of its full body volume the cell lyses. Mirrors the
+// CPM-tier rip (which also leaves persistent debris in the bubble; off-screen we only
+// track the mass loss — the standard LOD approximation).
+const AGENT_TEAR_DAMAGE = 12;
+const AGENT_TEAR_GAIN = 4; // small nutrient credit to the attacker for the bite
+const TEAR_DEATH_FRACTION = 0.6;
 
 export class AgentWorld {
   private readonly cells = new Map<number, WorldCell>();
@@ -315,6 +324,34 @@ export class AgentWorld {
       if (!prey || !pred) continue;
       prey.energy -= AGENT_FEED_DAMAGE;
       pred.energy = Math.min(MAX_ENERGY, pred.energy + FEED_GAIN);
+    }
+
+    // --- tearing (off-lattice trogocytosis): tearing cells rip MASS off hostiles -------
+    // Same move as the CPM-tier rip, run for EVERY cell so off-screen fights play out; we
+    // only track the resulting mass loss here (no debris cells off-screen). A cell torn
+    // below TEAR_DEATH_FRACTION of its body volume dies; its disc visibly shrinks first.
+    const tearers: TearAgent[] = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const c = list[i];
+      tearers[i] = {
+        id: c.id,
+        x: c.x,
+        y: c.y,
+        r: Math.sqrt(c.vol / Math.PI) * this.worldScale,
+        team: c.team,
+        tearing: c.comp.capabilities.tearing,
+      };
+    }
+    for (const ev of tearingEvents(tearers, 1.0, BEHAVIOR_CELL)) {
+      const target = this.cells.get(ev.target);
+      const atk = this.cells.get(ev.attacker);
+      if (!target || !atk) continue;
+      target.vol -= AGENT_TEAR_DAMAGE; // structural (membrane-integrity) damage
+      atk.energy = Math.min(MAX_ENERGY, atk.energy + AGENT_TEAR_GAIN);
+      if (target.vol < TEAR_DEATH_FRACTION * BODY_VOL[target.bodyKind]) {
+        this.cells.delete(target.id);
+        this.heading.delete(target.id);
+      }
     }
 
     // --- division + starvation ----------------------------------------------------

@@ -133,6 +133,44 @@ export function stepVelocity(
  *  (derived from area) for the touch test. */
 export type FeedAgent = Agent & { r: number };
 
+/** A cell as TEARING (off-lattice trogocytosis) needs it: position + touch radius +
+ *  allegiance + tearing power. The agent-tier shadow of the CPM rip — same rule (a
+ *  tearing cell adjacent to a hostile cell tears it), without the deformable detail. */
+export type TearAgent = {
+  id: number;
+  x: number;
+  y: number;
+  r: number;
+  team: number;
+  tearing: number;
+};
+
+/** Attacker→target tears this tick: each cell with tearing power bites at most one
+ *  touching HOSTILE cell. Same spatial-hash structure as `feedingEvents`; the orchestrator
+ *  applies the mass damage / heal. Pure. */
+export function tearingEvents(
+  agents: readonly TearAgent[],
+  touchFactor = 0.95,
+  cellSize = 64
+): Array<{ attacker: number; target: number }> {
+  const out: Array<{ attacker: number; target: number }> = [];
+  const hash = new SpatialHash(cellSize);
+  hash.rebuild(agents);
+  for (const a of agents) {
+    if (a.tearing <= 0) continue;
+    for (const qi of hash.queryNeighborhood(a.x, a.y)) {
+      const t = agents[qi];
+      if (t.id === a.id) continue;
+      if (!hostile(a.team, t.team)) continue;
+      const d = Math.hypot(t.x - a.x, t.y - a.y);
+      if (d > (a.r + t.r) * touchFactor) continue;
+      out.push({ attacker: a.id, target: t.id });
+      break; // one tear per attacker per tick
+    }
+  }
+  return out;
+}
+
 /** Predator→prey bites this tick: each predator bites at most one touching edible
  *  prey. Uses a spatial hash internally so it stays ~O(n) at thousands of agents
  *  (`cellSize` must exceed the largest touch distance). The orchestrator applies the

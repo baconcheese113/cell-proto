@@ -35,8 +35,11 @@ export interface CellPreset {
 }
 
 export const PRESETS: Record<string, CellPreset> = {
-  // A motile hunter: senses prey (chemoreceptor), chases (cytoskeleton), engulfs
-  // (phagocytic-receptor), well-powered (2 mitochondria).
+  // A motile hunter: senses prey (chemoreceptor), chases (cytoskeleton), and fights with
+  // BOTH offensive verbs — engulf (phagocytic-receptor) and membrane-ripping
+  // (tearing-receptor). Tearing rolls dominant, so RMB routes to trogocytosis (the
+  // current headline); the phagocytic receptor still drives agent-tier predator hunting.
+  // Well-powered (2 mitochondria) to afford both.
   macrophage: {
     name: "macrophage",
     body: "macrophage",
@@ -44,7 +47,11 @@ export const PRESETS: Record<string, CellPreset> = {
       { kind: "nucleus", min: 0.9, max: 1.1 },
       { kind: "mitochondrion", min: 0.8, max: 1.3, count: 2 },
       { kind: "cytoskeleton", min: 0.9, max: 1.4 },
-      { kind: "phagocytic-receptor", min: 0.9, max: 1.5 },
+      // Tearing's floor sits above phagocytic's ceiling, so tearing is ALWAYS the dominant
+      // offensive verb (RMB -> trogocytosis reliably); phagocytic stays present (drives
+      // agent-tier predator hunting + a future engulf build) but never wins the routing.
+      { kind: "phagocytic-receptor", min: 0.5, max: 0.9 },
+      { kind: "tearing-receptor", min: 1.0, max: 1.4 },
       { kind: "chemoreceptor", min: 0.8, max: 1.2 },
     ],
   },

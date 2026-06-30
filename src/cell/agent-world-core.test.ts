@@ -8,8 +8,28 @@ import {
   separation,
   stepVelocity,
   feedingEvents,
+  tearingEvents,
   type FeedAgent,
+  type TearAgent,
 } from "./agent-world-core.ts";
+
+test("tearingEvents: a tearing cell tears a touching HOSTILE cell, not allies/neutrals", () => {
+  const ripper: TearAgent = { id: 1, x: 0, y: 0, r: 10, team: 1, tearing: 1 };
+  const enemy: TearAgent = { id: 2, x: 12, y: 0, r: 10, team: 2, tearing: 0 }; // touching, hostile
+  const ally: TearAgent = { id: 3, x: 0, y: 12, r: 10, team: 1, tearing: 0 }; // touching, same team
+  const neutral: TearAgent = { id: 4, x: -12, y: 0, r: 10, team: 0, tearing: 0 }; // touching, neutral
+  const events = tearingEvents([ripper, enemy, ally, neutral], 1.0, 64);
+  assert.deepEqual(events, [{ attacker: 1, target: 2 }]);
+});
+
+test("tearingEvents: no tearing power -> no tears; out of touch range -> no tear", () => {
+  const weak: TearAgent = { id: 1, x: 0, y: 0, r: 10, team: 1, tearing: 0 };
+  const enemyClose: TearAgent = { id: 2, x: 12, y: 0, r: 10, team: 2, tearing: 0 };
+  assert.deepEqual(tearingEvents([weak, enemyClose], 1.0, 64), []);
+  const ripper: TearAgent = { id: 1, x: 0, y: 0, r: 10, team: 1, tearing: 1 };
+  const far: TearAgent = { id: 2, x: 100, y: 0, r: 10, team: 2, tearing: 0 };
+  assert.deepEqual(tearingEvents([ripper, far], 1.0, 64), []);
+});
 
 test("hostile: different non-neutral teams fight; same team and neutrals don't", () => {
   assert.equal(hostile(1, 2), true); // immune vs microbe
