@@ -95,6 +95,14 @@ const AGENT_COLOR: Record<BodyKey, number> = {
   fibroblast: 0x5d7d6a,
 };
 
+/** Team (allegiance) marker colour — the small NUCLEUS DOT at a cell's centre that shows
+ *  whose side it's on, readable at both the disc and CPM zoom. Neutral (0) gets no marker
+ *  (lining/tissue don't fight). Body colour still encodes the cell's class/abilities. */
+const TEAM_COLOR: Record<number, number> = {
+  [TEAM.immune]: 0x6fd3ff, // blue — your side
+  [TEAM.microbe]: 0xff5a5a, // red — pathogens
+};
+
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
 function heartbeat(timeSec: number, bpm = 70): number {
   const phase = (timeSec * (bpm / 60)) % 1;
@@ -125,6 +133,16 @@ export interface SnapshotFx {
 export interface SnapshotAgent {
   x: number;
   y: number;
+  r: number;
+  color: number;
+}
+
+/** A team NUCLEUS DOT at a cell's centre (world coords), coloured by allegiance. Emitted
+ *  for every non-neutral cell at BOTH tiers (agent disc + CPM shadow) so you can read whose
+ *  side a cell is on at any zoom. */
+export interface SnapshotMarker {
+  wx: number;
+  wy: number;
   r: number;
   color: number;
 }
@@ -161,6 +179,7 @@ export interface WorldSnapshot {
   originWY: number;
   scale: number;
   agents: SnapshotAgent[];
+  markers: SnapshotMarker[];
   occupants: SnapshotOccupant[];
   organelles: SnapshotOrganelle[];
   playerWorld: { x: number; y: number } | null;
@@ -419,7 +438,14 @@ export class WorldSim {
 
     const scale = this.sim.scale;
     const agents: SnapshotAgent[] = [];
+    const markers: SnapshotMarker[] = [];
     for (const a of this.agentWorld.all()) {
+      const teamColor = TEAM_COLOR[a.team];
+      // Team nucleus dot at the cell's centre — for a CPM shadow its x/y were mirrored from
+      // the CPM centroid; for an agent it's the disc centre. Neutral cells get none.
+      if (teamColor !== undefined) {
+        markers.push({ wx: a.x, wy: a.y, r: Math.max(2, Math.sqrt(a.vol / Math.PI) * scale * 0.34), color: teamColor });
+      }
       if (a.tier === "cpm") continue; // rendered as its CPM shadow, not a disc
       agents.push({
         x: a.x,
@@ -468,6 +494,7 @@ export class WorldSim {
       originWY: this.sim.originWY,
       scale,
       agents,
+      markers,
       occupants,
       organelles,
       playerWorld: this.playerWorldPos(),

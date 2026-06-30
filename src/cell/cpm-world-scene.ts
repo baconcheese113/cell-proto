@@ -220,7 +220,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private updateHud(snap: WorldSnapshot): void {
     const s = snap.stats;
     const text =
-      `Vessel world — ${s.combatStatus}   LMB steer · RMB engulf   speed [ / ] : ${snap.mcsPerSec}\n` +
+      `Vessel world — ${s.combatStatus}   LMB steer · RMB grab (rip/engulf)   speed [ / ] : ${snap.mcsPerSec}\n` +
       `you: hp ${s.hp} energy ${s.energy}   macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`;
     if (text !== this.lastHudText) {
       this.hud.setText(text);
@@ -298,6 +298,19 @@ export class CpmWorldScene extends Phaser.Scene {
         g.fillStyle(0x5b2f9e, 0.9);
         g.fillCircle(big.cx, big.cy, big.restRadiusW);
       }
+    }
+
+    // Team NUCLEUS DOTS: a small allegiance-coloured dot at each non-neutral cell's centre
+    // (both agent discs and CPM shadows), with a dark rim for legibility. Drawn here (depth
+    // 12) so it sits above the lattice + agent discs. Culled to the view.
+    const v = this.cameras.main.worldView;
+    const mm = 24;
+    for (const k of snap.markers) {
+      if (k.wx < v.x - mm || k.wx > v.right + mm || k.wy < v.y - mm || k.wy > v.bottom + mm) continue;
+      g.lineStyle(Math.max(1, s * 0.25), 0x0a0f14, 0.85);
+      g.fillStyle(k.color, 1);
+      g.fillCircle(k.wx, k.wy, k.r);
+      g.strokeCircle(k.wx, k.wy, k.r);
     }
   }
 
