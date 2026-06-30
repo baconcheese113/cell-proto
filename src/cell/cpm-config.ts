@@ -60,6 +60,10 @@ export const PLAYER_PROFILE: CpmCellProfile = {
   lambdaAct: 220, // active protrusion while steering (above this it self-fragments)
   lambdaActRest: 0, // idle = no protrusion drive -> rests (centroid stays put)
   lambdaConnectivity: 40, // strong cohesion: no spontaneous tearing under steering
+  // NB: crawl SPEED (world px/sec) = MCS_rate x worldPerPixel x per-step displacement,
+  // and per-step displacement is SATURATED — a live sweep showed lambdaAct/maxAct/
+  // temperature/steerLambda do NOT change it. The only speed levers are MCS rate and
+  // lattice resolution (worldPerPixel). So this stays at the tuned 220.
   steerLambda: 220,
   jWithMedium: 20,
   jWithOther: 22,

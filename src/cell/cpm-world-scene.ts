@@ -23,6 +23,17 @@ export class CpmWorldScene extends Phaser.Scene {
   private camCx: number | undefined;
   private camCy: number | undefined;
   private camZoom = 1.8;
+  // Only redraw the lattice/agents/interior when the sim produced a NEW frame; the
+  // camera still pans every rAF so motion stays smooth between sim ticks.
+  private lastRenderedTick = -1;
+  private lastHudText = "";
+  // Diagnostic: render FPS (rAF) vs worker sim-Hz (distinct snapshots), so we can tell
+  // whether a low frame rate is render-bound (main thread) or sim-bound (worker).
+  private renderFrames = 0;
+  private fpsT0 = performance.now();
+  private renderFps = 0;
+  private hzTick0 = 0;
+  private workerHz = 0;
 
   create(): void {
     this.makeBackground();
@@ -122,17 +133,15 @@ export class CpmWorldScene extends Phaser.Scene {
       viewHalfDiag: Math.hypot(cam.width / cam.zoom, cam.height / cam.zoom) / 2,
     });
 
-    // Render the freshest snapshot we have. In worker mode the sim ticks on its own
-    // thread, so the render rate is independent of cpm.step cost; here we just re-draw
-    // the latest frame each rAF.
     const snap = this.sim.takeSnapshot();
+    this.sampleFps(snap);
     if (snap) this.renderSnapshot(snap);
   }
 
-  /** Draw one frame purely from a WorldSnapshot (lattice blit + agents + interior +
-   *  camera + HUD + FX). The render thread never touches the sim. */
+  /** Render a WorldSnapshot. Heavy work (lattice blit, agents, interior, HUD) runs ONLY
+   *  when the sim produced a new frame (tickSeq changed); the camera pans every rAF so
+   *  motion is smooth between sim ticks. The render thread never touches the sim. */
   private renderSnapshot(snap: WorldSnapshot): void {
-    this.lastSnap = snap;
     // Lazily build the lattice renderer + apply dev-freeze fit once we know field/scale.
     if (!this.cpmRenderer) {
       this.cpmRenderer = new CpmRenderer(this, snap.field, snap.scale, 10);
@@ -143,17 +152,23 @@ export class CpmWorldScene extends Phaser.Scene {
         this.cameras.main.centerOn(0, 0);
       }
     }
-    this.cpmRenderer.blit(snap.framebuffer, snap.originWX, snap.originWY);
-    this.drawInterior(snap);
-    this.renderAgents(snap);
 
-    for (const fx of snap.fx) this.spawnDeathFx(fx.wx, fx.wy, fx.radius, fx.color);
-    if (snap.controlChanged) {
-      this.camCx = undefined;
-      this.camCy = undefined;
+    const fresh = snap.tickSeq !== this.lastRenderedTick;
+    if (fresh) {
+      this.lastRenderedTick = snap.tickSeq;
+      this.lastSnap = snap;
+      this.cpmRenderer.blit(snap.framebuffer, snap.originWX, snap.originWY);
+      this.drawInterior(snap);
+      this.renderAgents(snap);
+      for (const fx of snap.fx) this.spawnDeathFx(fx.wx, fx.wy, fx.radius, fx.color);
+      if (snap.controlChanged) {
+        this.camCx = undefined;
+        this.camCy = undefined;
+      }
+      this.updateHud(snap);
     }
 
-    // Camera follows the player (with lag) unless frozen for study.
+    // Camera follows the player (with lag) unless frozen for study — every frame.
     if (!DEV_FREEZE_STREAMING && snap.playerWorld) {
       const p = snap.playerWorld;
       this.camCx = this.camCx === undefined ? p.x : this.camCx + (p.x - this.camCx) * 0.1;
@@ -162,13 +177,34 @@ export class CpmWorldScene extends Phaser.Scene {
     }
     this.bg.tilePositionX = this.cameras.main.scrollX;
     this.bg.tilePositionY = this.cameras.main.scrollY;
+  }
 
+  /** Sample render FPS (every rAF) + worker sim-Hz (distinct snapshots) over 500ms. */
+  private sampleFps(snap: WorldSnapshot | null): void {
+    this.renderFrames++;
+    const now = performance.now();
+    const dt = now - this.fpsT0;
+    if (dt >= 500) {
+      this.renderFps = Math.round((this.renderFrames * 1000) / dt);
+      if (snap) {
+        this.workerHz = Math.round(((snap.tickSeq - this.hzTick0) * 1000) / dt);
+        this.hzTick0 = snap.tickSeq;
+      }
+      this.renderFrames = 0;
+      this.fpsT0 = now;
+    }
+  }
+
+  private updateHud(snap: WorldSnapshot): void {
     const s = snap.stats;
-    this.hud.setText(
+    const text =
       `Vessel world — ${s.combatStatus}   LMB steer · RMB engulf   you: hp ${s.hp} energy ${s.energy}\n` +
-        `world:  macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`
-    );
-    this.profText.setText(snap.profOverlay);
+      `world:  macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`;
+    if (text !== this.lastHudText) {
+      this.hud.setText(text);
+      this.lastHudText = text;
+    }
+    this.profText.setText(`render ${this.renderFps}fps · sim ${this.workerHz}Hz\n${snap.profOverlay}`);
   }
 
   private makeBackground(): void {
@@ -197,11 +233,17 @@ export class CpmWorldScene extends Phaser.Scene {
     });
   }
 
-  /** Draw every agent as a simple body-coloured disc in world space (from snapshot). */
+  /** Draw every on-screen agent as a body-coloured disc in world space (from snapshot).
+   *  Off-screen agents are culled — Phaser Graphics fillCircle tessellates per call, so
+   *  drawing hundreds of off-view discs is pure waste on the render thread. */
   private renderAgents(snap: WorldSnapshot): void {
     const g = this.agentGfx;
     g.clear();
+    const v = this.cameras.main.worldView;
+    const m = 40; // margin so discs near the edge still draw
+    const minX = v.x - m, maxX = v.right + m, minY = v.y - m, maxY = v.bottom + m;
     for (const a of snap.agents) {
+      if (a.x < minX || a.x > maxX || a.y < minY || a.y > maxY) continue;
       g.fillStyle(a.color, 1);
       g.fillCircle(a.x, a.y, a.r);
     }
