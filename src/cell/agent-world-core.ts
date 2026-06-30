@@ -8,6 +8,17 @@
 
 import type { Agent } from "./cpm-cell-behavior";
 
+/** Neutral allegiance — never attacks and is never attacked (vessel lining, tissue,
+ *  debris). Other team ids are mutually hostile. */
+export const NEUTRAL_TEAM = 0;
+
+/** ALLEGIANCE predicate: two cells are hostile iff they're on DIFFERENT, non-neutral
+ *  teams. Orthogonal to composition (abilities) — a team can field mixed ability-cells.
+ *  Shared by combat target selection (engulf/trog) and agent behavior (who to chase). */
+export function hostile(teamA: number, teamB: number): boolean {
+  return teamA !== teamB && teamA !== NEUTRAL_TEAM && teamB !== NEUTRAL_TEAM;
+}
+
 /** Below this motility a cell is sessile (vessel wall / tissue) — never prey. */
 export const MOTILE_PREY_MIN = 0.1;
 /** Prey must be meaningfully less predatory than its hunter. */

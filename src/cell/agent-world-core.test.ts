@@ -2,12 +2,22 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   isEdible,
+  hostile,
+  NEUTRAL_TEAM,
   SpatialHash,
   separation,
   stepVelocity,
   feedingEvents,
   type FeedAgent,
 } from "./agent-world-core.ts";
+
+test("hostile: different non-neutral teams fight; same team and neutrals don't", () => {
+  assert.equal(hostile(1, 2), true); // immune vs microbe
+  assert.equal(hostile(1, 1), false); // allies
+  assert.equal(hostile(1, NEUTRAL_TEAM), false); // lining is never attacked
+  assert.equal(hostile(NEUTRAL_TEAM, 2), false);
+  assert.equal(hostile(NEUTRAL_TEAM, NEUTRAL_TEAM), false);
+});
 
 const cell = (over: Partial<{ vol: number; phagocytic: number; motility: number }> = {}) => ({
   id: 1,

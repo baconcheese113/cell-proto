@@ -20,7 +20,8 @@ import { CellComposition } from "./cell-composition";
 import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import { simStepsFor } from "./sim-clock";
-import { AgentWorld } from "./agent-world";
+import { AgentWorld, TEAM } from "./agent-world";
+import { hostile } from "./agent-world-core";
 import {
   DEFAULT_WORLD_CONFIG,
   type CpmWorldConfig,
@@ -297,11 +298,10 @@ export class WorldSim {
     this.trog = new CpmTrogocytosis(this.sim, {
       playerKind: CONTROLLED_KIND,
       getAttackerId: () => this.controlledCellId,
-      // SPIKE: hostile = microbe (T3 swaps this for team-hostility). Never self/debris.
-      isHostile: (id) => {
-        if (id === this.controlledCellId) return false;
-        return this.sim.getCell(id)?.kind === MICROBE_KIND;
-      },
+      // Allegiance-based: rip any cell on a hostile team (never self/ally/neutral/debris).
+      isHostile: (id) =>
+        id !== this.controlledCellId &&
+        hostile(this.teamOf(id), this.teamOf(this.controlledCellId)),
       rip: (targetId, lx, ly, count) => this.ripFragment(targetId, lx, ly, count),
     });
 
@@ -322,6 +322,15 @@ export class WorldSim {
   /** Adjust the Monte-Carlo rate (live speed/smoothness dial). delta in MCS/sec. */
   setMcsRate(delta: number): void {
     this.mcsPerSec = Math.max(MIN_MCS, Math.min(MAX_MCS, this.mcsPerSec + delta));
+  }
+
+  /** Allegiance of a CPM cell: the controlled cell is on the immune team; a promoted
+   *  shadow inherits its durable agent's team; anything else (incl. debris) is neutral. */
+  private teamOf(cpmId: number): number {
+    if (cpmId === this.controlledCellId) return TEAM.immune;
+    const agentId = this.cpmToAgent.get(cpmId);
+    if (agentId !== undefined) return this.agentWorld.get(agentId)?.team ?? TEAM.neutral;
+    return TEAM.neutral;
   }
 
   /** Player's world-space centroid (for the camera to follow). Null if unknown. */

@@ -31,6 +31,10 @@ export interface WorldCell {
   vol: number;
   /** Which CPM body profile / colour to use when promoted + in the overview. */
   bodyKind: BodyKey;
+  /** ALLEGIANCE — orthogonal to composition (who fights whom). 0 = neutral (lining,
+   *  tissue: never attacks, never attacked); other ids are mutually hostile teams. A team
+   *  may field mixed ability-cells. See `hostile` in agent-world-core. */
+  team: number;
   tier: CellTier;
   /** While `tier === "cpm"`, the id of the CPM cell shadowing this agent (the agent
    *  stays in the world; its position is mirrored from the shadow and it renders as the

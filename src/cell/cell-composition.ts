@@ -15,6 +15,7 @@ export type ComponentKind =
   | "cytoskeleton" // grants motility
   | "flagellum" // grants fast motility
   | "phagocytic-receptor" // grants engulfing
+  | "tearing-receptor" // grants trogocytosis (membrane ripping)
   | "chemoreceptor"; // grants gradient/prey sensing
 
 export interface Component {
@@ -31,6 +32,8 @@ export interface Capabilities {
   motility: number;
   /** Engulfing power; 0 = cannot phagocytose. */
   phagocytic: number;
+  /** Membrane-ripping power (trogocytosis); 0 = cannot tear. */
+  tearing: number;
   /** Gradient/prey sensing; 0 = blind to gradients. */
   chemotaxis: number;
 }
@@ -46,6 +49,7 @@ interface CatalogEntry {
   /** Capability contributions per unit strength. */
   motility?: number;
   phagocytic?: number;
+  tearing?: number;
   chemotaxis?: number;
   /** Passive energy produced per unit strength (mitochondria). */
   gain?: number;
@@ -61,6 +65,7 @@ export const COMPONENT_CATALOG: Record<ComponentKind, CatalogEntry> = {
   cytoskeleton: { motility: 1.0, upkeep: 0.01 },
   flagellum: { motility: 1.7, upkeep: 0.016 },
   "phagocytic-receptor": { phagocytic: 1.0, upkeep: 0.008 },
+  "tearing-receptor": { tearing: 1.0, upkeep: 0.009 },
   chemoreceptor: { chemotaxis: 1.0, upkeep: 0.007 },
 };
 
@@ -70,14 +75,16 @@ export const BASE_DRAIN = 0.02;
 export function deriveCapabilities(components: readonly Component[]): Capabilities {
   let motility = 0;
   let phagocytic = 0;
+  let tearing = 0;
   let chemotaxis = 0;
   for (const c of components) {
     const e = COMPONENT_CATALOG[c.kind];
     motility += (e.motility ?? 0) * c.strength;
     phagocytic += (e.phagocytic ?? 0) * c.strength;
+    tearing += (e.tearing ?? 0) * c.strength;
     chemotaxis += (e.chemotaxis ?? 0) * c.strength;
   }
-  return { motility, phagocytic, chemotaxis };
+  return { motility, phagocytic, tearing, chemotaxis };
 }
 
 export function deriveMetabolism(components: readonly Component[]): MetabolicBalance {

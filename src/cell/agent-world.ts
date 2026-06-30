@@ -41,6 +41,20 @@ const BODY_VOL: Record<BodyKey, number> = {
   fibroblast: 539,
 };
 
+/** Allegiance ids (orthogonal to composition — see `hostile` in agent-world-core). */
+export const TEAM = { neutral: 0, immune: 1, microbe: 2 } as const;
+
+/** Default allegiance by body: immune cells vs microbes; lining/tissue are neutral. (A
+ *  cell's team is on its durable record, so this is just the spawn default — it can be
+ *  reassigned without touching composition.) */
+const TEAM_BY_BODY: Record<BodyKey, number> = {
+  macrophage: TEAM.immune,
+  epithelial: TEAM.neutral,
+  microbe: TEAM.microbe,
+  endothelial: TEAM.neutral,
+  fibroblast: TEAM.neutral,
+};
+
 const SEP_RADIUS = 55; // crowding distance (world px) ~ a cell radius, so they don't overlap
 const SEP_ACCEL = 0.5;
 const STEER_ACCEL = 0.85;
@@ -117,6 +131,7 @@ export class AgentWorld {
       energy,
       vol: BODY_VOL[bodyKind],
       bodyKind,
+      team: TEAM_BY_BODY[bodyKind],
       tier: "agent",
     };
     this.cells.set(id, c);
