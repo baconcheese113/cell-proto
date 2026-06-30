@@ -16,7 +16,8 @@ import type { WorldInput, WorldSnapshot } from "./world-sim";
 
 export type ToWorker =
   | { t: "input"; input: WorldInput }
-  | { t: "build"; wx: number; wy: number };
+  | { t: "build"; wx: number; wy: number }
+  | { t: "mcs"; delta: number };
 
 export type FromWorker = { t: "snapshot"; snap: WorldSnapshot };
 
@@ -25,6 +26,8 @@ export interface SimClient {
   setInput(input: WorldInput): void;
   /** Request building an organelle at a world position (B key). */
   build(wx: number, wy: number): void;
+  /** Nudge the Monte-Carlo rate (live speed/smoothness dial). */
+  adjustMcs(delta: number): void;
   /** The freshest snapshot to render, or null if none has arrived yet. */
   takeSnapshot(): WorldSnapshot | null;
   dispose(): void;
@@ -40,6 +43,9 @@ export class LocalSimClient implements SimClient {
   }
   build(wx: number, wy: number): void {
     this.worldSim.growOrganelleAt(wx, wy);
+  }
+  adjustMcs(delta: number): void {
+    this.worldSim.setMcsRate(delta);
   }
   takeSnapshot(): WorldSnapshot {
     const now = performance.now();
@@ -68,6 +74,9 @@ export class WorkerSimClient implements SimClient {
   }
   build(wx: number, wy: number): void {
     this.worker.postMessage({ t: "build", wx, wy } satisfies ToWorker);
+  }
+  adjustMcs(delta: number): void {
+    this.worker.postMessage({ t: "mcs", delta } satisfies ToWorker);
   }
   takeSnapshot(): WorldSnapshot | null {
     return this.latest;

@@ -20,7 +20,6 @@ import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import { simStepsFor } from "./sim-clock";
 import { AgentWorld } from "./agent-world";
-import { planPromotions } from "./bubble-manager-core";
 import {
   DEFAULT_WORLD_CONFIG,
   type CpmWorldConfig,
@@ -47,17 +46,18 @@ export const DEV_FREEZE_STREAMING = false;
 
 // Fixed-timestep clock: advance the CPM sim at a CONSTANT real-time rate so movement
 // speed is independent of render FPS.
-const TARGET_MCS_PER_SEC = 90;
-const MS_PER_MCS = 1000 / TARGET_MCS_PER_SEC;
+// Default Monte-Carlo rate. PERCEIVED crawl speed is purely MCS/sec (per-step
+// displacement is saturated); FPS/sim-Hz falls as MCS/sec x border rises. There is no
+// value that's both fast AND smooth on a big (high-border) view, so it's live-tunable
+// via setMcsRate (the scene's [ and ] keys) — the player picks their speed/smoothness.
+const TARGET_MCS_PER_SEC = 130;
+const MIN_MCS = 40;
+const MAX_MCS = 260;
 // Cap per tick -> bounded work, no spiral of death (simStepsFor drops any backlog past
 // this). Raised 6 -> 10: at a heavy ~24-30Hz tick rate the old cap of 6 ran only 180
 // MCS/s vs the 240 target, i.e. visible SLOW-MOTION on top of the low frame rate. 10
 // lets the sim hold true speed down to ~24Hz; only below that does it gracefully slow.
 const MAX_CATCHUP_STEPS = 10;
-
-// Bubble manager LOD radii (world px from the player).
-const R_PROMOTE = 560;
-const R_PROMOTE_MAX = 700;
 
 const NUCLEUS = { type: "nucleus", color: 0x9b6cff, radius: 6 };
 const BUILDABLES = [
@@ -157,6 +157,8 @@ export interface WorldSnapshot {
    *  advancing independently of render FPS (worker decoupling check). */
   simTimeSec: number;
   tickSeq: number;
+  /** Current Monte-Carlo rate (live speed dial), for the HUD. */
+  mcsPerSec: number;
 }
 
 export interface WorldHudStats {
@@ -201,6 +203,7 @@ export class WorldSim {
 
   private playerT = 0;
   private tickSeq = 0;
+  private mcsPerSec = TARGET_MCS_PER_SEC;
   private simAccumMs = 0;
   private streamAccumMs = 0;
   private timeSec = 0;
@@ -270,6 +273,11 @@ export class WorldSim {
 
   setInput(input: WorldInput): void {
     this.input = input;
+  }
+
+  /** Adjust the Monte-Carlo rate (live speed/smoothness dial). delta in MCS/sec. */
+  setMcsRate(delta: number): void {
+    this.mcsPerSec = Math.max(MIN_MCS, Math.min(MAX_MCS, this.mcsPerSec + delta));
   }
 
   /** Player's world-space centroid (for the camera to follow). Null if unknown. */
@@ -400,6 +408,7 @@ export class WorldSim {
       controlChanged,
       simTimeSec: this.timeSec,
       tickSeq: this.tickSeq,
+      mcsPerSec: Math.round(this.mcsPerSec),
     };
   }
 
@@ -443,7 +452,7 @@ export class WorldSim {
 
     // Fixed-timestep: advance the sim at a constant real-time rate.
     this.simAccumMs += dtSec * 1000;
-    const plan = simStepsFor(this.simAccumMs, MS_PER_MCS, MAX_CATCHUP_STEPS);
+    const plan = simStepsFor(this.simAccumMs, 1000 / this.mcsPerSec, MAX_CATCHUP_STEPS);
     this.simAccumMs = plan.remainderMs;
     this.prof.measure("cpm.step", () => this.sim.stepN(plan.steps));
 
@@ -544,56 +553,49 @@ export class WorldSim {
   }
 
   // ---- LOD bubble manager -------------------------------------------------
+  // The lattice is the simulated bubble. Anything OVERLAPPING it should be full CPM —
+  // so we promote by LATTICE MEMBERSHIP (a square), not a radius from the player (which
+  // left the grid's corners/edges as agent discs). Hysteresis: promote once an agent is
+  // PROMOTE_MARGIN inside the field, demote only once its centroid leaves to within
+  // DEMOTE_MARGIN, so cells near the boundary don't flicker between tiers.
   private bubbleManagerStep(
     centroids: Map<number, { x: number; y: number; pixels: number }>
   ): void {
-    const pc = centroids.get(this.controlledCellId);
-    if (!pc) return;
-    const [pwx, pwy] = this.sim.latticeToWorld(pc.x, pc.y);
-
-    const rPromote = Math.min(Math.max(this.input.viewHalfDiag + 80, R_PROMOTE), R_PROMOTE_MAX);
-    const rDemote = rPromote + 100;
-
-    const agentPos: Array<{ id: number; x: number; y: number }> = [];
-    for (const a of this.agentWorld.all()) agentPos.push({ id: a.id, x: a.x, y: a.y });
-
-    const promotedPos: Array<{ id: number; x: number; y: number }> = [];
-    for (const id of this.promoted) {
-      const c = centroids.get(id);
-      if (!c) {
-        this.promoted.delete(id);
-        continue;
-      }
-      const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
-      promotedPos.push({ id, x: wx, y: wy });
-    }
-
-    const plan = planPromotions({ x: pwx, y: pwy }, agentPos, promotedPos, rPromote, rDemote);
     const f = this.sim.field;
+    const PROMOTE_MARGIN = 28;
+    const DEMOTE_MARGIN = 12;
+    const inField = (lx: number, ly: number, m: number): boolean =>
+      lx >= m && lx < f - m && ly >= m && ly < f - m;
 
-    for (const id of plan.promote) {
+    // Promote every agent that overlaps the lattice interior.
+    const toPromote: number[] = [];
+    for (const a of this.agentWorld.all()) {
+      const [lx, ly] = this.sim.worldToLattice(a.x, a.y);
+      if (inField(lx, ly, PROMOTE_MARGIN)) toPromote.push(a.id);
+    }
+    for (const id of toPromote) {
       const wc = this.agentWorld.remove(id);
       if (!wc) continue;
       const [lx, ly] = this.sim.worldToLattice(wc.x, wc.y);
-      const xi = Math.round(lx);
-      const yi = Math.round(ly);
-      if (xi < 22 || xi >= f - 22 || yi < 22 || yi >= f - 22) {
-        this.agentWorld.adopt(wc.comp, wc.bodyKind, wc.x, wc.y, wc.energy);
-        continue;
-      }
       const kind = this.bodyKind(wc.bodyKind, false);
       const radius = Math.sqrt(wc.vol / Math.PI);
-      const rec = this.sim.spawnCellFilled(kind, xi, yi, radius);
+      const rec = this.sim.spawnCellFilled(kind, Math.round(lx), Math.round(ly), radius);
       this.compositions.set(rec.id, wc.comp);
       this.life.seed(rec.id, wc.energy);
       this.promoted.add(rec.id);
     }
 
-    for (const id of plan.demote) {
+    // Demote promoted cells whose centroid has left the lattice interior.
+    for (const id of [...this.promoted]) {
       const c = centroids.get(id);
+      if (!c) {
+        this.promoted.delete(id);
+        continue;
+      }
+      if (inField(c.x, c.y, DEMOTE_MARGIN)) continue;
       const comp = this.compositions.get(id);
       const rec = this.sim.getCell(id);
-      if (c && comp && rec) {
+      if (comp && rec) {
         const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
         this.agentWorld.adopt(comp, this.kindToBody(rec.kind), wx, wy, this.life.energyOf(id));
       }

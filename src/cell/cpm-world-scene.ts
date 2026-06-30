@@ -79,6 +79,9 @@ export class CpmWorldScene extends Phaser.Scene {
       const ptr = this.input.activePointer;
       this.sim.build(ptr.worldX, ptr.worldY);
     });
+    // Live speed/smoothness dial: [ slower+smoother, ] faster+choppier (MCS rate).
+    this.input.keyboard?.on("keydown-CLOSED_BRACKET", () => this.sim.adjustMcs(+15));
+    this.input.keyboard?.on("keydown-OPEN_BRACKET", () => this.sim.adjustMcs(-15));
 
     if (import.meta.env.DEV) this.installDebugHandle();
   }
@@ -198,8 +201,8 @@ export class CpmWorldScene extends Phaser.Scene {
   private updateHud(snap: WorldSnapshot): void {
     const s = snap.stats;
     const text =
-      `Vessel world — ${s.combatStatus}   LMB steer · RMB engulf   you: hp ${s.hp} energy ${s.energy}\n` +
-      `world:  macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`;
+      `Vessel world — ${s.combatStatus}   LMB steer · RMB engulf   speed [ / ] : ${snap.mcsPerSec}\n` +
+      `you: hp ${s.hp} energy ${s.energy}   macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`;
     if (text !== this.lastHudText) {
       this.hud.setText(text);
       this.lastHudText = text;

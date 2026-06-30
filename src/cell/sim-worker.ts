@@ -22,6 +22,7 @@ ctx.onmessage = (e) => {
   const m = e.data;
   if (m.t === "input") sim.setInput(m.input);
   else if (m.t === "build") sim.growOrganelleAt(m.wx, m.wy);
+  else if (m.t === "mcs") sim.setMcsRate(m.delta);
 };
 
 // Cap at ~60Hz but, when the sim is heavy (cycle > budget), reschedule IMMEDIATELY via
