@@ -68,6 +68,10 @@ const BUILDABLES = [
 
 const MICROBE_CAP = 110;
 const IMMUNE_CAP = 14;
+// How firmly a promoted wall cell is pulled back to its home slot (the lining
+// re-sealing force). Gentle enough that a protruding cell can wedge through
+// (diapedesis), firm enough that the wall knits back together once it passes.
+const WALL_SEAL_LAMBDA = 60;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -446,6 +450,7 @@ export class WorldSim {
     this.prof.measure("bubble", () => {
       this.bubbleManagerStep(centroids);
       this.mirrorShadows(centroids);
+      this.resealWalls(centroids);
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
@@ -647,10 +652,37 @@ export class WorldSim {
       if (!c) continue;
       const wc = this.agentWorld.get(agentId);
       if (!wc) continue;
-      const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
-      wc.x = wx;
-      wc.y = wy;
+      // Sessile wall cells keep their durable position at their SPAWN slot (their
+      // "home"): we don't track their displaced centroid, so when the player wedges
+      // through them, the reseal force (resealWalls) pulls them back home and the
+      // lining re-closes. Only mobile cells mirror their displaced position.
+      if (wc.comp.capabilities.motility > 0.05) {
+        const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+        wc.x = wx;
+        wc.y = wy;
+      }
       wc.energy = this.life.energyOf(cpmId);
+    }
+  }
+
+  /** The lining re-seals itself: every promoted wall cell (endothelial/fibroblast) is
+   *  gently attracted back to its home slot (its durable agent position, which we keep
+   *  pinned at spawn). Closes the gaps the slot overlap leaves, and — the headline —
+   *  re-closes the lining BEHIND the player after it squeezes between two cells
+   *  (biologically the endothelial cell-cell junctions re-forming). The lambda is gentle
+   *  enough that a protruding cell CAN force its way through (diapedesis), but the wall
+   *  knits back together once it passes. */
+  private resealWalls(
+    centroids: Map<number, { x: number; y: number; pixels: number }>
+  ): void {
+    for (const [cpmId, agentId] of this.cpmToAgent) {
+      const rec = this.sim.getCell(cpmId);
+      if (!rec || (rec.kind !== ENDOTHELIAL_KIND && rec.kind !== FIBROBLAST_KIND)) continue;
+      if (!centroids.get(cpmId)) continue; // not on the lattice yet
+      const wc = this.agentWorld.get(agentId);
+      if (!wc) continue;
+      const [lx, ly] = this.sim.worldToLattice(wc.x, wc.y); // home slot
+      this.sim.attractCellTo(cpmId, Math.round(lx), Math.round(ly), WALL_SEAL_LAMBDA);
     }
   }
 
@@ -743,7 +775,10 @@ export class WorldSim {
   }
 
   private wallSpacing(): number {
-    return this.vessel.cfg.lumenR * 0.7;
+    // < a wall cell's diameter so adjacent cells OVERLAP into a continuous, gap-free
+    // lining (rendered as discs / promoted to CPM, they only touch at a point
+    // otherwise). The spike confirmed sealing is affordable (cost is border-bounded).
+    return this.vessel.cfg.lumenR * 0.45;
   }
 
   private populateAgentVessel(): void {

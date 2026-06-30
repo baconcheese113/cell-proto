@@ -37,9 +37,10 @@ export const DEFAULT_VESSEL: VesselConfig = {
   // A WIDE open channel (~680 world px lumen): the player (~200 across) plus a few
   // cells abreast with real room to maneuver, not a jam. (Was 200 — too narrow.)
   lumenR: 340,
-  // A THICK lining (2-3 rows of endothelial cells) so the wall reads as a real,
-  // dense vessel wall, not a sparse single bead-string. Tissue band beyond it.
-  liningW: 320,
+  // ONE sealed row of (overlapping) endothelial cells + a tissue row behind reads as
+  // a wall without doubling the CPM cell count. Tight along-path spacing (wallSpacing)
+  // does the sealing; extra rows just cost cells. Tissue band beyond it.
+  liningW: 180,
   tissueW: 200,
   // Row spacing across the band; smaller -> more rows -> denser wall. ~ endothelial
   // cell radius in world px.
