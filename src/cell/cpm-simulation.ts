@@ -15,6 +15,7 @@ import {
   CPM,
   GridManipulator,
   ConnectedComponentsByCell,
+  BarrierConstraint,
   type CellId,
   type ActivityConstraint,
   type PerimeterConstraint,
@@ -96,6 +97,7 @@ export class CpmSimulation {
     const MAX_ACT = [0];
     const LAMBDA_ACT = [0];
     const LAMBDA_CONNECTIVITY = [0];
+    const IS_BARRIER = [false]; // index 0 = background
     for (const p of kindProfiles) {
       V.push(p.volume);
       LAMBDA_V.push(p.lambdaV);
@@ -104,6 +106,7 @@ export class CpmSimulation {
       MAX_ACT.push(p.maxAct);
       LAMBDA_ACT.push(p.lambdaActRest); // start at rest
       LAMBDA_CONNECTIVITY.push(p.lambdaConnectivity);
+      IS_BARRIER.push(!!p.isBarrier);
     }
 
     // Adhesion matrix J[(nKinds+1) x (nKinds+1)].
@@ -163,6 +166,9 @@ export class CpmSimulation {
     // The vessel current: pushes flowing (lumen) kinds along the heart-pump flow.
     this.flow = new CpmFlowConstraint();
     this.cpm.add(this.flow);
+    // Frozen barrier kinds (debris): forbid copy attempts in/out so fragments persist
+    // intact for their TTL (created/removed by direct setpix, which bypasses this).
+    this.cpm.add(new BarrierConstraint({ IS_BARRIER }));
     // NOTE: no SoftConnectivityConstraint. Profiling showed it was ~72% of the CPM
     // step cost (a per-copy-attempt local flood-fill), and it was leftover from the
     // old embedded-compartment era — the solid cell + soft-body nucleus stays
@@ -598,6 +604,41 @@ export class CpmSimulation {
     }
     for (const [x, y] of cut) this.cpm.setpix([x, y], 0);
     return true;
+  }
+
+  /** Tear up to `count` pixels off `targetId` — the ones NEAREST (ax,ay) (the puller
+   *  side / contact patch) — and MOVE them into a new cell of `fragmentKind`. Mass is
+   *  conserved: pixels are reassigned via setpix (which maintains every cell's volume +
+   *  border bookkeeping), not deleted. Returns the new fragment id, pixels moved, and the
+   *  target's remaining pixel count; null if the target has no pixels. If the tear empties
+   *  the target, it is killed. The fragment is a real CPM cell (inert if `fragmentKind` is
+   *  the debris profile) the caller can then track/fade. */
+  tearChunkToward(
+    targetId: CellId,
+    ax: number,
+    ay: number,
+    count: number,
+    fragmentKind: number
+  ): { fragmentId: CellId; moved: number; remaining: number } | null {
+    const grid = this.cpm.grid;
+    const px: [number, number][] = [];
+    for (const [[x, y], v] of grid.pixels()) if (v === targetId) px.push([x, y]);
+    if (px.length === 0) return null;
+    // Closest-to-the-puller first: the chunk torn off is the contact patch being pulled,
+    // a roughly contiguous blob near (ax,ay).
+    px.sort(
+      (p, q) =>
+        (p[0] - ax) * (p[0] - ax) + (p[1] - ay) * (p[1] - ay) -
+        ((q[0] - ax) * (q[0] - ax) + (q[1] - ay) * (q[1] - ay))
+    );
+    const take = Math.min(count, px.length);
+    // Seed the fragment on the nearest pixel (seedCellAt reassigns it from the target),
+    // then move the rest of the chunk into it.
+    const frag = this.spawnCellAtLattice(fragmentKind, px[0][0], px[0][1]);
+    for (let i = 1; i < take; i++) this.cpm.setpix(px[i], frag.id);
+    const remaining = px.length - take;
+    if (remaining <= 0) this.killCell(targetId);
+    return { fragmentId: frag.id, moved: take, remaining };
   }
 
   // ---- world<->lattice transform ------------------------------------------

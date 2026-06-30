@@ -31,6 +31,11 @@ export interface CpmCellProfile {
   readonly jWithMedium: number;
   /** Adhesion of this kind's boundary with OTHER cells (lower = stickier). */
   readonly jWithOther: number;
+  /** If true, this kind is a FROZEN BARRIER: the CPM forbids all copy attempts into or
+   *  out of it, so neither hungry neighbours nor thermal noise can erode it. Used for
+   *  inert debris fragments that must persist intact until their TTL removes them (direct
+   *  setpix — spawning + killing — bypasses the barrier, so they can still be made/removed). */
+  readonly isBarrier?: boolean;
 }
 
 // NB: tuned via node parameter sweep — responsive crawl WHILE steered, near-zero
@@ -102,6 +107,33 @@ export const DIGESTING_PROFILE: CpmCellProfile = {
   steerLambda: 0,
   jWithMedium: 20,
   jWithOther: 20,
+};
+
+/** DEBRIS: a ripped-off membrane fragment. A real CPM cell (so its mass is conserved
+ *  on the lattice — the pixels are MOVED here from the torn cell, not deleted) but
+ *  totally inert: no protrusion, steering, volume/perimeter drive or cohesion, so it
+ *  just sits where it was torn. The world-sim fades it out (alpha) + resorbs it (TTL)
+ *  and its render colour is OVERRIDDEN per-cell to the colour of the cell it came from
+ *  (so red cells shed red debris); this profile colour is only a fallback. */
+export const DEBRIS_PROFILE: CpmCellProfile = {
+  name: "debris",
+  color: 0x8a8a8a,
+  // No volume/perimeter force: lambdaV/lambdaP 0 so the fragment neither regrows nor
+  // self-collapses — it persists at its torn size until the world-sim's TTL resorbs it.
+  volume: 0,
+  lambdaV: 0,
+  perimeter: 0,
+  lambdaP: 0,
+  maxAct: 0,
+  lambdaAct: 0,
+  lambdaActRest: 0,
+  lambdaConnectivity: 0,
+  steerLambda: 0,
+  jWithMedium: 0,
+  jWithOther: 0,
+  // Frozen: no copy attempts in/out, so it neither evaporates (thermal) nor gets eaten by
+  // a hungry neighbour — it persists exactly as torn until the TTL fades + removes it.
+  isBarrier: true,
 };
 
 /** An organelle compartment (e.g. the nucleus): a sub-cell held INSIDE the

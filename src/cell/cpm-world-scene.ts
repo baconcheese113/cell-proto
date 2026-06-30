@@ -119,6 +119,9 @@ export class CpmWorldScene extends Phaser.Scene {
         },
         tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
           ws.sim.tearCell(id ?? ws.controlledCellId, axis, halfWidth),
+        // T1 gate: rip a conserved fragment off the nearest cell; returns mass before +
+        // moved + remaining (assert before === moved + remaining) and the fragment id.
+        rip: (count = 30) => ws.debugRip(count),
       });
     }
     (window as unknown as { __cpm?: unknown }).__cpm = base;

@@ -29,6 +29,7 @@ import {
   ENDOTHELIAL_PROFILE,
   FIBROBLAST_PROFILE,
   DIGESTING_PROFILE,
+  DEBRIS_PROFILE,
 } from "./cpm-config";
 
 // Kinds = physics bodies only (NOT identities — a cell's identity is its composition).
@@ -39,6 +40,7 @@ export const MICROBE_KIND = 4;
 export const ENDOTHELIAL_KIND = 5; // vessel lining
 export const FIBROBLAST_KIND = 6; // tissue beyond
 export const DIGEST_KIND = 7;
+export const DEBRIS_KIND = 8; // ripped-off membrane fragment (inert, faded + resorbed)
 
 // DEV: freeze the player-anchored streaming bubble (study aid). For play it's false so
 // the camera follows the player; the worldsim streaming branch keys off it too.
@@ -68,6 +70,16 @@ const BUILDABLES = [
 
 const MICROBE_CAP = 110;
 const IMMUNE_CAP = 14;
+
+/** How long a ripped membrane fragment persists (seconds) before it fades out + is
+ *  removed. It holds full opacity for the first ~40%, then fades to nothing. */
+const DEBRIS_TTL = 4;
+
+/** Membrane-integrity death: a cell torn below this fraction of its kind's full volume
+ *  LYSES — the rest of its body scatters into debris. Sized so a typical rip (a chunk
+ *  large relative to a small cell) is lethal in one go; only large cells survive a rip.
+ *  A survivor is left UNDER its volume target, so it slowly regrows (heals) over time. */
+const RIP_DEATH_FRACTION = 0.6;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -200,6 +212,14 @@ export class WorldSim {
   // Render state owned by the sim so the snapshot is self-contained (worker-ready).
   private readonly framebuffer: Uint32Array;
   private readonly colorCache = new Map<number, { r: number; g: number; b: number; maxAct: number }>();
+  /** Per-cell render-colour override (0xRRGGBB) — debris fragments inherit the colour of
+   *  the cell they were torn from instead of their kind's profile colour. */
+  private readonly colorOverride = new Map<number, number>();
+  /** Live debris fragments: cpm id -> remaining time-to-live (seconds). They fade (alpha)
+   *  + slowly resorb over this window, then are killed. */
+  private readonly debris = new Map<number, number>();
+  /** Per-debris render alpha (0..255), recomputed from its TTL each tick. */
+  private readonly debrisAlpha = new Map<number, number>();
   private fxQueue: SnapshotFx[] = [];
   private controlChangedFlag = false;
 
@@ -223,6 +243,7 @@ export class WorldSim {
       ENDOTHELIAL_PROFILE, // 5 ENDOTHELIAL
       FIBROBLAST_PROFILE, // 6 FIBROBLAST
       DIGESTING_PROFILE, // 7 DIGEST
+      DEBRIS_PROFILE, // 8 DEBRIS
     ]);
     const center = Math.floor(cfg.fieldSize / 2);
     this.sim.originWX = -center * this.sim.scale;
@@ -233,7 +254,9 @@ export class WorldSim {
     this.signal = new CpmField(cfg.fieldSize);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
-      ignore: (id) => this.combat.isConsuming(id),
+      // Combat-owned prey AND inert debris are not judged/killed by the rules layer
+      // (debris is disconnected/odd-shaped by nature and has its own TTL lifecycle).
+      ignore: (id) => this.combat.isConsuming(id) || this.debris.has(id),
     });
 
     this.sim.setKindActive(MACROPHAGE_KIND, true);
@@ -242,6 +265,9 @@ export class WorldSim {
     this.sim.setTransient(ENDOTHELIAL_KIND);
     this.sim.setTransient(FIBROBLAST_KIND);
     this.sim.setTransient(MICROBE_KIND);
+    this.sim.setTransient(DEBRIS_KIND); // debris is in-bubble-only — drop it on stream-out
+
+
 
     this.behavior = new CpmCellBehavior(this.sim, {
       controlledId: () => this.controlledCellId,
@@ -292,16 +318,20 @@ export class WorldSim {
 
   // ---- rendering (pure; produces RGBA + a render snapshot) -----------------
 
-  /** Drop a cell's cached colour (death/leave/consume). */
+  /** Drop a cell's cached colour + any debris/override state (death/leave/consume). */
   private forgetColor(id: number): void {
     this.colorCache.delete(id);
+    this.colorOverride.delete(id);
+    this.debris.delete(id);
+    this.debrisAlpha.delete(id);
   }
 
   private channels(id: number): { r: number; g: number; b: number; maxAct: number } {
     let c = this.colorCache.get(id);
     if (!c) {
+      const override = this.colorOverride.get(id);
       const rec = this.sim.getCell(id);
-      const color = rec ? rec.profile.color : 0x888888;
+      const color = override ?? (rec ? rec.profile.color : 0x888888);
       c = {
         r: (color >> 16) & 0xff,
         g: (color >> 8) & 0xff,
@@ -321,6 +351,7 @@ export class WorldSim {
     const grid = this.sim.cpm.grid;
     const field = this.sim.field;
     const molField = this.signal;
+    const hasDebris = this.debrisAlpha.size > 0;
     for (const [[x, y], id] of grid.pixels()) {
       const c = this.channels(id);
       const a = this.sim.activityAtIndex(grid.p2i([x, y])) / c.maxAct;
@@ -342,7 +373,12 @@ export class WorldSim {
         g = Math.min(255, g + 210 * m) | 0;
         b = (b * (1 - 0.3 * m)) | 0;
       }
-      buf[y * field + x] = (0xff << 24) | (b << 16) | (g << 8) | r;
+      let alpha = 0xff;
+      if (hasDebris) {
+        const da = this.debrisAlpha.get(id);
+        if (da !== undefined) alpha = da;
+      }
+      buf[y * field + x] = (alpha << 24) | (b << 16) | (g << 8) | r;
     }
   }
 
@@ -539,6 +575,7 @@ export class WorldSim {
     this.prof.measure("field", () => this.signal.step(0.18, 0.03));
 
     this.prof.measure("rules", () => this.rules.update());
+    this.stepDebris(dtSec);
 
     this.census();
     this.prof.frame();
@@ -652,6 +689,131 @@ export class WorldSim {
       wc.y = wy;
       wc.energy = this.life.energyOf(cpmId);
     }
+  }
+
+  // ---- trogocytosis: rip a conserved, colour-carrying fragment ------------
+  // Tear a chunk off `targetId` toward a LATTICE point (the puller side). The chunk becomes
+  // fading debris that inherits the torn cell's colour (mass conserved — pixels moved, not
+  // deleted). If the tear drops the target below RIP_DEATH_FRACTION of its full size it
+  // LYSES: the remainder scatters into debris too (so a killed cell leaves persistent
+  // fragments with no hungry parent to reabsorb them). Returns the surgery result.
+  ripFragment(
+    targetId: number,
+    towardLX: number,
+    towardLY: number,
+    count: number
+  ): { fragmentId: number; moved: number; remaining: number } | null {
+    const rec = this.sim.getCell(targetId);
+    const fullVol = rec ? rec.profile.volume : 0;
+    const ch = this.channels(targetId);
+    const fxColor = (ch.r << 16) | (ch.g << 8) | ch.b;
+    const c0 = this.sim.centroidLattice(targetId);
+
+    const res = this.ripOnce(targetId, towardLX, towardLY, count);
+    if (!res) return null;
+
+    const lethal = res.remaining <= 0 || res.remaining < RIP_DEATH_FRACTION * fullVol;
+    if (lethal) {
+      // Scatter whatever's left into a second fragment so the cell visibly bursts apart,
+      // then finalize the death (the last tear empties + purges the target).
+      if (res.remaining > 0) {
+        this.ripOnce(targetId, towardLX, towardLY, res.remaining);
+        res.remaining = 0;
+      }
+      if (c0) {
+        const [wx, wy] = this.sim.latticeToWorld(c0.x, c0.y);
+        this.fxQueue.push({ kind: "death", wx, wy, radius: 24, color: fxColor });
+      }
+      this.deaths++;
+    }
+    return res;
+  }
+
+  /** One tear: move a chunk of `targetId` into a debris fragment and register it (colour
+   *  inherited from the torn cell, TTL fade). Purges the target's links if it's emptied. */
+  private ripOnce(
+    targetId: number,
+    towardLX: number,
+    towardLY: number,
+    count: number
+  ): { fragmentId: number; moved: number; remaining: number } | null {
+    const ch = this.channels(targetId);
+    const color = (ch.r << 16) | (ch.g << 8) | ch.b; // the torn cell's current render hue
+    const res = this.sim.tearChunkToward(targetId, towardLX, towardLY, count, DEBRIS_KIND);
+    if (!res) return null;
+    this.colorOverride.set(res.fragmentId, color);
+    this.debris.set(res.fragmentId, DEBRIS_TTL);
+    this.debrisAlpha.set(res.fragmentId, 0xff);
+    if (res.remaining <= 0) this.purgeCellLinks(targetId);
+    return res;
+  }
+
+  /** Drop all of a cell's world-sim bookkeeping (agent shadow link, composition, colour,
+   *  rules state). Shared by death + full-tear cleanup. Does NOT touch the CPM lattice. */
+  private purgeCellLinks(id: number): void {
+    const agentId = this.cpmToAgent.get(id);
+    if (agentId !== undefined) {
+      this.agentWorld.remove(agentId);
+      this.cpmToAgent.delete(id);
+    }
+    this.compositions.delete(id);
+    this.forgetColor(id);
+    this.rules.forget(id);
+  }
+
+  /** Age every debris fragment: fade its alpha from its TTL, kill it when the TTL ends.
+   *  Mass stays intact until removal (the fragment is SEEN to persist, then vanish). */
+  private stepDebris(dtSec: number): void {
+    if (this.debris.size === 0) return;
+    for (const [id, ttl] of [...this.debris]) {
+      if (!this.sim.getCell(id)) {
+        this.forgetColor(id); // already gone (streamed out / killed elsewhere)
+        continue;
+      }
+      const next = ttl - dtSec;
+      if (next <= 0) {
+        this.sim.killCell(id);
+        this.forgetColor(id);
+        continue;
+      }
+      this.debris.set(id, next);
+      // Hold full opacity for the first ~40% of life, then fade linearly to 0.
+      const f = Math.min(1, next / (DEBRIS_TTL * 0.6));
+      this.debrisAlpha.set(id, Math.round(0xff * f));
+    }
+  }
+
+  /** DEBUG (T1 gate): rip a chunk off the nearest non-player CPM cell toward the player,
+   *  and report pixel mass before/after so a test can assert conservation. */
+  debugRip(count = 30): {
+    targetId: number;
+    before: number;
+    moved: number;
+    remaining: number;
+    fragmentId: number;
+  } | null {
+    const pc = this.sim.centroidLattice(this.controlledCellId);
+    if (!pc) return null;
+    // Prefer the nearest MICROBE (the realistic trog prey); fall back to any non-player,
+    // non-debris cell so the hook still works if no microbe is in the bubble.
+    let best: number | null = null;
+    let bestD = Infinity;
+    let bestMicrobe: number | null = null;
+    let bestMicrobeD = Infinity;
+    for (const rec of this.sim.getCells()) {
+      if (rec.id === this.controlledCellId || rec.kind === DEBRIS_KIND) continue;
+      const c = this.sim.centroidLattice(rec.id);
+      if (!c) continue;
+      const d = Math.hypot(c.x - pc.x, c.y - pc.y);
+      if (d < bestD) { bestD = d; best = rec.id; }
+      if (rec.kind === MICROBE_KIND && d < bestMicrobeD) { bestMicrobeD = d; bestMicrobe = rec.id; }
+    }
+    best = bestMicrobe ?? best;
+    if (best === null) return null;
+    const before = this.sim.centroidLattice(best)?.pixels ?? 0;
+    const res = this.ripFragment(best, pc.x, pc.y, count);
+    if (!res) return null;
+    return { targetId: best, before, moved: res.moved, remaining: res.remaining, fragmentId: res.fragmentId };
   }
 
   // ---- death / control handoff --------------------------------------------
