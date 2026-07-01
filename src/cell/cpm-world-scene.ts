@@ -312,46 +312,6 @@ export class CpmWorldScene extends Phaser.Scene {
       g.fillCircle(k.wx, k.wy, k.r);
       g.strokeCircle(k.wx, k.wy, k.r);
     }
-
-    this.drawTendril(g, snap, s);
-  }
-
-  /** The trogocytosis tendril: a narrow line from the player to the grabbed cell, plus a
-   *  "stretch" segment from the grab point to the cursor that reddens + thickens as you pull
-   *  toward the rip threshold (taut 0..1). */
-  private drawTendril(g: Phaser.GameObjects.Graphics, snap: WorldSnapshot, s: number): void {
-    const td = snap.tendril;
-    if (!td) return;
-    const base = 0x8fe6ff;
-    const endX = td.grabWX ?? td.toWX;
-    const endY = td.grabWY ?? td.toWY;
-    // The reaching tendril (player -> grab/tip).
-    g.lineStyle(Math.max(1.5, s * 0.5), base, td.grabWX === null ? 0.5 : 0.9);
-    g.beginPath();
-    g.moveTo(td.fromWX, td.fromWY);
-    g.lineTo(endX, endY);
-    g.strokePath();
-    if (td.grabWX !== null && td.grabWY !== null) {
-      // Grab node on the cell.
-      g.fillStyle(0xffffff, 0.95);
-      g.fillCircle(td.grabWX, td.grabWY, Math.max(2, s * 0.6));
-      // Stretch segment grab -> cursor: cyan when slack, red when about to tear.
-      const h = td.taut;
-      const r = Math.round(0x8f + (0xff - 0x8f) * h);
-      const gg = Math.round(0xe6 * (1 - h) + 0x44 * h);
-      const b = Math.round(0xff * (1 - h) + 0x44 * h);
-      const col = (r << 16) | (gg << 8) | b;
-      g.lineStyle(Math.max(1, s * 0.4 * (1 + h)), col, 0.85);
-      g.beginPath();
-      g.moveTo(td.grabWX, td.grabWY);
-      g.lineTo(td.toWX, td.toWY);
-      g.strokePath();
-      g.fillStyle(col, 0.9);
-      g.fillCircle(td.toWX, td.toWY, Math.max(2, s * 0.5));
-    } else {
-      g.fillStyle(base, 0.5);
-      g.fillCircle(td.toWX, td.toWY, Math.max(2, s * 0.4));
-    }
   }
 
   private drawStructure(
