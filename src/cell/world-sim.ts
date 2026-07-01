@@ -68,21 +68,16 @@ const BUILDABLES = [
 
 const MICROBE_CAP = 110;
 const IMMUNE_CAP = 14;
-// How firmly a promoted wall cell is anchored to its home slot. FIRM so the cell holds
-// its position (can't be bulldozed out of the wall) and instead DEFORMS to let an
-// immune cell thread the junction — then springs back (re-seal). Bacteria can't thread
-// (unfavorable adhesion) and the firm anchor holds them out.
-const WALL_SEAL_LAMBDA = 80;
-// Max lining pixels the steering player carves per tick (active diapedesis). Gradual
-// so it oozes through (not an instant tunnel); the lining regrows behind it.
-const CARVE_BUDGET = 8;
-// Diapedesis is NON-LETHAL (real endothelium survives + reseals): never carve a lining
-// cell below this fraction of its target volume, keeping it above the rules' stress
-// (0.7) / death (0.4) thresholds. It squishes to make room, then regrows.
-const CARVE_MIN_VOL_FRAC = 0.78;
-// Ticks a carved lining cell stays exempt from structural-failure/damage death after
-// the last carve (covers the transient split-while-crossing + reconnect/regrow).
-const CARVE_IMMUNE_TICKS = 60;
+// How firmly a promoted wall cell is anchored to its home slot — the SNAP-BACK force
+// that pulls the floppy lining cells back to their original configuration after an
+// immune cell transmigrates through. Firm enough to restore the arrangement; the immune
+// cell's strong Act still pushes through regardless (Artistoo diapedesis physics).
+const WALL_SEAL_LAMBDA = 110;
+// Lattice radius around the steering player within which lining cells get
+// transmigration-immunity (exempt from death while being crossed), + how long it
+// lingers so they reconnect/regrow after the player passes.
+const XMIGRATE_R = 22;
+const XMIGRATE_TICKS = 60;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -205,9 +200,10 @@ export class WorldSim {
    *  agentWorld the whole time (never destroyed by promotion); this just records which
    *  CPM cell is currently shadowing it so we can mirror it + release it back. */
   readonly cpmToAgent = new Map<number, number>();
-  /** Lining cell id -> ticks remaining of carve-immunity (exempt from structural-
-   *  failure/damage death while the immune cell is transmigrating through it). */
-  private readonly carvedTTL = new Map<number, number>();
+  /** Lining cell id -> ticks of transmigration-immunity: a lining cell the immune cell
+   *  is currently crossing is exempt from structural-failure/damage death (crossing
+   *  transiently splits it; it reconnects + regrows after). Real diapedesis is non-lethal. */
+  private readonly xmigrateTTL = new Map<number, number>();
 
   controlledCellId = 0;
   deaths = 0;
@@ -251,11 +247,9 @@ export class WorldSim {
     this.signal = new CpmField(cfg.fieldSize);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
-      // A cell being digested (combat) OR actively carved for diapedesis is mid-
-      // maneuver — don't apply structural-failure/damage death to it. Diapedesis is
-      // NON-LETHAL: the lining cell transiently splits as the immune cell crosses, then
-      // reconnects + regrows behind it.
-      ignore: (id) => this.combat.isConsuming(id) || this.carvedTTL.has(id),
+      // Digesting (combat) OR being transmigrated through: don't apply death — both are
+      // transient maneuvers the cell recovers from.
+      ignore: (id) => this.combat.isConsuming(id) || this.xmigrateTTL.has(id),
     });
 
     this.sim.setKindActive(MACROPHAGE_KIND, true);
@@ -268,9 +262,13 @@ export class WorldSim {
     // happily replaces an endo↔endo junction with two immune↔endo interfaces and
     // squeezes through. A bacterium with an EXPENSIVE endo interface can't — inserting
     // would raise energy, so the cohesive lining (+ reseal force) blocks it.
-    const ENDO_COHESION = 7;  // endo↔endo junction strength (sheet holds together)
-    const IMMUNE_ENDO = 0;    // maximally favorable -> immune transmigrates EASILY
-    const MICROBE_ENDO = 45;  // unfavorable -> bacteria can't breach the lining
+    // Artistoo EpidermisWithTCells adhesion: the immune↔lining boundary is EXPENSIVE
+    // (J high), so the immune cell doesn't stick/spread on the lining — its strong Act
+    // drives it THROUGH to the tissue on the far side. The lining is cohesive (J low)
+    // and volume-filling, so bacteria (which lack the Act) can't push through.
+    const ENDO_COHESION = 20; // endo↔endo (Artistoo epi↔epi = 20)
+    const IMMUNE_ENDO = 100;  // endo↔immune (Artistoo epi↔Tcell = 100): unfavorable
+    const MICROBE_ENDO = 100; // bacteria: same expensive interface, and no Act -> blocked
     this.sim.setKindAdhesion(ENDOTHELIAL_KIND, ENDOTHELIAL_KIND, ENDO_COHESION);
     this.sim.setKindAdhesion(FIBROBLAST_KIND, FIBROBLAST_KIND, ENDO_COHESION);
     for (const immune of [CONTROLLED_KIND, MACROPHAGE_KIND]) {
@@ -488,12 +486,7 @@ export class WorldSim {
       this.bubbleManagerStep(centroids);
       this.mirrorShadows(centroids);
       this.resealWalls(centroids);
-      if (input.steering) this.carveDiapedesis(centroids, input);
-      // Age out carve-immunity so a cell resumes normal rules once the player passes.
-      for (const [id, t] of this.carvedTTL) {
-        if (t <= 1) this.carvedTTL.delete(id);
-        else this.carvedTTL.set(id, t - 1);
-      }
+      this.protectTransmigrated(centroids, input.steering);
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
@@ -708,48 +701,37 @@ export class WorldSim {
     }
   }
 
-  /** The lining re-seals itself: every promoted wall cell (endothelial/fibroblast) is
-   *  gently attracted back to its home slot (its durable agent position, which we keep
-   *  pinned at spawn). Closes the gaps the slot overlap leaves, and — the headline —
-   *  re-closes the lining BEHIND the player after it squeezes between two cells
-   *  (biologically the endothelial cell-cell junctions re-forming). The lambda is gentle
-   *  enough that a protruding cell CAN force its way through (diapedesis), but the wall
-   *  knits back together once it passes. */
-  /** ACTIVE diapedesis: while the player steers, carve a short corridor through the
-   *  lining cell(s) directly in its path, so the immune cell crosses at full crawl
-   *  speed instead of inching against a volume-preserving wall. The lining regrows
-   *  behind it (re-seal). Only the player carves (input-driven) → bacteria, which never
-   *  carve and have unfavorable adhesion, stay blocked. Capped per tick so it's a
-   *  gradual ooze-through, not an instant tunnel. */
-  private carveDiapedesis(
+  /** The lining re-seals + SNAPS BACK: every promoted wall cell (endothelial/fibroblast)
+   *  is anchored to its home slot (its durable agent position, pinned at spawn). The
+   *  FLOPPY cells (no perimeter constraint) deform to admit a transmigrating immune cell
+   *  and are pulled back to their original configuration once it passes — the endothelial
+   *  junctions re-forming. Bacteria (unfavorable adhesion, no strong Act) can't push
+   *  through the cohesive, home-anchored sheet. */
+  /** Grant transmigration-immunity to lining cells the steering immune cell is crossing
+   *  (within XMIGRATE_R of its centroid), so they don't die when the crossing transiently
+   *  splits them; immunity lingers XMIGRATE_TICKS after so they reconnect + regrow. */
+  private protectTransmigrated(
     centroids: Map<number, { x: number; y: number; pixels: number }>,
-    input: WorldInput
+    steering: boolean
   ): void {
-    const pc = centroids.get(this.controlledCellId);
-    if (!pc) return;
-    const [px, py] = this.sim.worldToLattice(input.pointerWX, input.pointerWY);
-    let dx = px - pc.x;
-    let dy = py - pc.y;
-    const m = Math.hypot(dx, dy);
-    if (m < 1e-3) return;
-    dx /= m;
-    dy /= m;
-    const r = Math.sqrt(Math.max(1, pc.pixels) / Math.PI); // player radius (lattice)
-    const perpX = -dy;
-    const perpY = dx;
-    const KINDS = [ENDOTHELIAL_KIND, FIBROBLAST_KIND];
-    let carved = 0;
-    // A thin arc just beyond the player's leading edge, across its width.
-    for (let along = r - 1; along < r + 5 && carved < CARVE_BUDGET; along += 1.2) {
-      for (let lat = -r * 0.75; lat <= r * 0.75 && carved < CARVE_BUDGET; lat += 1.2) {
-        const x = Math.round(pc.x + dx * along + perpX * lat);
-        const y = Math.round(pc.y + dy * along + perpY * lat);
-        const owner = this.sim.ownerAtLattice(x, y);
-        if (this.sim.carvePixel(x, y, KINDS, CARVE_MIN_VOL_FRAC)) {
-          carved++;
-          this.carvedTTL.set(owner, CARVE_IMMUNE_TICKS); // exempt from death while crossed
+    if (steering) {
+      const pc = centroids.get(this.controlledCellId);
+      if (pc) {
+        const r2 = XMIGRATE_R * XMIGRATE_R;
+        for (const [cpmId] of this.cpmToAgent) {
+          const rec = this.sim.getCell(cpmId);
+          if (!rec || (rec.kind !== ENDOTHELIAL_KIND && rec.kind !== FIBROBLAST_KIND)) continue;
+          const c = centroids.get(cpmId);
+          if (!c) continue;
+          const dx = c.x - pc.x;
+          const dy = c.y - pc.y;
+          if (dx * dx + dy * dy < r2) this.xmigrateTTL.set(cpmId, XMIGRATE_TICKS);
         }
       }
+    }
+    for (const [id, t] of this.xmigrateTTL) {
+      if (t <= 1) this.xmigrateTTL.delete(id);
+      else this.xmigrateTTL.set(id, t - 1);
     }
   }
 

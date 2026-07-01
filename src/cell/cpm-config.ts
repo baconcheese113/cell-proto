@@ -221,8 +221,11 @@ export const ENDOTHELIAL_PROFILE: CpmCellProfile = {
   color: 0x8a6f9e,
   volume: 735,
   lambdaV: 50,
-  perimeter: 294,
-  lambdaP: 2,
+  // FLOPPY (Artistoo EpidermisWithTCells recipe): no perimeter constraint, so the cell
+  // deforms freely to admit a transmigrating immune cell, then springs back to its
+  // volume/shape (natural snap-back). Cohesion + volume still seal it against bacteria.
+  perimeter: 0,
+  lambdaP: 0,
   maxAct: 0,
   lambdaAct: 0,
   lambdaActRest: 0,
@@ -237,12 +240,11 @@ export const ENDOTHELIAL_PROFILE: CpmCellProfile = {
 export const FIBROBLAST_PROFILE: CpmCellProfile = {
   name: "fibroblast",
   color: 0x5d7d6a,
-  // Sized comparably to the endothelium so the tissue layer reads as a wall, not tiny
-  // dots behind big cells (was 460 — looked out of place next to the 1500 lining).
   volume: 539,
   lambdaV: 50,
-  perimeter: 252,
-  lambdaP: 2,
+  // Floppy like the endothelium (Artistoo epidermis recipe) — deforms + snaps back.
+  perimeter: 0,
+  lambdaP: 0,
   maxAct: 0,
   lambdaAct: 0,
   lambdaActRest: 0,
