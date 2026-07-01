@@ -264,8 +264,14 @@ export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
   temperature: 16,
   // 3 (was 2): movement is sim-rate-bound, so more MCS/frame = snappier crawl per
   // real second. Affordable now that cpm.step is cheap (post-connectivity-removal).
+  // 0.09 (was 0.22): re-center the bubble on the player MORE eagerly. At 0.22 the player
+  // could drift ~344 world px off the bubble centre before a recenter, dragging the
+  // promote/demote boundary to only ~244px ahead — INSIDE the view — so cells popped from
+  // agent-disc to full CPM right in front of you as you moved. At 0.09 the drift caps at
+  // ~140px, keeping the boundary ~450px ahead (off-screen). Recenters are cheap (~0.3-1.3ms,
+  // sub-pixel seam) so doing them more often is a good trade for no leading-edge pop-in.
   stepsPerFrame: 3,
-  recenterMargin: 0.22,
+  recenterMargin: 0.09,
   seed: 1,
 };
 
