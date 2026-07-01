@@ -22,23 +22,32 @@ export interface TrogOptions {
   /** Perform one tear (world-sim's ripFragment): move a chunk of `targetId`'s membrane
    *  nearest (towardLX,towardLY) into conserved, fading debris. */
   rip: (targetId: number, towardLX: number, towardLY: number, count: number) => void;
+  /** Called when a prey is first GRABBED — world-sim converts it to the immobile,
+   *  non-healing GRIPPED kind so it's held and can actually be rent apart. */
+  onGrab: (targetId: number) => void;
+  /** Called when a still-living prey is RELEASED (grip let go) — world-sim restores it. */
+  onRelease: (targetId: number) => void;
 }
 
 const REACH = 48; // lattice px the protrusion reaches toward the cursor (a short pseudopod)
 const TOUCH_MARGIN = 4; // lattice px slack on the membrane-contact test for grabbing
 const EXTEND_LAMBDA = 1.7; // how hard the membrane is driven toward the cursor while held
-const ADHERE_J = 5; // very sticky attacker<->prey while gripping (mirrors engulf)
+const ADHERE_J = 12; // sticky attacker<->prey while gripping — holds it, but NOT so low the
+                     // player wraps/absorbs it (engulf uses ~5); the prey stays a distinct blob
 const DEFAULT_J = 22; // restored when not gripping
-const GRAB_PULL = 0.45; // reel the gripped cell onto the tentacle (fraction of its steerLambda)
+const GRAB_PULL = 0.3; // reel the gripped cell onto the tentacle (too hard crushes it, too soft loses it)
 const GRAB_SETTLE_MS = 160; // GRAB first: no tearing for this long after latching (so a mere
                             // touch doesn't insta-rip — you feel the grab land before you rend)
 const TEAR_SPEED = 360; // cursor world px/sec while gripping that counts as THRASHING (tearing)
 const TEAR_INTERVAL_MS = 150; // one chunk torn per this interval while thrashing
-const RIP_COUNT = 20; // chunk per tear — a few thrashes rend a small cell apart (dynamic)
+const RIP_COUNT = 14; // chunk per tear — several thrashes rend a small cell apart (dynamic)
 
 export class CpmTrogocytosis {
   private grabbedId: number | null = null;
   private grabbedKind = 0;
+  private holdTarget = 0; // the size the grip HOLDS the prey at — set at grab, lowered ONLY
+                          // by tears (never follows a momentary squeeze down), so the turgor
+                          // resists crushing yet the prey can't heal back up between tears
   private settleMs = 0; // grab-settle countdown (no tearing until <= 0)
   private tearCdMs = 0; // inter-tear interval countdown
   private wasHolding = false;
@@ -78,18 +87,26 @@ export class CpmTrogocytosis {
     // GRAB: latch onto a hostile cell the membrane is actually TOUCHING (not merely near),
     // starting a grab-settle so the touch itself doesn't tear.
     if (this.grabbedId === null || !this.sim.getCell(this.grabbedId) || !this.opts.isHostile(this.grabbedId)) {
+      if (this.grabbedId !== null && this.sim.getCell(this.grabbedId)) this.opts.onRelease(this.grabbedId);
       this.dropAdhesion();
       this.grabbedId = this.findTouching(pc.x, pc.y, this.radiusOf(pc.pixels));
       if (this.grabbedId !== null) {
+        this.opts.onGrab(this.grabbedId); // -> GRIPPED kind (immobile, non-healing)
         this.grabbedKind = this.sim.getCell(this.grabbedId)?.kind ?? 0;
         if (this.grabbedKind) this.sim.setKindAdhesion(this.opts.playerKind, this.grabbedKind, ADHERE_J);
         this.settleMs = GRAB_SETTLE_MS;
+        const gc = this.sim.centroidLattice(this.grabbedId);
+        this.holdTarget = gc ? gc.pixels : 69; // hold it at its grab-time size
       }
     }
     if (this.grabbedId === null) return;
     this.status = "gripping";
 
-    // HOLD: reel the gripped cell onto the tentacle (this runs AFTER behavior, so it
+    // HOLD its size: keep the gripped kind's volume target at holdTarget (grab-time size,
+    // lowered only by tears) so the turgor RESISTS being crushed but never heals back up.
+    this.sim.setKindVolumeTarget(this.grabbedKind, this.holdTarget);
+
+    // HOLD in place: reel the gripped cell onto the tentacle (runs AFTER behavior, so it
     // overrides the prey's flee — it's caught and dragged with you).
     this.sim.steerCell(this.grabbedId, pc.x, pc.y, GRAB_PULL);
     if (this.settleMs > 0) this.settleMs -= dtMs;
@@ -104,6 +121,10 @@ export class CpmTrogocytosis {
       if (!this.sim.getCell(this.grabbedId)) {
         this.dropAdhesion();
         this.grabbedId = null;
+      } else {
+        // Lower the hold target to the POST-tear size so the tear STICKS (no regrow).
+        const after = this.sim.centroidLattice(this.grabbedId);
+        if (after) this.holdTarget = Math.min(this.holdTarget, after.pixels);
       }
     }
   }
@@ -147,6 +168,9 @@ export class CpmTrogocytosis {
   }
 
   private release(): void {
+    if (this.grabbedId !== null && this.sim.getCell(this.grabbedId)) {
+      this.opts.onRelease(this.grabbedId); // a living prey recovers when you let go
+    }
     this.dropAdhesion();
     this.grabbedId = null;
     this.settleMs = 0;

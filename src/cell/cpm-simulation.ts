@@ -324,6 +324,13 @@ export class CpmSimulation {
     this.conf.P[kind] = value;
   }
 
+  /** Live-set a kind's VOLUME-constraint target (conf.V). Used to HOLD a gripped prey at
+   *  its CURRENT size — set each tick to its live pixel count so, with a moderate lambdaV,
+   *  it resists being crushed by the tentacle's adhesion yet never regrows (heals) either. */
+  setKindVolumeTarget(kind: number, value: number): void {
+    (this.cpm.conf as unknown as { V: number[] }).V[kind] = value;
+  }
+
   /** Softly bias a single compartment toward a lattice point (cytoskeletal
    *  anchoring via the attraction constraint — a smooth force, not pixel surgery,
    *  so it never disrupts the host's topology). `lambda` sets how firmly it's held;

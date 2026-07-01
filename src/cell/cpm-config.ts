@@ -109,6 +109,32 @@ export const DIGESTING_PROFILE: CpmCellProfile = {
   jWithOther: 20,
 };
 
+/** A GRIPPED prey: while the player's tentacle holds it, the cell is converted to this so
+ *  it can actually be rent apart — no volume drive (lambdaV 0) so it CANNOT heal/regrow
+ *  between tears, and no protrusion (lambdaAct 0) so it can't flee (it's held). Still has a
+ *  steerLambda so the tentacle can reel it onto the player. `volume` is only the reference
+ *  the lysis fraction reads (kept ~microbe-sized). Recoloured per-cell to keep the prey's
+ *  own hue (colorOverride) so it still looks like the bacterium you grabbed. */
+export const GRIPPED_PROFILE: CpmCellProfile = {
+  name: "gripped",
+  color: 0xffb0b0,
+  // `volume` is the reference the lysis fraction reads. The ACTUAL volume-constraint target
+  // (conf.V) is retargeted EVERY tick to the cell's current pixel count (setKindVolumeTarget)
+  // so, with this moderate lambdaV, the prey HOLDS its current size — it resists being
+  // crushed by the tentacle's adhesion but never regrows (heals) between tears.
+  volume: 69,
+  lambdaV: 42, // firm turgor so the grip HOLDS its size (doesn't crush it) between tears
+  perimeter: 74,
+  lambdaP: 2,
+  maxAct: 0,
+  lambdaAct: 0,
+  lambdaActRest: 0,
+  lambdaConnectivity: 0,
+  steerLambda: 160, // the tentacle reels it in
+  jWithMedium: 16,
+  jWithOther: 14, // held against the player, but not so sticky it gets wrapped/absorbed
+};
+
 /** DEBRIS: a ripped-off membrane fragment. A real CPM cell (so its mass is conserved
  *  on the lattice — the pixels are MOVED here from the torn cell, not deleted) but
  *  totally inert: no protrusion, steering, volume/perimeter drive or cohesion, so it

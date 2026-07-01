@@ -31,6 +31,7 @@ import {
   ENDOTHELIAL_PROFILE,
   FIBROBLAST_PROFILE,
   DIGESTING_PROFILE,
+  GRIPPED_PROFILE,
   DEBRIS_PROFILE,
 } from "./cpm-config";
 
@@ -43,6 +44,7 @@ export const ENDOTHELIAL_KIND = 5; // vessel lining
 export const FIBROBLAST_KIND = 6; // tissue beyond
 export const DIGEST_KIND = 7;
 export const DEBRIS_KIND = 8; // ripped-off membrane fragment (inert, faded + resorbed)
+export const GRIPPED_KIND = 9; // prey held by the tentacle (immobile, can't heal — rendable)
 
 // DEV: freeze the player-anchored streaming bubble (study aid). For play it's false so
 // the camera follows the player; the worldsim streaming branch keys off it too.
@@ -77,11 +79,10 @@ const IMMUNE_CAP = 14;
  *  removed. It holds full opacity for the first ~40%, then fades to nothing. */
 const DEBRIS_TTL = 4;
 
-/** Membrane-integrity death: a cell torn below this fraction of its kind's full volume
- *  LYSES — the rest of its body scatters into debris. Sized so a typical rip (a chunk
- *  large relative to a small cell) is lethal in one go; only large cells survive a rip.
- *  A survivor is left UNDER its volume target, so it slowly regrows (heals) over time. */
-const RIP_DEATH_FRACTION = 0.6;
+/** Membrane-integrity death: a cell torn below this fraction of its full volume LYSES — the
+ *  rest scatters into debris. Low, so a gripped prey is RENT over several tears (grab, then
+ *  thrash it down) rather than popping on the first hit — the Carrion-style rend. */
+const RIP_DEATH_FRACTION = 0.32;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -241,6 +242,9 @@ export class WorldSim {
   /** Live debris fragments: cpm id -> remaining time-to-live (seconds). They fade (alpha)
    *  + slowly resorb over this window, then are killed. */
   private readonly debris = new Map<number, number>();
+  /** Prey currently GRIPPED by the tentacle: cpm id -> its original kind (to restore on
+   *  release). While gripped it's the immobile, non-healing GRIPPED_KIND so tears rend it. */
+  private readonly grippedOriginalKind = new Map<number, number>();
   /** Per-debris render alpha (0..255), recomputed from its TTL each tick. */
   private readonly debrisAlpha = new Map<number, number>();
   private fxQueue: SnapshotFx[] = [];
@@ -267,6 +271,7 @@ export class WorldSim {
       FIBROBLAST_PROFILE, // 6 FIBROBLAST
       DIGESTING_PROFILE, // 7 DIGEST
       DEBRIS_PROFILE, // 8 DEBRIS
+      GRIPPED_PROFILE, // 9 GRIPPED
     ], CONTROLLED_KIND); // the player plows through debris; it's frozen vs everything else
     const center = Math.floor(cfg.fieldSize / 2);
     this.sim.originWX = -center * this.sim.scale;
@@ -319,6 +324,8 @@ export class WorldSim {
         id !== this.controlledCellId &&
         hostile(this.teamOf(id), this.teamOf(this.controlledCellId)),
       rip: (targetId, lx, ly, count) => this.ripFragment(targetId, lx, ly, count),
+      onGrab: (id) => this.gripCell(id),
+      onRelease: (id) => this.ungripCell(id),
     });
 
     this.controlledCellId = this.spawnPreset("macrophage", center, center, true)!;
@@ -820,9 +827,36 @@ export class WorldSim {
     return res;
   }
 
+  /** Grab: convert a prey to the immobile, non-healing GRIPPED kind so the tentacle can
+   *  hold it and tears actually rend it (a live prey would flee + regrow between tears).
+   *  Keeps its original colour (via override) so it still looks like the bacterium. */
+  private gripCell(id: number): void {
+    const rec = this.sim.getCell(id);
+    if (!rec || rec.kind === GRIPPED_KIND) return;
+    this.grippedOriginalKind.set(id, rec.kind);
+    const ch = this.channels(id);
+    this.colorOverride.set(id, (ch.r << 16) | (ch.g << 8) | ch.b);
+    this.colorCache.delete(id); // recompute against the new profile (maxAct) + override colour
+    this.sim.setCellKind(id, GRIPPED_KIND);
+  }
+
+  /** Release: restore a still-living gripped prey to its original kind (it recovers + flees
+   *  again). A prey that died while gripped is cleaned up by onCellDeath/purgeCellLinks. */
+  private ungripCell(id: number): void {
+    const orig = this.grippedOriginalKind.get(id);
+    if (orig === undefined) return;
+    this.grippedOriginalKind.delete(id);
+    if (this.sim.getCell(id)) {
+      this.sim.setCellKind(id, orig);
+      this.colorCache.delete(id);
+      this.colorOverride.delete(id);
+    }
+  }
+
   /** Drop all of a cell's world-sim bookkeeping (agent shadow link, composition, colour,
    *  rules state). Shared by death + full-tear cleanup. Does NOT touch the CPM lattice. */
   private purgeCellLinks(id: number): void {
+    this.grippedOriginalKind.delete(id);
     const agentId = this.cpmToAgent.get(id);
     if (agentId !== undefined) {
       this.agentWorld.remove(agentId);
@@ -909,6 +943,7 @@ export class WorldSim {
     this.sim.killCell(id);
     this.forgetColor(id);
     this.compositions.delete(id);
+    this.grippedOriginalKind.delete(id);
     this.deaths++;
     console.log(`💀 cell ${id} died (${reason})${wasControlled ? " — CONTROLLED" : ""}`);
     if (wasControlled) this.handoffControl();
