@@ -38,7 +38,9 @@ const DEFAULT_J = 22; // restored when not gripping
 const GRAB_PULL = 0.3; // reel the gripped cell onto the tentacle (too hard crushes it, too soft loses it)
 const GRAB_SETTLE_MS = 160; // GRAB first: no tearing for this long after latching (so a mere
                             // touch doesn't insta-rip — you feel the grab land before you rend)
-const TEAR_SPEED = 360; // cursor world px/sec while gripping that counts as THRASHING (tearing)
+const TEAR_SPEED = 500; // cursor SCREEN px/sec while gripping that counts as THRASHING. Screen
+                        // (not world) space so merely HOLDING while the camera drifts doesn't
+                        // tear — only real mouse motion does. "Doesn't have to be fast."
 const TEAR_INTERVAL_MS = 150; // one chunk torn per this interval while thrashing
 const RIP_COUNT = 14; // chunk per tear — several thrashes rend a small cell apart (dynamic)
 

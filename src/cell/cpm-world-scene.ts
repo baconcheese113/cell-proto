@@ -34,10 +34,12 @@ export class CpmWorldScene extends Phaser.Scene {
   private renderFps = 0;
   private hzTick0 = 0;
   private workerHz = 0;
-  // Previous cursor world position, to derive pointer SPEED (world px/sec) for the
-  // trogocytosis rip flick.
-  private prevPointerWX: number | undefined;
-  private prevPointerWY: number | undefined;
+  // Previous cursor SCREEN position, to derive pointer SPEED (screen px/sec) for the
+  // trogocytosis thrash-to-tear. MUST be screen space, not world: the camera follows the
+  // player, so a world-space cursor "moves" whenever the player drifts even if the mouse is
+  // still — which would tear continuously while merely holding. Screen space = real mouse motion.
+  private prevPointerX: number | undefined;
+  private prevPointerY: number | undefined;
 
   create(): void {
     this.makeBackground();
@@ -137,14 +139,15 @@ export class CpmWorldScene extends Phaser.Scene {
     const pointer = this.input.activePointer;
     const cam = this.cameras.main;
 
-    // Cursor speed (world px/sec) for the trogocytosis rip flick.
+    // Cursor speed in SCREEN px/sec (real mouse motion, camera-independent) for the
+    // trogocytosis thrash-to-tear.
     const dtSec = delta > 0 ? delta / 1000 : 1 / 60;
     let pointerSpeed = 0;
-    if (this.prevPointerWX !== undefined && this.prevPointerWY !== undefined) {
-      pointerSpeed = Math.hypot(pointer.worldX - this.prevPointerWX, pointer.worldY - this.prevPointerWY) / dtSec;
+    if (this.prevPointerX !== undefined && this.prevPointerY !== undefined) {
+      pointerSpeed = Math.hypot(pointer.x - this.prevPointerX, pointer.y - this.prevPointerY) / dtSec;
     }
-    this.prevPointerWX = pointer.worldX;
-    this.prevPointerWY = pointer.worldY;
+    this.prevPointerX = pointer.x;
+    this.prevPointerY = pointer.y;
 
     this.sim.setInput({
       steering: pointer.leftButtonDown(),
