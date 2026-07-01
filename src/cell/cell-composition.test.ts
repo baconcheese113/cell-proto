@@ -20,6 +20,19 @@ test("capabilities derive from the components present", () => {
   assert.ok(caps.chemotaxis > 0);
 });
 
+test("the tearing-receptor grants trogocytosis and nothing else", () => {
+  const caps = deriveCapabilities([{ kind: "tearing-receptor", strength: 1.2 }]);
+  assert.ok(caps.tearing > 0);
+  assert.equal(caps.phagocytic, 0); // a ripper is not (by itself) an engulfer
+  assert.equal(caps.motility, 0);
+  // Abilities are orthogonal components: a cell can be built for BOTH verbs.
+  const both = deriveCapabilities([
+    { kind: "phagocytic-receptor", strength: 1 },
+    { kind: "tearing-receptor", strength: 1 },
+  ]);
+  assert.ok(both.phagocytic > 0 && both.tearing > 0);
+});
+
 test("a sessile cell (no motility components) cannot move", () => {
   const caps = deriveCapabilities([
     { kind: "nucleus", strength: 1 },

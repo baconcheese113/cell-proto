@@ -8,6 +8,17 @@
 
 import type { Agent } from "./cpm-cell-behavior";
 
+/** Neutral allegiance — never attacks and is never attacked (vessel lining, tissue,
+ *  debris). Other team ids are mutually hostile. */
+export const NEUTRAL_TEAM = 0;
+
+/** ALLEGIANCE predicate: two cells are hostile iff they're on DIFFERENT, non-neutral
+ *  teams. Orthogonal to composition (abilities) — a team can field mixed ability-cells.
+ *  Shared by combat target selection (engulf/trog) and agent behavior (who to chase). */
+export function hostile(teamA: number, teamB: number): boolean {
+  return teamA !== teamB && teamA !== NEUTRAL_TEAM && teamB !== NEUTRAL_TEAM;
+}
+
 /** Below this motility a cell is sessile (vessel wall / tissue) — never prey. */
 export const MOTILE_PREY_MIN = 0.1;
 /** Prey must be meaningfully less predatory than its hunter. */
@@ -121,6 +132,44 @@ export function stepVelocity(
 /** A cell as feeding needs it: an `Agent` (id/pos/vol/phago/motility) plus a radius
  *  (derived from area) for the touch test. */
 export type FeedAgent = Agent & { r: number };
+
+/** A cell as TEARING (off-lattice trogocytosis) needs it: position + touch radius +
+ *  allegiance + tearing power. The agent-tier shadow of the CPM rip — same rule (a
+ *  tearing cell adjacent to a hostile cell tears it), without the deformable detail. */
+export type TearAgent = {
+  id: number;
+  x: number;
+  y: number;
+  r: number;
+  team: number;
+  tearing: number;
+};
+
+/** Attacker→target tears this tick: each cell with tearing power bites at most one
+ *  touching HOSTILE cell. Same spatial-hash structure as `feedingEvents`; the orchestrator
+ *  applies the mass damage / heal. Pure. */
+export function tearingEvents(
+  agents: readonly TearAgent[],
+  touchFactor = 0.95,
+  cellSize = 64
+): Array<{ attacker: number; target: number }> {
+  const out: Array<{ attacker: number; target: number }> = [];
+  const hash = new SpatialHash(cellSize);
+  hash.rebuild(agents);
+  for (const a of agents) {
+    if (a.tearing <= 0) continue;
+    for (const qi of hash.queryNeighborhood(a.x, a.y)) {
+      const t = agents[qi];
+      if (t.id === a.id) continue;
+      if (!hostile(a.team, t.team)) continue;
+      const d = Math.hypot(t.x - a.x, t.y - a.y);
+      if (d > (a.r + t.r) * touchFactor) continue;
+      out.push({ attacker: a.id, target: t.id });
+      break; // one tear per attacker per tick
+    }
+  }
+  return out;
+}
 
 /** Predator→prey bites this tick: each predator bites at most one touching edible
  *  prey. Uses a spatial hash internally so it stays ~O(n) at thousands of agents

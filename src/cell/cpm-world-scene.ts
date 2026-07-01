@@ -34,6 +34,10 @@ export class CpmWorldScene extends Phaser.Scene {
   private renderFps = 0;
   private hzTick0 = 0;
   private workerHz = 0;
+  // Previous cursor world position, to derive pointer SPEED (world px/sec) for the
+  // trogocytosis rip flick.
+  private prevPointerWX: number | undefined;
+  private prevPointerWY: number | undefined;
 
   create(): void {
     this.makeBackground();
@@ -119,20 +123,35 @@ export class CpmWorldScene extends Phaser.Scene {
         },
         tear: (id?: number, axis: "h" | "v" = "h", halfWidth = 1) =>
           ws.sim.tearCell(id ?? ws.controlledCellId, axis, halfWidth),
+        // T1 gate: rip a conserved fragment off the nearest cell; returns mass before +
+        // moved + remaining (assert before === moved + remaining) and the fragment id.
+        rip: (count = 30) => ws.debugRip(count),
+        // T2 gate: inspect/drive the trogocytosis pseudopod + flick control.
+        trog: () => ({ status: ws.trog.status, latched: ws.trog.latched }),
       });
     }
     (window as unknown as { __cpm?: unknown }).__cpm = base;
   }
 
-  override update(): void {
+  override update(_time: number, delta: number): void {
     const pointer = this.input.activePointer;
     const cam = this.cameras.main;
+
+    // Cursor speed (world px/sec) for the trogocytosis rip flick.
+    const dtSec = delta > 0 ? delta / 1000 : 1 / 60;
+    let pointerSpeed = 0;
+    if (this.prevPointerWX !== undefined && this.prevPointerWY !== undefined) {
+      pointerSpeed = Math.hypot(pointer.worldX - this.prevPointerWX, pointer.worldY - this.prevPointerWY) / dtSec;
+    }
+    this.prevPointerWX = pointer.worldX;
+    this.prevPointerWY = pointer.worldY;
 
     this.sim.setInput({
       steering: pointer.leftButtonDown(),
       pointerWX: pointer.worldX,
       pointerWY: pointer.worldY,
       engulf: pointer.rightButtonDown(),
+      pointerSpeed,
       viewHalfDiag: Math.hypot(cam.width / cam.zoom, cam.height / cam.zoom) / 2,
     });
 
@@ -201,7 +220,7 @@ export class CpmWorldScene extends Phaser.Scene {
   private updateHud(snap: WorldSnapshot): void {
     const s = snap.stats;
     const text =
-      `Vessel world — ${s.combatStatus}   LMB steer · RMB engulf   speed [ / ] : ${snap.mcsPerSec}\n` +
+      `Vessel world — ${s.combatStatus}   LMB steer · RMB grab (rip/engulf)   speed [ / ] : ${snap.mcsPerSec}\n` +
       `you: hp ${s.hp} energy ${s.energy}   macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`;
     if (text !== this.lastHudText) {
       this.hud.setText(text);
@@ -279,6 +298,19 @@ export class CpmWorldScene extends Phaser.Scene {
         g.fillStyle(0x5b2f9e, 0.9);
         g.fillCircle(big.cx, big.cy, big.restRadiusW);
       }
+    }
+
+    // Team NUCLEUS DOTS: a small allegiance-coloured dot at each non-neutral cell's centre
+    // (both agent discs and CPM shadows), with a dark rim for legibility. Drawn here (depth
+    // 12) so it sits above the lattice + agent discs. Culled to the view.
+    const v = this.cameras.main.worldView;
+    const mm = 24;
+    for (const k of snap.markers) {
+      if (k.wx < v.x - mm || k.wx > v.right + mm || k.wy < v.y - mm || k.wy > v.bottom + mm) continue;
+      g.lineStyle(Math.max(1, s * 0.25), 0x0a0f14, 0.85);
+      g.fillStyle(k.color, 1);
+      g.fillCircle(k.wx, k.wy, k.r);
+      g.strokeCircle(k.wx, k.wy, k.r);
     }
   }
 

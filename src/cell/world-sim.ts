@@ -10,6 +10,7 @@ import { CpmSimulation } from "./cpm-simulation";
 import { CpmRules, type DeathReason } from "./cpm-rules";
 import { CpmCellBehavior } from "./cpm-cell-behavior";
 import { CpmCombat } from "./cpm-combat";
+import { CpmTrogocytosis } from "./cpm-trogocytosis";
 import { CpmField } from "./cpm-field";
 import { CpmDeformGrid } from "./cpm-deform-grid";
 import { CpmBigOrganelles } from "./cpm-big-organelles";
@@ -19,7 +20,8 @@ import { CellComposition } from "./cell-composition";
 import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import { simStepsFor } from "./sim-clock";
-import { AgentWorld } from "./agent-world";
+import { AgentWorld, TEAM } from "./agent-world";
+import { hostile } from "./agent-world-core";
 import {
   DEFAULT_WORLD_CONFIG,
   type CpmWorldConfig,
@@ -29,6 +31,8 @@ import {
   ENDOTHELIAL_PROFILE,
   FIBROBLAST_PROFILE,
   DIGESTING_PROFILE,
+  GRIPPED_PROFILE,
+  DEBRIS_PROFILE,
 } from "./cpm-config";
 
 // Kinds = physics bodies only (NOT identities — a cell's identity is its composition).
@@ -39,6 +43,8 @@ export const MICROBE_KIND = 4;
 export const ENDOTHELIAL_KIND = 5; // vessel lining
 export const FIBROBLAST_KIND = 6; // tissue beyond
 export const DIGEST_KIND = 7;
+export const DEBRIS_KIND = 8; // ripped-off membrane fragment (inert, faded + resorbed)
+export const GRIPPED_KIND = 9; // prey held by the tentacle (immobile, can't heal — rendable)
 
 // DEV: freeze the player-anchored streaming bubble (study aid). For play it's false so
 // the camera follows the player; the worldsim streaming branch keys off it too.
@@ -79,6 +85,15 @@ const WALL_SEAL_LAMBDA = 110;
 const XMIGRATE_R = 22;
 const XMIGRATE_TICKS = 60;
 
+/** How long a ripped membrane fragment persists (seconds) before it fades out + is
+ *  removed. It holds full opacity for the first ~40%, then fades to nothing. */
+const DEBRIS_TTL = 4;
+
+/** Membrane-integrity death: a cell torn below this fraction of its full volume LYSES — the
+ *  rest scatters into debris. Low, so a gripped prey is RENT over several tears (grab, then
+ *  thrash it down) rather than popping on the first hit — the Carrion-style rend. */
+const RIP_DEATH_FRACTION = 0.32;
+
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
 
@@ -89,6 +104,14 @@ const AGENT_COLOR: Record<BodyKey, number> = {
   microbe: 0xe7d14b,
   endothelial: 0x8a6f9e,
   fibroblast: 0x5d7d6a,
+};
+
+/** Team (allegiance) marker colour — the small NUCLEUS DOT at a cell's centre that shows
+ *  whose side it's on, readable at both the disc and CPM zoom. Neutral (0) gets no marker
+ *  (lining/tissue don't fight). Body colour still encodes the cell's class/abilities. */
+const TEAM_COLOR: Record<number, number> = {
+  [TEAM.immune]: 0x6fd3ff, // blue — your side
+  [TEAM.microbe]: 0xff5a5a, // red — pathogens
 };
 
 /** Heartbeat: a sharp systolic surge each ~beat seconds (a pulsed 0..1). */
@@ -103,7 +126,8 @@ export interface WorldInput {
   steering: boolean;
   pointerWX: number;
   pointerWY: number;
-  engulf: boolean; // RMB held
+  engulf: boolean; // RMB held (the unified "grab": engulf or trogocytosis by build)
+  pointerSpeed: number; // cursor speed in world px/sec — drives the trogocytosis rip FLICK
   viewHalfDiag: number; // world px from screen centre to a corner (bubble promote radius)
 }
 
@@ -120,6 +144,16 @@ export interface SnapshotFx {
 export interface SnapshotAgent {
   x: number;
   y: number;
+  r: number;
+  color: number;
+}
+
+/** A team NUCLEUS DOT at a cell's centre (world coords), coloured by allegiance. Emitted
+ *  for every non-neutral cell at BOTH tiers (agent disc + CPM shadow) so you can read whose
+ *  side a cell is on at any zoom. */
+export interface SnapshotMarker {
+  wx: number;
+  wy: number;
   r: number;
   color: number;
 }
@@ -156,6 +190,7 @@ export interface WorldSnapshot {
   originWY: number;
   scale: number;
   agents: SnapshotAgent[];
+  markers: SnapshotMarker[];
   occupants: SnapshotOccupant[];
   organelles: SnapshotOrganelle[];
   playerWorld: { x: number; y: number } | null;
@@ -187,6 +222,7 @@ export class WorldSim {
   readonly behavior: CpmCellBehavior;
   readonly life: CpmLife;
   readonly combat: CpmCombat;
+  readonly trog: CpmTrogocytosis;
   readonly signal: CpmField;
   readonly grid: CpmDeformGrid;
   readonly bigOrganelles: CpmBigOrganelles;
@@ -214,6 +250,17 @@ export class WorldSim {
   // Render state owned by the sim so the snapshot is self-contained (worker-ready).
   private readonly framebuffer: Uint32Array;
   private readonly colorCache = new Map<number, { r: number; g: number; b: number; maxAct: number }>();
+  /** Per-cell render-colour override (0xRRGGBB) — debris fragments inherit the colour of
+   *  the cell they were torn from instead of their kind's profile colour. */
+  private readonly colorOverride = new Map<number, number>();
+  /** Live debris fragments: cpm id -> remaining time-to-live (seconds). They fade (alpha)
+   *  + slowly resorb over this window, then are killed. */
+  private readonly debris = new Map<number, number>();
+  /** Prey currently GRIPPED by the tentacle: cpm id -> its original kind (to restore on
+   *  release). While gripped it's the immobile, non-healing GRIPPED_KIND so tears rend it. */
+  private readonly grippedOriginalKind = new Map<number, number>();
+  /** Per-debris render alpha (0..255), recomputed from its TTL each tick. */
+  private readonly debrisAlpha = new Map<number, number>();
   private fxQueue: SnapshotFx[] = [];
   private controlChangedFlag = false;
 
@@ -224,7 +271,7 @@ export class WorldSim {
   private streamAccumMs = 0;
   private timeSec = 0;
   private buildIndex = 0;
-  private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, viewHalfDiag: 600 };
+  private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, pointerSpeed: 0, viewHalfDiag: 600 };
 
   constructor(config: CpmWorldConfig = DEFAULT_WORLD_CONFIG) {
     const cfg = config;
@@ -237,7 +284,9 @@ export class WorldSim {
       ENDOTHELIAL_PROFILE, // 5 ENDOTHELIAL
       FIBROBLAST_PROFILE, // 6 FIBROBLAST
       DIGESTING_PROFILE, // 7 DIGEST
-    ]);
+      DEBRIS_PROFILE, // 8 DEBRIS
+      GRIPPED_PROFILE, // 9 GRIPPED
+    ], CONTROLLED_KIND); // the player plows through debris; it's frozen vs everything else
     const center = Math.floor(cfg.fieldSize / 2);
     this.sim.originWX = -center * this.sim.scale;
     this.sim.originWY = -center * this.sim.scale;
@@ -247,22 +296,18 @@ export class WorldSim {
     this.signal = new CpmField(cfg.fieldSize);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
-      // Digesting (combat) OR being transmigrated through: don't apply death — both are
-      // transient maneuvers the cell recovers from.
-      ignore: (id) => this.combat.isConsuming(id) || this.xmigrateTTL.has(id),
+      // Not judged/killed by the rules layer: combat-owned prey; inert debris (has its
+      // own TTL); OR a lining cell being transmigrated through (transiently split, then
+      // reconnects — diapedesis is non-lethal).
+      ignore: (id) =>
+        this.combat.isConsuming(id) || this.debris.has(id) || this.xmigrateTTL.has(id),
     });
 
     this.sim.setKindActive(MACROPHAGE_KIND, true);
     this.sim.setKindActive(MICROBE_KIND, true);
     this.sim.flow.setFlowingKinds([MACROPHAGE_KIND, MICROBE_KIND]);
 
-    // DIAPEDESIS via differential adhesion (the Artistoo CancerInvasion technique):
-    // an immune cell wedges between two endothelial cells when its boundary with the
-    // endothelium is CHEAPER than the endothelium's boundary with itself — so it
-    // happily replaces an endo↔endo junction with two immune↔endo interfaces and
-    // squeezes through. A bacterium with an EXPENSIVE endo interface can't — inserting
-    // would raise energy, so the cohesive lining (+ reseal force) blocks it.
-    // Artistoo EpidermisWithTCells adhesion: the immune↔lining boundary is EXPENSIVE
+    // DIAPEDESIS — Artistoo EpidermisWithTCells adhesion: the immune↔lining boundary is EXPENSIVE
     // (J high), so the immune cell doesn't stick/spread on the lining — its strong Act
     // drives it THROUGH to the tissue on the far side. The lining is cohesive (J low)
     // and volume-filling, so bacteria (which lack the Act) can't push through.
@@ -281,6 +326,9 @@ export class WorldSim {
     this.sim.setTransient(ENDOTHELIAL_KIND);
     this.sim.setTransient(FIBROBLAST_KIND);
     this.sim.setTransient(MICROBE_KIND);
+    this.sim.setTransient(DEBRIS_KIND); // debris is in-bubble-only — drop it on stream-out
+
+
 
     this.behavior = new CpmCellBehavior(this.sim, {
       controlledId: () => this.controlledCellId,
@@ -300,6 +348,17 @@ export class WorldSim {
       getAttackerId: () => this.controlledCellId,
       onConsumeStart: (id) => this.forgetColor(id),
       onDigested: (wx, wy) => this.fxQueue.push({ kind: "digest", wx, wy, radius: 26, color: 0xffe066 }),
+    });
+    this.trog = new CpmTrogocytosis(this.sim, {
+      playerKind: CONTROLLED_KIND,
+      getAttackerId: () => this.controlledCellId,
+      // Allegiance-based: rip any cell on a hostile team (never self/ally/neutral/debris).
+      isHostile: (id) =>
+        id !== this.controlledCellId &&
+        hostile(this.teamOf(id), this.teamOf(this.controlledCellId)),
+      rip: (targetId, lx, ly, count) => this.ripFragment(targetId, lx, ly, count),
+      onGrab: (id) => this.gripCell(id),
+      onRelease: (id) => this.ungripCell(id),
     });
 
     this.controlledCellId = this.spawnPreset("macrophage", center, center, true)!;
@@ -321,6 +380,23 @@ export class WorldSim {
     this.mcsPerSec = Math.max(MIN_MCS, Math.min(MAX_MCS, this.mcsPerSec + delta));
   }
 
+  /** Allegiance of a CPM cell: the controlled cell is on the immune team; a promoted
+   *  shadow inherits its durable agent's team; anything else (incl. debris) is neutral. */
+  private teamOf(cpmId: number): number {
+    if (cpmId === this.controlledCellId) return TEAM.immune;
+    const agentId = this.cpmToAgent.get(cpmId);
+    if (agentId !== undefined) return this.agentWorld.get(agentId)?.team ?? TEAM.neutral;
+    return TEAM.neutral;
+  }
+
+  /** Which offensive verb the player's RMB "grab" performs, from its composition: rip if
+   *  it's built more for tearing than engulfing, else engulf. (The unified grab — T4.) */
+  private playerPrefersTrog(): boolean {
+    const caps = this.compositions.get(this.controlledCellId)?.capabilities;
+    if (!caps) return false;
+    return caps.tearing > caps.phagocytic;
+  }
+
   /** Player's world-space centroid (for the camera to follow). Null if unknown. */
   playerWorldPos(): { x: number; y: number } | null {
     const c = this.sim.centroidLattice(this.controlledCellId);
@@ -331,16 +407,20 @@ export class WorldSim {
 
   // ---- rendering (pure; produces RGBA + a render snapshot) -----------------
 
-  /** Drop a cell's cached colour (death/leave/consume). */
+  /** Drop a cell's cached colour + any debris/override state (death/leave/consume). */
   private forgetColor(id: number): void {
     this.colorCache.delete(id);
+    this.colorOverride.delete(id);
+    this.debris.delete(id);
+    this.debrisAlpha.delete(id);
   }
 
   private channels(id: number): { r: number; g: number; b: number; maxAct: number } {
     let c = this.colorCache.get(id);
     if (!c) {
+      const override = this.colorOverride.get(id);
       const rec = this.sim.getCell(id);
-      const color = rec ? rec.profile.color : 0x888888;
+      const color = override ?? (rec ? rec.profile.color : 0x888888);
       c = {
         r: (color >> 16) & 0xff,
         g: (color >> 8) & 0xff,
@@ -360,6 +440,7 @@ export class WorldSim {
     const grid = this.sim.cpm.grid;
     const field = this.sim.field;
     const molField = this.signal;
+    const hasDebris = this.debrisAlpha.size > 0;
     for (const [[x, y], id] of grid.pixels()) {
       const c = this.channels(id);
       const a = this.sim.activityAtIndex(grid.p2i([x, y])) / c.maxAct;
@@ -381,7 +462,12 @@ export class WorldSim {
         g = Math.min(255, g + 210 * m) | 0;
         b = (b * (1 - 0.3 * m)) | 0;
       }
-      buf[y * field + x] = (0xff << 24) | (b << 16) | (g << 8) | r;
+      let alpha = 0xff;
+      if (hasDebris) {
+        const da = this.debrisAlpha.get(id);
+        if (da !== undefined) alpha = da;
+      }
+      buf[y * field + x] = (alpha << 24) | (b << 16) | (g << 8) | r;
     }
   }
 
@@ -392,7 +478,14 @@ export class WorldSim {
 
     const scale = this.sim.scale;
     const agents: SnapshotAgent[] = [];
+    const markers: SnapshotMarker[] = [];
     for (const a of this.agentWorld.all()) {
+      const teamColor = TEAM_COLOR[a.team];
+      // Team nucleus dot at the cell's centre — for a CPM shadow its x/y were mirrored from
+      // the CPM centroid; for an agent it's the disc centre. Neutral cells get none.
+      if (teamColor !== undefined) {
+        markers.push({ wx: a.x, wy: a.y, r: Math.max(2, Math.sqrt(a.vol / Math.PI) * scale * 0.34), color: teamColor });
+      }
       if (a.tier === "cpm") continue; // rendered as its CPM shadow, not a disc
       agents.push({
         x: a.x,
@@ -441,6 +534,7 @@ export class WorldSim {
       originWY: this.sim.originWY,
       scale,
       agents,
+      markers,
       occupants,
       organelles,
       playerWorld: this.playerWorldPos(),
@@ -490,7 +584,14 @@ export class WorldSim {
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
-    this.combat.update(input.engulf);
+    // RMB is the unified "grab": route it to trogocytosis (rip) or engulf by the player's
+    // dominant offensive capability (its composition decides which verb it can use).
+    if (this.playerPrefersTrog()) {
+      const [clx, cly] = this.sim.worldToLattice(input.pointerWX, input.pointerWY);
+      this.trog.update(input.engulf, clx, cly, input.pointerSpeed, dtSec * 1000);
+    } else {
+      this.combat.update(input.engulf);
+    }
 
     this.sim.setKindPerimeterTarget(
       kind,
@@ -580,6 +681,7 @@ export class WorldSim {
     this.prof.measure("field", () => this.signal.step(0.18, 0.03));
 
     this.prof.measure("rules", () => this.rules.update());
+    this.stepDebris(dtSec);
 
     this.census();
     this.prof.frame();
@@ -604,13 +706,21 @@ export class WorldSim {
       nutrients: this.combat.nutrients,
       energy: Math.round(this.life.energyOf(this.controlledCellId)),
       hp: Math.round(this.rules.healthFraction(this.controlledCellId) * 100),
-      combatStatus: this.combat.engulfing
-        ? "ENGULFING"
-        : this.combat.digestingCount > 0
-          ? "DIGESTING"
-          : this.input.steering
-            ? "STEERING (hold LMB)"
-            : "resting",
+      combatStatus: this.playerPrefersTrog()
+        ? this.trog.latched
+          ? "TROG: GRIPPING — thrash the mouse to rip it apart"
+          : this.input.engulf
+            ? "TROG: reaching… (hold RMB, touch a microbe to grab)"
+            : this.input.steering
+              ? "STEERING (hold LMB)"
+              : "resting"
+        : this.combat.engulfing
+          ? "ENGULFING"
+          : this.combat.digestingCount > 0
+            ? "DIGESTING"
+            : this.input.steering
+              ? "STEERING (hold LMB)"
+              : "resting",
     };
     this.prof.metrics.activeCells = activeCells;
     this.prof.metrics.dormantCells = this.sim.dormantCount;
@@ -701,12 +811,6 @@ export class WorldSim {
     }
   }
 
-  /** The lining re-seals + SNAPS BACK: every promoted wall cell (endothelial/fibroblast)
-   *  is anchored to its home slot (its durable agent position, pinned at spawn). The
-   *  FLOPPY cells (no perimeter constraint) deform to admit a transmigrating immune cell
-   *  and are pulled back to their original configuration once it passes — the endothelial
-   *  junctions re-forming. Bacteria (unfavorable adhesion, no strong Act) can't push
-   *  through the cohesive, home-anchored sheet. */
   /** Grant transmigration-immunity to lining cells the steering immune cell is crossing
    *  (within XMIGRATE_R of its centroid), so they don't die when the crossing transiently
    *  splits them; immunity lingers XMIGRATE_TICKS after so they reconnect + regrow. */
@@ -735,15 +839,14 @@ export class WorldSim {
     }
   }
 
+  /** SNAP-BACK: each promoted wall cell is firmly anchored to its home slot. The FLOPPY
+   *  lining cells (no perimeter constraint) deform to admit a transmigrating immune cell,
+   *  then this anchor pulls them back to their original configuration once it passes (the
+   *  endothelial junctions re-forming). The immune cell's strong Act still drives it
+   *  through regardless; bacteria (unfavorable adhesion, no strong Act) can't. */
   private resealWalls(
     centroids: Map<number, { x: number; y: number; pixels: number }>
   ): void {
-    // Every promoted wall cell is FIRMLY anchored to its home slot — ALWAYS, even right
-    // where the player is pushing. This is the fix for "bulldozing": with a firm anchor
-    // the wall cell can't TRANSLATE out of the way, so the immune cell must thread the
-    // junction BETWEEN cells (which deform/squish locally, then spring back = re-seal),
-    // rather than shoving a whole cell into the lumen. Favorable immune↔endo adhesion
-    // makes threading energetically easy; bacteria (unfavorable) can't.
     for (const [cpmId, agentId] of this.cpmToAgent) {
       const rec = this.sim.getCell(cpmId);
       if (!rec || (rec.kind !== ENDOTHELIAL_KIND && rec.kind !== FIBROBLAST_KIND)) continue;
@@ -753,6 +856,158 @@ export class WorldSim {
       const [lx, ly] = this.sim.worldToLattice(wc.x, wc.y); // home slot
       this.sim.attractCellTo(cpmId, Math.round(lx), Math.round(ly), WALL_SEAL_LAMBDA);
     }
+  }
+
+  // ---- trogocytosis: rip a conserved, colour-carrying fragment ------------
+  // Tear a chunk off `targetId` toward a LATTICE point (the puller side). The chunk becomes
+  // fading debris that inherits the torn cell's colour (mass conserved — pixels moved, not
+  // deleted). If the tear drops the target below RIP_DEATH_FRACTION of its full size it
+  // LYSES: the remainder scatters into debris too (so a killed cell leaves persistent
+  // fragments with no hungry parent to reabsorb them). Returns the surgery result.
+  ripFragment(
+    targetId: number,
+    towardLX: number,
+    towardLY: number,
+    count: number
+  ): { fragmentId: number; moved: number; remaining: number } | null {
+    const rec = this.sim.getCell(targetId);
+    const fullVol = rec ? rec.profile.volume : 0;
+    const ch = this.channels(targetId);
+    const fxColor = (ch.r << 16) | (ch.g << 8) | ch.b;
+    const c0 = this.sim.centroidLattice(targetId);
+
+    const res = this.ripOnce(targetId, towardLX, towardLY, count);
+    if (!res) return null;
+
+    const lethal = res.remaining <= 0 || res.remaining < RIP_DEATH_FRACTION * fullVol;
+    if (lethal) {
+      // Scatter whatever's left into a second fragment so the cell visibly bursts apart,
+      // then finalize the death (the last tear empties + purges the target).
+      if (res.remaining > 0) {
+        this.ripOnce(targetId, towardLX, towardLY, res.remaining);
+        res.remaining = 0;
+      }
+      if (c0) {
+        const [wx, wy] = this.sim.latticeToWorld(c0.x, c0.y);
+        this.fxQueue.push({ kind: "death", wx, wy, radius: 24, color: fxColor });
+      }
+      this.deaths++;
+    }
+    return res;
+  }
+
+  /** One tear: move a chunk of `targetId` into a debris fragment and register it (colour
+   *  inherited from the torn cell, TTL fade). Purges the target's links if it's emptied. */
+  private ripOnce(
+    targetId: number,
+    towardLX: number,
+    towardLY: number,
+    count: number
+  ): { fragmentId: number; moved: number; remaining: number } | null {
+    const ch = this.channels(targetId);
+    const color = (ch.r << 16) | (ch.g << 8) | ch.b; // the torn cell's current render hue
+    const res = this.sim.tearChunkToward(targetId, towardLX, towardLY, count, DEBRIS_KIND);
+    if (!res) return null;
+    this.colorOverride.set(res.fragmentId, color);
+    this.debris.set(res.fragmentId, DEBRIS_TTL);
+    this.debrisAlpha.set(res.fragmentId, 0xff);
+    if (res.remaining <= 0) this.purgeCellLinks(targetId);
+    return res;
+  }
+
+  /** Grab: convert a prey to the immobile, non-healing GRIPPED kind so the tentacle can
+   *  hold it and tears actually rend it (a live prey would flee + regrow between tears).
+   *  Keeps its original colour (via override) so it still looks like the bacterium. */
+  private gripCell(id: number): void {
+    const rec = this.sim.getCell(id);
+    if (!rec || rec.kind === GRIPPED_KIND) return;
+    this.grippedOriginalKind.set(id, rec.kind);
+    const ch = this.channels(id);
+    this.colorOverride.set(id, (ch.r << 16) | (ch.g << 8) | ch.b);
+    this.colorCache.delete(id); // recompute against the new profile (maxAct) + override colour
+    this.sim.setCellKind(id, GRIPPED_KIND);
+  }
+
+  /** Release: restore a still-living gripped prey to its original kind (it recovers + flees
+   *  again). A prey that died while gripped is cleaned up by onCellDeath/purgeCellLinks. */
+  private ungripCell(id: number): void {
+    const orig = this.grippedOriginalKind.get(id);
+    if (orig === undefined) return;
+    this.grippedOriginalKind.delete(id);
+    if (this.sim.getCell(id)) {
+      this.sim.setCellKind(id, orig);
+      this.colorCache.delete(id);
+      this.colorOverride.delete(id);
+    }
+  }
+
+  /** Drop all of a cell's world-sim bookkeeping (agent shadow link, composition, colour,
+   *  rules state). Shared by death + full-tear cleanup. Does NOT touch the CPM lattice. */
+  private purgeCellLinks(id: number): void {
+    this.grippedOriginalKind.delete(id);
+    const agentId = this.cpmToAgent.get(id);
+    if (agentId !== undefined) {
+      this.agentWorld.remove(agentId);
+      this.cpmToAgent.delete(id);
+    }
+    this.compositions.delete(id);
+    this.forgetColor(id);
+    this.rules.forget(id);
+  }
+
+  /** Age every debris fragment: fade its alpha from its TTL, kill it when the TTL ends.
+   *  Mass stays intact until removal (the fragment is SEEN to persist, then vanish). */
+  private stepDebris(dtSec: number): void {
+    if (this.debris.size === 0) return;
+    for (const [id, ttl] of [...this.debris]) {
+      if (!this.sim.getCell(id)) {
+        this.forgetColor(id); // already gone (streamed out / killed elsewhere)
+        continue;
+      }
+      const next = ttl - dtSec;
+      if (next <= 0) {
+        this.sim.killCell(id);
+        this.forgetColor(id);
+        continue;
+      }
+      this.debris.set(id, next);
+      // Hold full opacity for the first ~40% of life, then fade linearly to 0.
+      const f = Math.min(1, next / (DEBRIS_TTL * 0.6));
+      this.debrisAlpha.set(id, Math.round(0xff * f));
+    }
+  }
+
+  /** DEBUG (T1 gate): rip a chunk off the nearest non-player CPM cell toward the player,
+   *  and report pixel mass before/after so a test can assert conservation. */
+  debugRip(count = 30): {
+    targetId: number;
+    before: number;
+    moved: number;
+    remaining: number;
+    fragmentId: number;
+  } | null {
+    const pc = this.sim.centroidLattice(this.controlledCellId);
+    if (!pc) return null;
+    // Prefer the nearest MICROBE (the realistic trog prey); fall back to any non-player,
+    // non-debris cell so the hook still works if no microbe is in the bubble.
+    let best: number | null = null;
+    let bestD = Infinity;
+    let bestMicrobe: number | null = null;
+    let bestMicrobeD = Infinity;
+    for (const rec of this.sim.getCells()) {
+      if (rec.id === this.controlledCellId || rec.kind === DEBRIS_KIND) continue;
+      const c = this.sim.centroidLattice(rec.id);
+      if (!c) continue;
+      const d = Math.hypot(c.x - pc.x, c.y - pc.y);
+      if (d < bestD) { bestD = d; best = rec.id; }
+      if (rec.kind === MICROBE_KIND && d < bestMicrobeD) { bestMicrobeD = d; bestMicrobe = rec.id; }
+    }
+    best = bestMicrobe ?? best;
+    if (best === null) return null;
+    const before = this.sim.centroidLattice(best)?.pixels ?? 0;
+    const res = this.ripFragment(best, pc.x, pc.y, count);
+    if (!res) return null;
+    return { targetId: best, before, moved: res.moved, remaining: res.remaining, fragmentId: res.fragmentId };
   }
 
   // ---- death / control handoff --------------------------------------------
@@ -776,6 +1031,7 @@ export class WorldSim {
     this.sim.killCell(id);
     this.forgetColor(id);
     this.compositions.delete(id);
+    this.grippedOriginalKind.delete(id);
     this.deaths++;
     console.log(`💀 cell ${id} died (${reason})${wasControlled ? " — CONTROLLED" : ""}`);
     if (wasControlled) this.handoffControl();

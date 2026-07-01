@@ -15,6 +15,7 @@ import {
   CPM,
   GridManipulator,
   ConnectedComponentsByCell,
+  HardConstraint,
   type CellId,
   type ActivityConstraint,
   type PerimeterConstraint,
@@ -23,6 +24,25 @@ import { PerCellAttractionConstraint } from "./per-cell-attraction-constraint";
 import { CpmFootprintConstraint } from "./cpm-footprint-constraint";
 import { CpmFlowConstraint } from "./cpm-flow-constraint";
 import type { CpmCellProfile, CpmWorldConfig } from "./cpm-config";
+
+/** A barrier that forbids copy attempts into/out of "barrier" kinds (frozen debris) so a
+ *  fragment neither evaporates nor gets eaten — EXCEPT when the OTHER party is
+ *  `PERMEABLE_KIND` (the player), which may plow straight through it. So debris blocks
+ *  microbes + the medium (persists intact) but the player passes right over it. */
+class PermeableBarrierConstraint extends HardConstraint {
+  confChecker(): void {}
+  fulfilled(_si: number, _ti: number, srcType: number, tgtType: number): boolean {
+    const conf = this.conf as unknown as { IS_BARRIER: boolean[]; PERMEABLE_KIND: number };
+    const C = (this as unknown as { C: { cellKind(id: number): number } }).C;
+    const sk = C.cellKind(srcType);
+    const tk = C.cellKind(tgtType);
+    const sB = conf.IS_BARRIER[sk];
+    const tB = conf.IS_BARRIER[tk];
+    if (!sB && !tB) return true; // neither side is a barrier: unaffected
+    const other = sB ? tk : sk; // the non-barrier party
+    return other === conf.PERMEABLE_KIND; // only the player may cross a barrier boundary
+  }
+}
 
 export interface CellRecord {
   readonly id: CellId;
@@ -77,7 +97,10 @@ export class CpmSimulation {
   constructor(
     readonly worldConfig: CpmWorldConfig,
     /** Kind profiles in order; becomes kinds 1..N. */
-    kindProfiles: readonly CpmCellProfile[]
+    kindProfiles: readonly CpmCellProfile[],
+    /** Kind allowed to cross barrier (debris) boundaries — the player, so it plows through
+     *  fragments while they stay frozen against everything else. -1 = nothing permeable. */
+    private readonly barrierPermeableKind = -1
   ) {
     this.field = worldConfig.fieldSize;
     this.scale = worldConfig.worldPerPixel;
@@ -96,6 +119,7 @@ export class CpmSimulation {
     const MAX_ACT = [0];
     const LAMBDA_ACT = [0];
     const LAMBDA_CONNECTIVITY = [0];
+    const IS_BARRIER = [false]; // index 0 = background
     for (const p of kindProfiles) {
       V.push(p.volume);
       LAMBDA_V.push(p.lambdaV);
@@ -104,6 +128,7 @@ export class CpmSimulation {
       MAX_ACT.push(p.maxAct);
       LAMBDA_ACT.push(p.lambdaActRest); // start at rest
       LAMBDA_CONNECTIVITY.push(p.lambdaConnectivity);
+      IS_BARRIER.push(!!p.isBarrier);
     }
 
     // Adhesion matrix J[(nKinds+1) x (nKinds+1)].
@@ -163,6 +188,12 @@ export class CpmSimulation {
     // The vessel current: pushes flowing (lumen) kinds along the heart-pump flow.
     this.flow = new CpmFlowConstraint();
     this.cpm.add(this.flow);
+    // Frozen barrier kinds (debris): forbid copy attempts in/out so fragments persist
+    // intact for their TTL — but PERMEABLE to the player so it plows right over them
+    // (created/removed by direct setpix, which bypasses this).
+    this.cpm.add(
+      new PermeableBarrierConstraint({ IS_BARRIER, PERMEABLE_KIND: this.barrierPermeableKind })
+    );
     // NOTE: no SoftConnectivityConstraint. Profiling showed it was ~72% of the CPM
     // step cost (a per-copy-attempt local flood-fill), and it was leftover from the
     // old embedded-compartment era — the solid cell + soft-body nucleus stays
@@ -291,6 +322,13 @@ export class CpmSimulation {
    *  compartments it currently wraps. */
   setKindPerimeterTarget(kind: number, value: number): void {
     this.conf.P[kind] = value;
+  }
+
+  /** Live-set a kind's VOLUME-constraint target (conf.V). Used to HOLD a gripped prey at
+   *  its CURRENT size — set each tick to its live pixel count so, with a moderate lambdaV,
+   *  it resists being crushed by the tentacle's adhesion yet never regrows (heals) either. */
+  setKindVolumeTarget(kind: number, value: number): void {
+    (this.cpm.conf as unknown as { V: number[] }).V[kind] = value;
   }
 
   /** Softly bias a single compartment toward a lattice point (cytoskeletal
@@ -598,6 +636,41 @@ export class CpmSimulation {
     }
     for (const [x, y] of cut) this.cpm.setpix([x, y], 0);
     return true;
+  }
+
+  /** Tear up to `count` pixels off `targetId` — the ones NEAREST (ax,ay) (the puller
+   *  side / contact patch) — and MOVE them into a new cell of `fragmentKind`. Mass is
+   *  conserved: pixels are reassigned via setpix (which maintains every cell's volume +
+   *  border bookkeeping), not deleted. Returns the new fragment id, pixels moved, and the
+   *  target's remaining pixel count; null if the target has no pixels. If the tear empties
+   *  the target, it is killed. The fragment is a real CPM cell (inert if `fragmentKind` is
+   *  the debris profile) the caller can then track/fade. */
+  tearChunkToward(
+    targetId: CellId,
+    ax: number,
+    ay: number,
+    count: number,
+    fragmentKind: number
+  ): { fragmentId: CellId; moved: number; remaining: number } | null {
+    const grid = this.cpm.grid;
+    const px: [number, number][] = [];
+    for (const [[x, y], v] of grid.pixels()) if (v === targetId) px.push([x, y]);
+    if (px.length === 0) return null;
+    // Closest-to-the-puller first: the chunk torn off is the contact patch being pulled,
+    // a roughly contiguous blob near (ax,ay).
+    px.sort(
+      (p, q) =>
+        (p[0] - ax) * (p[0] - ax) + (p[1] - ay) * (p[1] - ay) -
+        ((q[0] - ax) * (q[0] - ax) + (q[1] - ay) * (q[1] - ay))
+    );
+    const take = Math.min(count, px.length);
+    // Seed the fragment on the nearest pixel (seedCellAt reassigns it from the target),
+    // then move the rest of the chunk into it.
+    const frag = this.spawnCellAtLattice(fragmentKind, px[0][0], px[0][1]);
+    for (let i = 1; i < take; i++) this.cpm.setpix(px[i], frag.id);
+    const remaining = px.length - take;
+    if (remaining <= 0) this.killCell(targetId);
+    return { fragmentId: frag.id, moved: take, remaining };
   }
 
   // ---- world<->lattice transform ------------------------------------------
