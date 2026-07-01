@@ -127,7 +127,8 @@ export interface WorldInput {
   pointerWX: number;
   pointerWY: number;
   engulf: boolean; // RMB held (the unified "grab": engulf or trogocytosis by build)
-  pointerSpeed: number; // cursor speed in world px/sec — drives the trogocytosis rip FLICK
+  pointerSpeed: number; // cursor speed in SCREEN px/sec — the trogocytosis THRASH signal
+                        // (screen space so holding while the camera drifts doesn't tear)
   viewHalfDiag: number; // world px from screen centre to a corner (bubble promote radius)
 }
 
