@@ -34,6 +34,14 @@ function getBuildInfo() {
 }
 
 export default defineConfig({
+  // The vendored Artistoo CPM registers + looks up its constraints by `constructor.name`
+  // (CPM.add / getConstraint). esbuild's minifier renames classes in the production build,
+  // which broke that lookup ("No constraint of name exists in this CPM!") — the sim threw on
+  // construction in the worker, so the deployed world showed only the grid. keepNames
+  // preserves class/function names through minification so the lookup works in prod too.
+  esbuild: {
+    keepNames: true
+  },
   define: {
     // Inject build info at build time
     __BUILD_INFO__: JSON.stringify(getBuildInfo())
