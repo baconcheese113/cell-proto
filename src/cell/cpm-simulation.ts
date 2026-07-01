@@ -341,16 +341,20 @@ export class CpmSimulation {
     return this.cpm.pixt([x, y]);
   }
 
-  /** Clear the pixel at (x,y) to background IF it belongs to a cell of one of `kinds`.
-   *  Returns true if a pixel was cleared. Used for diapedesis: the immune cell carves a
-   *  corridor through the lining in its path so it crosses at full crawl speed (no
-   *  resistance) instead of inching; the lining regrows behind it = re-seal. */
-  carvePixel(x: number, y: number, kinds: readonly number[]): boolean {
+  /** Clear the pixel at (x,y) to background IF it belongs to a cell of one of `kinds`
+   *  AND that cell is still above `minVolFrac` of its target volume. Returns true if a
+   *  pixel was cleared. Used for diapedesis: the immune cell carves a corridor through
+   *  the lining in its path so it crosses at full crawl speed instead of inching; the
+   *  lining regrows behind it = re-seal. The volume floor keeps carving NON-LETHAL —
+   *  real diapedesis doesn't kill the endothelium — so a cell only ever squishes to
+   *  `minVolFrac` (above the rules' stress/death thresholds) and then survives + regrows. */
+  carvePixel(x: number, y: number, kinds: readonly number[], minVolFrac: number): boolean {
     if (x < 0 || x >= this.field || y < 0 || y >= this.field) return false;
     const id = this.cpm.pixt([x, y]);
     if (id === 0) return false;
-    const k = this.cells.get(id)?.kind;
-    if (k === undefined || !kinds.includes(k)) return false;
+    const rec = this.cells.get(id);
+    if (!rec || !kinds.includes(rec.kind)) return false;
+    if ((this.cpm.cellvolume[id] ?? 0) <= minVolFrac * rec.profile.volume) return false;
     this.cpm.setpix([x, y], 0);
     return true;
   }

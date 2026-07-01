@@ -76,6 +76,13 @@ const WALL_SEAL_LAMBDA = 80;
 // Max lining pixels the steering player carves per tick (active diapedesis). Gradual
 // so it oozes through (not an instant tunnel); the lining regrows behind it.
 const CARVE_BUDGET = 8;
+// Diapedesis is NON-LETHAL (real endothelium survives + reseals): never carve a lining
+// cell below this fraction of its target volume, keeping it above the rules' stress
+// (0.7) / death (0.4) thresholds. It squishes to make room, then regrows.
+const CARVE_MIN_VOL_FRAC = 0.78;
+// Ticks a carved lining cell stays exempt from structural-failure/damage death after
+// the last carve (covers the transient split-while-crossing + reconnect/regrow).
+const CARVE_IMMUNE_TICKS = 60;
 
 /** Concentration that renders as full-intensity molecular glow (was in CpmRenderer). */
 const FIELD_FULL = 8;
@@ -198,6 +205,9 @@ export class WorldSim {
    *  agentWorld the whole time (never destroyed by promotion); this just records which
    *  CPM cell is currently shadowing it so we can mirror it + release it back. */
   readonly cpmToAgent = new Map<number, number>();
+  /** Lining cell id -> ticks remaining of carve-immunity (exempt from structural-
+   *  failure/damage death while the immune cell is transmigrating through it). */
+  private readonly carvedTTL = new Map<number, number>();
 
   controlledCellId = 0;
   deaths = 0;
@@ -241,7 +251,11 @@ export class WorldSim {
     this.signal = new CpmField(cfg.fieldSize);
     this.rules = new CpmRules(this.sim, {
       onDeath: (id, reason) => this.onCellDeath(id, reason),
-      ignore: (id) => this.combat.isConsuming(id),
+      // A cell being digested (combat) OR actively carved for diapedesis is mid-
+      // maneuver — don't apply structural-failure/damage death to it. Diapedesis is
+      // NON-LETHAL: the lining cell transiently splits as the immune cell crosses, then
+      // reconnects + regrows behind it.
+      ignore: (id) => this.combat.isConsuming(id) || this.carvedTTL.has(id),
     });
 
     this.sim.setKindActive(MACROPHAGE_KIND, true);
@@ -475,6 +489,11 @@ export class WorldSim {
       this.mirrorShadows(centroids);
       this.resealWalls(centroids);
       if (input.steering) this.carveDiapedesis(centroids, input);
+      // Age out carve-immunity so a cell resumes normal rules once the player passes.
+      for (const [id, t] of this.carvedTTL) {
+        if (t <= 1) this.carvedTTL.delete(id);
+        else this.carvedTTL.set(id, t - 1);
+      }
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
@@ -725,7 +744,11 @@ export class WorldSim {
       for (let lat = -r * 0.75; lat <= r * 0.75 && carved < CARVE_BUDGET; lat += 1.2) {
         const x = Math.round(pc.x + dx * along + perpX * lat);
         const y = Math.round(pc.y + dy * along + perpY * lat);
-        if (this.sim.carvePixel(x, y, KINDS)) carved++;
+        const owner = this.sim.ownerAtLattice(x, y);
+        if (this.sim.carvePixel(x, y, KINDS, CARVE_MIN_VOL_FRAC)) {
+          carved++;
+          this.carvedTTL.set(owner, CARVE_IMMUNE_TICKS); // exempt from death while crossed
+        }
       }
     }
   }
