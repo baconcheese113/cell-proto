@@ -666,9 +666,9 @@ export class WorldSim {
       hp: Math.round(this.rules.healthFraction(this.controlledCellId) * 100),
       combatStatus: this.playerPrefersTrog()
         ? this.trog.latched
-          ? "TROG: latched — FLICK to rip"
+          ? "TROG: GRIPPING — thrash the mouse to rip it apart"
           : this.input.engulf
-            ? "TROG: reaching (hold RMB)"
+            ? "TROG: reaching… (hold RMB, touch a microbe to grab)"
             : this.input.steering
               ? "STEERING (hold LMB)"
               : "resting"
