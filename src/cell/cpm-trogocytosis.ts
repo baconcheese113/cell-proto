@@ -1,45 +1,43 @@
 // CpmTrogocytosis — the membrane-ripping combat verb (the foil to engulf). Holding the
-// grab button extends a pseudopod toward the cursor (a strong directional reach); while
-// extended it ADHERES to a hostile cell it touches; a quick mouse FLICK then tears a
-// chunk of that cell's membrane off (CpmSimulation.tearChunkToward, surfaced here via the
-// `rip` callback so this stays Phaser-free + sim-agnostic). The reach auto-retracts after
-// MAX_EXTEND_MS or on release — the skill is landing a flick inside the window.
+// grab button EXTENDS the player's own membrane toward the cursor (a real, mass-conserving
+// CPM protrusion — a short pseudopod, not a drawn line); when that membrane actually
+// TOUCHES a hostile cell it ADHERES to it; then a mouse FLICK tears a big chunk of that
+// cell's membrane off (CpmSimulation.tearChunkToward, via the `rip` callback), which is
+// normally fatal. You must be in CONTACT to rip, so a mere click never tears anything.
 //
-// This owns NO pixel surgery or debris bookkeeping (that's world-sim's `ripFragment`); it
-// only decides WHEN/WHAT to rip and drives the pseudopod + adhesion on the sim.
+// Owns no pixel surgery/debris bookkeeping (that's world-sim's `ripFragment`); it only
+// drives the protrusion + adhesion and decides WHEN/WHAT to rip.
 
 import type { CpmSimulation } from "./cpm-simulation";
 
 export interface TrogOptions {
-  /** Kind of the attacking (controlled) cell — its adhesion to the target is lowered
-   *  while latched so the reaching membrane sticks. */
+  /** Kind of the attacking (controlled) cell — its adhesion to the target is lowered while
+   *  latched so the reaching membrane sticks, and its protrusion (Act) is switched on. */
   playerKind: number;
   /** The cell currently doing the ripping (the controlled cell). */
   getAttackerId: () => number;
-  /** Whether a cell is a valid rip target (T3 backs this with team-hostility; the spike
-   *  uses "is a microbe"). Excludes self/debris/neutral. */
+  /** Whether a cell is a valid rip target (team-hostility). Excludes self/ally/neutral/debris. */
   isHostile: (cellId: number) => boolean;
   /** Perform the actual tear (world-sim's ripFragment): move a chunk of `targetId`'s
    *  membrane nearest (towardLX,towardLY) into conserved, fading debris. */
   rip: (targetId: number, towardLX: number, towardLY: number, count: number) => void;
 }
 
-const REACH = 40; // lattice px from the attacker centroid the pseudopod can grab within
+const REACH = 48; // lattice px the protrusion reaches toward the cursor (a short pseudopod)
+const TOUCH_MARGIN = 4; // lattice px slack on the membrane-contact test for latching
+const EXTEND_LAMBDA = 1.7; // how hard the membrane is driven toward the cursor while held
 const ADHERE_J = 5; // very sticky attacker<->target while latched (mirrors engulf)
 const DEFAULT_J = 22; // restored when not latched
-const FLICK_SPEED = 850; // cursor world px/sec that counts as a rip flick
-const RIP_COUNT = 30; // membrane pixels torn per flick (lethal to a small cell)
-const MAX_EXTEND_MS = 1500; // pseudopod stays out at most this long per hold
+const FLICK_SPEED = 850; // cursor world px/sec that counts as a rip flick ("not that fast")
+const RIP_COUNT = 42; // membrane px torn per flick — a BIG chunk, so the first rip usually kills
 const FLICK_COOLDOWN_MS = 220; // min gap between rips so one flick = one tear
 
 export class CpmTrogocytosis {
   private adheredId: number | null = null;
   private adheredKind = 0;
-  private extendMsLeft = 0;
   private cooldownMs = 0;
   private wasHolding = false;
-  /** Coarse state for the HUD/debug. */
-  status: "idle" | "reaching" | "latched" | "ripped" | "spent" = "idle";
+  status: "idle" | "reaching" | "latched" | "ripped" = "idle";
 
   constructor(
     private readonly sim: CpmSimulation,
@@ -51,14 +49,8 @@ export class CpmTrogocytosis {
   }
 
   /** Drive one tick. `holding` = grab button; (cursorLX,cursorLY) = lattice cursor;
-   *  `cursorSpeed` = pointer speed in world px/sec (for flick detection); `dtMs` = tick. */
-  update(
-    holding: boolean,
-    cursorLX: number,
-    cursorLY: number,
-    cursorSpeed: number,
-    dtMs: number
-  ): void {
+   *  `cursorSpeed` = pointer speed in world px/sec (flick detection); `dtMs` = tick. */
+  update(holding: boolean, cursorLX: number, cursorLY: number, cursorSpeed: number, dtMs: number): void {
     if (this.cooldownMs > 0) this.cooldownMs -= dtMs;
 
     const id = this.opts.getAttackerId();
@@ -69,62 +61,69 @@ export class CpmTrogocytosis {
       this.status = "idle";
       return;
     }
-
-    if (!this.wasHolding) this.extendMsLeft = MAX_EXTEND_MS; // rising edge: open the window
     this.wasHolding = true;
-    this.extendMsLeft -= dtMs;
 
-    if (this.extendMsLeft <= 0) {
-      // Window spent: retract the pseudopod + drop adhesion until the button is re-pressed.
-      this.release();
-      this.status = "spent";
-      return;
-    }
-
-    // EXTEND: throw a protrusion toward the cursor (active membrane + strong attraction).
+    // EXTEND: drive the player's membrane toward the cursor (clamped to a short reach) — a
+    // real CPM protrusion, mass-conserving by construction (the cell flows, it doesn't grow).
+    const tip = this.clampReach(pc.x, pc.y, cursorLX, cursorLY);
     this.sim.setKindActive(this.opts.playerKind, true);
-    this.sim.steerCell(id, cursorLX, cursorLY, 1.6);
+    this.sim.steerCell(id, tip.x, tip.y, EXTEND_LAMBDA);
     this.status = "reaching";
 
-    // ADHERE: grip the hostile cell nearest the cursor that's within the pseudopod's reach.
-    if (this.adheredId === null || !this.sim.getCell(this.adheredId)) {
-      this.adheredId = this.findTarget(pc.x, pc.y, cursorLX, cursorLY);
-      if (this.adheredId !== null) {
-        this.adheredKind = this.sim.getCell(this.adheredId)?.kind ?? 0;
-        if (this.adheredKind) {
-          this.sim.setKindAdhesion(this.opts.playerKind, this.adheredKind, ADHERE_J);
-        }
-      }
+    // ADHERE: latch onto a hostile cell the protrusion is actually TOUCHING (membranes in
+    // contact), not merely one that's near the cursor — so you can only rip what you reach.
+    if (this.adheredId === null || !this.sim.getCell(this.adheredId) || !this.opts.isHostile(this.adheredId)) {
+      this.adheredId = this.findTouching(pc.x, pc.y, this.radiusOf(pc.pixels));
     }
-    if (this.adheredId !== null) this.status = "latched";
+    if (this.adheredId === null) return;
 
-    // RIP: a fast flick while latched tears a chunk off the gripped side (nearest the
-    // attacker — that's the membrane the pseudopod is pulling).
-    if (this.adheredId !== null && cursorSpeed >= FLICK_SPEED && this.cooldownMs <= 0) {
+    if (this.adheredKind === 0) {
+      this.adheredKind = this.sim.getCell(this.adheredId)?.kind ?? 0;
+      if (this.adheredKind) this.sim.setKindAdhesion(this.opts.playerKind, this.adheredKind, ADHERE_J);
+    }
+    this.status = "latched";
+
+    // RIP: a flick while latched tears a big chunk off the gripped (near) side — toward the
+    // attacker. A big chunk normally drops the cell below its lysis threshold -> it dies.
+    if (cursorSpeed >= FLICK_SPEED && this.cooldownMs <= 0) {
       this.opts.rip(this.adheredId, pc.x, pc.y, RIP_COUNT);
       this.cooldownMs = FLICK_COOLDOWN_MS;
       this.status = "ripped";
-      // The target may have lysed; drop the grip so the next contact re-latches.
       this.dropAdhesion();
       this.adheredId = null;
     }
   }
 
-  private findTarget(px: number, py: number, cx: number, cy: number): number | null {
+  /** The nearest hostile cell whose membrane is in CONTACT with the attacker (centroids
+   *  within the sum of radii + a small margin). */
+  private findTouching(px: number, py: number, rSelf: number): number | null {
     let best: number | null = null;
     let bestD = Infinity;
     for (const rec of this.sim.getCells()) {
       if (!this.opts.isHostile(rec.id)) continue;
       const c = this.sim.centroidLattice(rec.id);
       if (!c) continue;
-      if (Math.hypot(c.x - px, c.y - py) > REACH) continue; // out of the pseudopod's reach
-      const dCursor = Math.hypot(c.x - cx, c.y - cy); // pick the one we're reaching toward
-      if (dCursor < bestD) {
-        bestD = dCursor;
+      const d = Math.hypot(c.x - px, c.y - py);
+      if (d > rSelf + this.radiusOf(c.pixels) + TOUCH_MARGIN) continue; // not touching
+      if (d < bestD) {
+        bestD = d;
         best = rec.id;
       }
     }
     return best;
+  }
+
+  private radiusOf(pixels: number): number {
+    return Math.sqrt(pixels / Math.PI);
+  }
+
+  /** Clamp the cursor to the protrusion's reach from the player. */
+  private clampReach(px: number, py: number, cx: number, cy: number): { x: number; y: number } {
+    const dx = cx - px, dy = cy - py;
+    const d = Math.hypot(dx, dy);
+    if (d <= REACH || d === 0) return { x: cx, y: cy };
+    const k = REACH / d;
+    return { x: px + dx * k, y: py + dy * k };
   }
 
   private dropAdhesion(): void {
@@ -137,6 +136,5 @@ export class CpmTrogocytosis {
   private release(): void {
     this.dropAdhesion();
     this.adheredId = null;
-    this.extendMsLeft = 0;
   }
 }

@@ -15,7 +15,7 @@ import {
   CPM,
   GridManipulator,
   ConnectedComponentsByCell,
-  BarrierConstraint,
+  HardConstraint,
   type CellId,
   type ActivityConstraint,
   type PerimeterConstraint,
@@ -24,6 +24,25 @@ import { PerCellAttractionConstraint } from "./per-cell-attraction-constraint";
 import { CpmFootprintConstraint } from "./cpm-footprint-constraint";
 import { CpmFlowConstraint } from "./cpm-flow-constraint";
 import type { CpmCellProfile, CpmWorldConfig } from "./cpm-config";
+
+/** A barrier that forbids copy attempts into/out of "barrier" kinds (frozen debris) so a
+ *  fragment neither evaporates nor gets eaten — EXCEPT when the OTHER party is
+ *  `PERMEABLE_KIND` (the player), which may plow straight through it. So debris blocks
+ *  microbes + the medium (persists intact) but the player passes right over it. */
+class PermeableBarrierConstraint extends HardConstraint {
+  confChecker(): void {}
+  fulfilled(_si: number, _ti: number, srcType: number, tgtType: number): boolean {
+    const conf = this.conf as unknown as { IS_BARRIER: boolean[]; PERMEABLE_KIND: number };
+    const C = (this as unknown as { C: { cellKind(id: number): number } }).C;
+    const sk = C.cellKind(srcType);
+    const tk = C.cellKind(tgtType);
+    const sB = conf.IS_BARRIER[sk];
+    const tB = conf.IS_BARRIER[tk];
+    if (!sB && !tB) return true; // neither side is a barrier: unaffected
+    const other = sB ? tk : sk; // the non-barrier party
+    return other === conf.PERMEABLE_KIND; // only the player may cross a barrier boundary
+  }
+}
 
 export interface CellRecord {
   readonly id: CellId;
@@ -78,7 +97,10 @@ export class CpmSimulation {
   constructor(
     readonly worldConfig: CpmWorldConfig,
     /** Kind profiles in order; becomes kinds 1..N. */
-    kindProfiles: readonly CpmCellProfile[]
+    kindProfiles: readonly CpmCellProfile[],
+    /** Kind allowed to cross barrier (debris) boundaries — the player, so it plows through
+     *  fragments while they stay frozen against everything else. -1 = nothing permeable. */
+    private readonly barrierPermeableKind = -1
   ) {
     this.field = worldConfig.fieldSize;
     this.scale = worldConfig.worldPerPixel;
@@ -167,8 +189,11 @@ export class CpmSimulation {
     this.flow = new CpmFlowConstraint();
     this.cpm.add(this.flow);
     // Frozen barrier kinds (debris): forbid copy attempts in/out so fragments persist
-    // intact for their TTL (created/removed by direct setpix, which bypasses this).
-    this.cpm.add(new BarrierConstraint({ IS_BARRIER }));
+    // intact for their TTL — but PERMEABLE to the player so it plows right over them
+    // (created/removed by direct setpix, which bypasses this).
+    this.cpm.add(
+      new PermeableBarrierConstraint({ IS_BARRIER, PERMEABLE_KIND: this.barrierPermeableKind })
+    );
     // NOTE: no SoftConnectivityConstraint. Profiling showed it was ~72% of the CPM
     // step cost (a per-copy-attempt local flood-fill), and it was leftover from the
     // old embedded-compartment era — the solid cell + soft-body nucleus stays

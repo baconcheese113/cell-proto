@@ -267,7 +267,7 @@ export class WorldSim {
       FIBROBLAST_PROFILE, // 6 FIBROBLAST
       DIGESTING_PROFILE, // 7 DIGEST
       DEBRIS_PROFILE, // 8 DEBRIS
-    ]);
+    ], CONTROLLED_KIND); // the player plows through debris; it's frozen vs everything else
     const center = Math.floor(cfg.fieldSize / 2);
     this.sim.originWX = -center * this.sim.scale;
     this.sim.originWY = -center * this.sim.scale;
