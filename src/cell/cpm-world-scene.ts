@@ -12,6 +12,7 @@ import type { WorldSnapshot, SnapshotOccupant } from "./world-sim";
 import { LocalSimClient, WorkerSimClient, type SimClient } from "./sim-client";
 import { runBench, spikeCompare } from "./cpm-bench";
 import { gpuSpike } from "./cpm-gpu-spike";
+import { gpuBench } from "./gpu/cpm-gpu-bench";
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: SimClient;
@@ -127,6 +128,9 @@ export class CpmWorldScene extends Phaser.Scene {
       spike: (targetBorder = 20000, B = 4) => spikeCompare(targetBorder, B),
       // WebGPU substrate spike: GPU vs CPU MCS/sec for the checkerboard step. __cpm.gpuSpike().
       gpuSpike: (field = 336, cellSize = 10, mcs = 200, B = 4) => gpuSpike(field, cellSize, mcs, B),
+      // GpuCpm foundation A/B: real class (J matrix + volume + drift fix) vs CPU ref at equal
+      // border. The M1a gate. __cpm.gpuBench({ mcs: 200 }).
+      gpuBench: (o?: Parameters<typeof gpuBench>[0]) => gpuBench(o),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;
