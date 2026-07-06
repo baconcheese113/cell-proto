@@ -16,8 +16,13 @@ export async function acquireGpu(): Promise<GpuHandle | { error: string }> {
   if (!gpu) return { error: "WebGPU not available (navigator.gpu missing)" };
   const adapter = await gpu.requestAdapter();
   if (!adapter) return { error: "no GPU adapter" };
+  // The step shader needs >8 storage buffers per stage (baseline min is 8). Desktop adapters
+  // support far more; request up to 16, clamped to what this adapter allows.
+  const want = 16;
+  const cap = adapter.limits?.maxStorageBuffersPerShaderStage ?? 8;
+  const requiredLimits = { maxStorageBuffersPerShaderStage: Math.min(want, cap) };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const device: any = await adapter.requestDevice();
+  const device: any = await adapter.requestDevice({ requiredLimits });
   // Surface async validation errors (which otherwise silently drop passes) to the console.
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

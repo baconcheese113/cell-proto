@@ -13,6 +13,7 @@ import { LocalSimClient, WorkerSimClient, type SimClient } from "./sim-client";
 import { runBench, spikeCompare } from "./cpm-bench";
 import { gpuSpike } from "./cpm-gpu-spike";
 import { gpuBench } from "./gpu/cpm-gpu-bench";
+import { gpuSteerTest, gpuBarrierTest } from "./gpu/cpm-gpu-scenarios";
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: SimClient;
@@ -131,6 +132,9 @@ export class CpmWorldScene extends Phaser.Scene {
       // GpuCpm foundation A/B: real class (J matrix + volume + drift fix) vs CPU ref at equal
       // border. The M1a gate. __cpm.gpuBench({ mcs: 200 }).
       gpuBench: (o?: Parameters<typeof gpuBench>[0]) => gpuBench(o),
+      // M1c behaviour tests: a steered cell migrates; a barrier blocks non-players, not the player.
+      gpuSteerTest: (mcs?: number) => gpuSteerTest(mcs),
+      gpuBarrierTest: (mcs?: number) => gpuBarrierTest(mcs),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;

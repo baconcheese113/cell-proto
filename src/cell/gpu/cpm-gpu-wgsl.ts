@@ -21,10 +21,11 @@ struct Params {
 @group(0) @binding(3) var<storage, read> targetVol: array<f32>;
 @group(0) @binding(4) var<storage, read> J: array<f32>;
 @group(0) @binding(5) var<uniform> P: Params;
-@group(0) @binding(6) var<uniform> NK: vec4<u32>; // NK.x = nKinds
+@group(0) @binding(6) var<uniform> NK: vec4<u32>; // x=nKinds y=permeableKind z=barrierBitmask
 @group(0) @binding(7) var<storage, read_write> act: array<i32>;      // per-pixel activity
 @group(0) @binding(8) var<storage, read> kindParams: array<vec4<f32>>; // per-kind: x=maxAct y=lambdaAct z=lambdaP w=targetP
 @group(0) @binding(9) var<storage, read_write> perim: array<atomic<i32>>; // per-cell perimeter
+@group(0) @binding(10) var<storage, read> steer: array<vec4<f32>>;   // per-cell: x=targetX y=targetY z=lambda w=frozen
 
 fn inb(x: i32, y: i32) -> bool { return x >= 0 && x < i32(P.W) && y >= 0 && y < i32(P.H); }
 fn latAt(x: i32, y: i32) -> i32 { if (inb(x,y)) { return lattice[y * i32(P.W) + x]; } return 0; }
@@ -111,6 +112,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let kSrc = cellKind[srcId];
   let kTgt = cellKind[tgtId];
+
+  // Hard barrier (PermeableBarrierConstraint): a pixel is impassable if its KIND is a barrier or
+  // its CELL is frozen. A cross-barrier copy is rejected unless the non-barrier side is the
+  // permeable (player) kind. Short-circuits before deltaH, like Artistoo's hard constraints.
+  let sB = ((NK.z & (1u << kSrc)) != 0u) || (srcId > 0 && steer[srcId].w > 0.5);
+  let tB = ((NK.z & (1u << kTgt)) != 0u) || (tgtId > 0 && steer[tgtId].w > 0.5);
+  if (sB || tB) {
+    var otherKind = kSrc;
+    if (sB) { otherKind = kTgt; }
+    if (otherKind != NK.y) { return; }
+  }
+
   var dH = adh(cx, cy, kSrc) - adh(cx, cy, kTgt);
   if (tgtId > 0) {
     let v = f32(atomicLoad(&vol[tgtId])); let tv = targetVol[tgtId];
@@ -152,6 +165,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let ps = f32(atomicLoad(&perim[tgtId])); let ptp = kindParams[kTgt].w;
       let hnew = (ps + f32(pcTgt)) - ptp; let hold = ps - ptp;
       dH += lpTgt * (hnew*hnew - hold*hold);
+    }
+  }
+  // Steering (PerCellAttractionConstraint): reward copies whose direction (source->target pixel)
+  // aligns with the source cell's direction toward its attraction point.
+  if (srcId > 0) {
+    let s = steer[srcId];
+    if (s.z > 0.0) {
+      let dirx = s.x - f32(sx); let diry = s.y - f32(sy);
+      let ldir = dirx*dirx + diry*diry;
+      if (ldir > 0.0) {
+        let r = f32(cx - sx) * dirx + f32(cy - sy) * diry;
+        dH += (-r * s.z) / sqrt(ldir);
+      }
     }
   }
   var accept = dH < 0.0;

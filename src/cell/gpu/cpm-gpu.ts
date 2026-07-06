@@ -31,6 +31,8 @@ export class GpuCpm {
     lattice: Int32Array; kind: Int32Array; targetVol: Float32Array; maxId: number;
     maxAct: number[]; lambdaAct: number[]; // per-kind (index 0 = background), Act model params
     lambdaP: number[]; targetP: number[]; // per-kind Perimeter constraint params
+    permeableKind?: number; // kind that may cross barriers (the player); default 1
+    barrierKinds?: number[]; // kinds that act as hard barriers (debris/walls); default none
   }): Promise<GpuCpm | { error: string }> {
     const g = await acquireGpu();
     if ("error" in g) return g;
@@ -67,6 +69,7 @@ export class GpuCpm {
       act: store(N * 4), // zero-initialised by WebGPU
       kindParams: store(kindParams.byteLength),
       perim: store(volN * 4),
+      steer: store(volN * 16), // per-cell vec4 (targetX, targetY, lambda, frozen); zero = idle
       framebuffer: store(N * 4),
       params: uniform(48),
       nk: uniform(16),
@@ -82,7 +85,9 @@ export class GpuCpm {
     d.queue.writeBuffer(buf.J, 0, opts.J);
     d.queue.writeBuffer(buf.lut, 0, opts.lut);
     d.queue.writeBuffer(buf.kindParams, 0, kindParams);
-    d.queue.writeBuffer(buf.nk, 0, new Uint32Array([opts.nKinds, 0, 0, 0]));
+    let barrierBitmask = 0;
+    for (const k of opts.barrierKinds ?? []) barrierBitmask |= 1 << k;
+    d.queue.writeBuffer(buf.nk, 0, new Uint32Array([opts.nKinds, opts.permeableKind ?? 1, barrierBitmask, 0]));
     d.queue.writeBuffer(buf.volDim, 0, new Uint32Array([N, volN, field, field]));
     d.queue.writeBuffer(buf.cmDim, 0, new Uint32Array([N, 0, 0, 0]));
 
@@ -111,6 +116,7 @@ export class GpuCpm {
           { binding: 7, resource: { buffer: buf.act } },
           { binding: 8, resource: { buffer: buf.kindParams } },
           { binding: 9, resource: { buffer: buf.perim } },
+          { binding: 10, resource: { buffer: buf.steer } },
         ],
       }),
       actDecay: d.createBindGroup({
@@ -219,6 +225,12 @@ export class GpuCpm {
       this.dispatch(enc, this.pipe.actDecay, this.bind.actDecay, N);
       this.d.queue.submit([enc.finish()]);
     }
+  }
+
+  /** Command cell `id` toward (x,y) with steering strength `lambda` (0 = idle). `frozen` makes
+   *  the cell a hard barrier (wall-sleep). Writes just this cell's slot in the steer buffer. */
+  setSteer(id: number, x: number, y: number, lambda: number, frozen = 0): void {
+    this.d.queue.writeBuffer(this.buf.steer, id * 16, new Float32Array([x, y, lambda, frozen]));
   }
 
   async flush(): Promise<void> {
