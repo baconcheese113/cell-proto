@@ -11,6 +11,7 @@
 // rather than as a node script because the CpmSimulation import chain is bundler-resolved.)
 
 import { CpmSimulation } from "./cpm-simulation";
+import { checkerboardStepN, parallelWidth } from "./cpm-checkerboard-spike";
 import {
   DEFAULT_WORLD_CONFIG,
   PLAYER_PROFILE,
@@ -149,6 +150,53 @@ export function benchStep(
     minMsPerStep: +sorted[0].toFixed(3),
     nsPerBorder: +((median * 1e6) / b).toFixed(1),
   };
+}
+
+/** Fidelity snapshot: how far cells are from their target volume (health check — a broken
+ *  update makes cells collapse/explode/fragment, spiking this) + connected-component count. */
+function fidelity(sim: CpmSimulation): { cells: number; meanVolDevPct: number; fragmented: number } {
+  const sizes = sim.componentSizesByCell();
+  let n = 0;
+  let dev = 0;
+  let fragmented = 0;
+  for (const rec of sim.getCells()) {
+    const target = sim.targetVolume(rec.id);
+    const c = sim.centroidLattice(rec.id);
+    if (target > 0 && c) {
+      dev += Math.abs(c.pixels - target) / target;
+      n++;
+    }
+    if ((sizes.get(rec.id)?.length ?? 1) > 1) fragmented++;
+  }
+  return { cells: n, meanVolDevPct: n ? +((dev / n) * 100).toFixed(1) : 0, fragmented };
+}
+
+/** Checkerboard SPIKE comparison: pack two fresh sims to the same border, settle each under its
+ *  own step (sequential vs checkerboard) for `mcs` steps, and report timing + fidelity so we can
+ *  judge whether the parallel-friendly update preserves the dynamics before building the
+ *  substrate. `parallelWidth` = how many independent copy attempts run per phase (the ceiling on
+ *  cores/GPU-threads it could use). */
+export function spikeCompare(targetBorder = 20000, B = 4, mcs = 80): object {
+  const time = (fn: () => void, runs = 30): number => {
+    const t0 = performance.now();
+    for (let i = 0; i < runs; i++) fn();
+    return +((performance.now() - t0) / runs).toFixed(2);
+  };
+  const seq = packToBorder(targetBorder);
+  for (let i = 0; i < mcs; i++) seq.sim.step();
+  const seqStats = { msPerMCS: time(() => seq.sim.stepN(1)), ...fidelity(seq.sim) };
+
+  const cb = packToBorder(targetBorder);
+  for (let i = 0; i < mcs; i++) checkerboardStepN(cb.sim, 1, B);
+  const cbStats = {
+    msPerMCS: time(() => checkerboardStepN(cb.sim, 1, B)),
+    ...fidelity(cb.sim),
+    B,
+    parallelWidth: parallelWidth(cb.sim.field, B),
+  };
+  const out = { border: seq.border, sequential: seqStats, checkerboard: cbStats };
+  console.log("🎛️ checkerboard spike (single-threaded — timing not the point; fidelity is):", out);
+  return out;
 }
 
 /** One-call bench for the DEV console/Playwright: pack a fresh sim to ~targetBorder, time the

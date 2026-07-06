@@ -10,7 +10,8 @@ import { CpmRenderer } from "./cpm-renderer";
 import { DEV_FREEZE_STREAMING } from "./world-sim";
 import type { WorldSnapshot, SnapshotOccupant } from "./world-sim";
 import { LocalSimClient, WorkerSimClient, type SimClient } from "./sim-client";
-import { runBench } from "./cpm-bench";
+import { runBench, spikeCompare } from "./cpm-bench";
+import { gpuSpike } from "./cpm-gpu-spike";
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: SimClient;
@@ -122,6 +123,10 @@ export class CpmWorldScene extends Phaser.Scene {
       stats: () => this.lastSnap?.stats,
       // MC solver stress bench (fresh isolated sim; no world spawn-in). __cpm.bench(30000).
       bench: (targetBorder = 30000, opts?: Parameters<typeof runBench>[1]) => runBench(targetBorder, opts),
+      // Checkerboard spike: sequential vs checkerboard timing + fidelity. __cpm.spike().
+      spike: (targetBorder = 20000, B = 4) => spikeCompare(targetBorder, B),
+      // WebGPU substrate spike: GPU vs CPU MCS/sec for the checkerboard step. __cpm.gpuSpike().
+      gpuSpike: (field = 336, cellSize = 10, mcs = 200, B = 4) => gpuSpike(field, cellSize, mcs, B),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;

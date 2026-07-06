@@ -20,6 +20,7 @@ import { CellComposition } from "./cell-composition";
 import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import { simStepsFor } from "./sim-clock";
+import { checkerboardStepN } from "./cpm-checkerboard-spike";
 import { AgentWorld, TEAM } from "./agent-world";
 import { hostile } from "./agent-world-core";
 import {
@@ -279,6 +280,10 @@ export class WorldSim {
 
   controlledCellId = 0;
   deaths = 0;
+  /** SPIKE (dev): drive the CPM with the checkerboard step instead of Artistoo's sequential
+   *  MC, to judge whether the parallel-friendly update preserves the dynamics. */
+  useCheckerboard = false;
+  checkerboardB = 4;
   stats: WorldHudStats = {
     macrophages: 0, lining: 0, microbes: 0, nutrients: 0, energy: 0, hp: 0, combatStatus: "resting",
   };
@@ -669,7 +674,13 @@ export class WorldSim {
     this.simAccumMs += dtSec * 1000;
     const plan = simStepsFor(this.simAccumMs, 1000 / this.mcsPerSec, MAX_CATCHUP_STEPS);
     this.simAccumMs = plan.remainderMs;
-    this.prof.measure("cpm.step", () => this.sim.stepN(plan.steps));
+    // SPIKE: swap in the checkerboard step (same math, phase-alternating order) to eyeball
+    // whether the parallel-friendly scheme preserves the dynamics. DEV toggle only.
+    this.prof.measure("cpm.step", () =>
+      this.useCheckerboard
+        ? checkerboardStepN(this.sim, plan.steps, this.checkerboardB)
+        : this.sim.stepN(plan.steps)
+    );
 
     // Infinite-world streaming (or, when frozen, edge-cull traffic).
     let shiftX = 0;
