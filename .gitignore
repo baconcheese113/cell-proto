@@ -26,8 +26,10 @@ dist-ssr
 .wrangler/
 # Local brainstorming/planning working docs — not tracked (see memory: no-commit-workplans)
 docs/superpowers/
-# Playwright MCP test artifacts
+# Playwright artifacts
 .playwright-mcp/
+test-results/
+playwright-report/
 
 # debug screenshots
 *.png
