@@ -137,7 +137,7 @@ export class CpmRules {
     this.cb.onDeath(id, reason);
   }
 
-  /** Drop tracking for an id (e.g. when it went dormant rather than died). */
+  /** Drop tracking for an id (e.g. when it streamed out to the agent tier rather than died). */
   forget(id: number): void {
     this.dead.delete(id);
     this.lowVolTicks.delete(id);

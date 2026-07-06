@@ -255,11 +255,12 @@ export interface CpmWorldConfig {
 }
 
 export const DEFAULT_WORLD_CONFIG: CpmWorldConfig = {
-  // 320 (was 220): a bigger simulated bubble (320*5 = 1600 world px) pushes the
-  // streaming boundary further OFF-SCREEN, cutting visible pop-in/recenter
-  // artifacts. Cost scales ~with the cells the wall fills here, so this is a
-  // stopgap — the no-cost large-area answer is the agent-tier render (LW2).
-  fieldSize: 224,
+  // 336 (was 224, ~1.5x): a bigger simulated bubble (336*7 = 2352 world px) gives more
+  // full-CPM play area and pushes the streaming boundary further OFF-SCREEN, cutting
+  // visible pop-in/recenter artifacts. Cost scales ~with the cells promoted inside it
+  // (more area -> more border), so sim-Hz drops somewhat; still well within budget at the
+  // current cell counts. The no-cost large-area answer remains the agent-tier render.
+  fieldSize: 336,
   worldPerPixel: 7,
   temperature: 16,
   // 3 (was 2): movement is sim-rate-bound, so more MCS/frame = snappier crawl per

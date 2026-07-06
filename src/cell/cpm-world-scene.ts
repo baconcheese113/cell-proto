@@ -10,6 +10,7 @@ import { CpmRenderer } from "./cpm-renderer";
 import { DEV_FREEZE_STREAMING } from "./world-sim";
 import type { WorldSnapshot, SnapshotOccupant } from "./world-sim";
 import { LocalSimClient, WorkerSimClient, type SimClient } from "./sim-client";
+import { runBench } from "./cpm-bench";
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: SimClient;
@@ -17,7 +18,10 @@ export class CpmWorldScene extends Phaser.Scene {
   private lastSnap?: WorldSnapshot;
   private agentGfx!: Phaser.GameObjects.Graphics;
   private interiorGfx!: Phaser.GameObjects.Graphics;
-  private bg!: Phaser.GameObjects.TileSprite;
+  // World-anchored grid backdrop drawn to EXACTLY cover the CPM framebuffer (the lattice
+  // bubble), so the reference grid + its border show the real CPM-render boundary. (Was a
+  // screen-fixed tile whose extent didn't match the world-anchored framebuffer.)
+  private gridGfx!: Phaser.GameObjects.Graphics;
   private hud!: Phaser.GameObjects.Text;
   private profText!: Phaser.GameObjects.Text;
   private camCx: number | undefined;
@@ -40,6 +44,10 @@ export class CpmWorldScene extends Phaser.Scene {
   // still — which would tear continuously while merely holding. Screen space = real mouse motion.
   private prevPointerX: number | undefined;
   private prevPointerY: number | undefined;
+  // Seam diagnostic (toggle G): draw agent-tier cells as uniform cyan discs, promoted
+  // (now-CPM) cells as magenta rings at their durable record, and tint the CPM lattice
+  // orange — so the agent↔CPM handoff is unmistakable and mis-snaps are visible.
+  private diag = false;
 
   create(): void {
     this.makeBackground();
@@ -88,6 +96,15 @@ export class CpmWorldScene extends Phaser.Scene {
     // Live speed/smoothness dial: [ slower+smoother, ] faster+choppier (MCS rate).
     this.input.keyboard?.on("keydown-CLOSED_BRACKET", () => this.sim.adjustMcs(+15));
     this.input.keyboard?.on("keydown-OPEN_BRACKET", () => this.sim.adjustMcs(-15));
+    // Seam-diagnostic overlay toggle (sent to the sim via setInput each frame).
+    this.input.keyboard?.on("keydown-G", () => { this.diag = !this.diag; });
+    // Cell inspector: hover a CPM cell + press I to log its full provenance (which code path
+    // created it, whether it's an orphan with no agent link, frozen state, etc.) to the
+    // console. In worker mode this logs in the worker's console context.
+    this.input.keyboard?.on("keydown-I", () => {
+      const ptr = this.input.activePointer;
+      this.sim.pickCell(ptr.worldX, ptr.worldY);
+    });
 
     if (import.meta.env.DEV) this.installDebugHandle();
   }
@@ -103,6 +120,8 @@ export class CpmWorldScene extends Phaser.Scene {
       // independently of render FPS.
       simTime: () => ({ simTimeSec: this.lastSnap?.simTimeSec, tickSeq: this.lastSnap?.tickSeq }),
       stats: () => this.lastSnap?.stats,
+      // MC solver stress bench (fresh isolated sim; no world spawn-in). __cpm.bench(30000).
+      bench: (targetBorder = 30000, opts?: Parameters<typeof runBench>[1]) => runBench(targetBorder, opts),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;
@@ -156,6 +175,7 @@ export class CpmWorldScene extends Phaser.Scene {
       engulf: pointer.rightButtonDown(),
       pointerSpeed,
       viewHalfDiag: Math.hypot(cam.width / cam.zoom, cam.height / cam.zoom) / 2,
+      diag: this.diag,
     });
 
     const snap = this.sim.takeSnapshot();
@@ -182,6 +202,7 @@ export class CpmWorldScene extends Phaser.Scene {
     if (fresh) {
       this.lastRenderedTick = snap.tickSeq;
       this.lastSnap = snap;
+      this.drawGridBackdrop(snap);
       this.cpmRenderer.blit(snap.framebuffer, snap.originWX, snap.originWY);
       this.drawInterior(snap);
       this.renderAgents(snap);
@@ -200,8 +221,6 @@ export class CpmWorldScene extends Phaser.Scene {
       this.camCy = this.camCy === undefined ? p.y : this.camCy + (p.y - this.camCy) * 0.1;
       this.cameras.main.centerOn(this.camCx, this.camCy);
     }
-    this.bg.tilePositionX = this.cameras.main.scrollX;
-    this.bg.tilePositionY = this.cameras.main.scrollY;
   }
 
   /** Sample render FPS (every rAF) + worker sim-Hz (distinct snapshots) over 500ms. */
@@ -222,9 +241,12 @@ export class CpmWorldScene extends Phaser.Scene {
 
   private updateHud(snap: WorldSnapshot): void {
     const s = snap.stats;
+    // Keep the HUD short + LEFT-contained so it never runs across the top-right FPS/perf
+    // readout. Control hints live in-code, not on-screen. The diag legend only shows when on.
     const text =
-      `Vessel world — ${s.combatStatus}   LMB steer · RMB grab (rip/engulf)   speed [ / ] : ${snap.mcsPerSec}\n` +
-      `you: hp ${s.hp} energy ${s.energy}   macrophages ${s.macrophages}   vessel-wall ${s.lining}   microbes ${s.microbes}   nutrients ${s.nutrients}`;
+      `${s.combatStatus}   speed ${snap.mcsPerSec} [ / ]\n` +
+      `hp ${s.hp}  energy ${s.energy}  microbes ${s.microbes}  nutrients ${s.nutrients}` +
+      (this.diag ? `\nDIAG(G): cyan=agent  magenta=promoted  orange=CPM  RED=leak(ghost/orphan)` : "");
     if (text !== this.lastHudText) {
       this.hud.setText(text);
       this.lastHudText = text;
@@ -233,20 +255,37 @@ export class CpmWorldScene extends Phaser.Scene {
   }
 
   private makeBackground(): void {
-    const key = "cpm-grid-tile";
-    if (!this.textures.exists(key)) {
-      const g = this.add.graphics();
-      g.fillStyle(0x0b1119, 1).fillRect(0, 0, 64, 64);
-      g.lineStyle(1, 0x16222e, 1).strokeRect(0, 0, 64, 64);
-      g.generateTexture(key, 64, 64);
-      g.destroy();
+    // Camera background shows OUTSIDE the CPM bubble; the grid backdrop (drawn each frame in
+    // drawGridBackdrop, once we know the framebuffer bounds) fills the bubble itself.
+    this.gridGfx = this.add.graphics().setDepth(-100);
+  }
+
+  /** Draw the reference grid as a world-anchored backdrop covering EXACTLY the CPM framebuffer
+   *  (originWX/WY .. +field*scale), so its fill + border delimit the real CPM-render area and
+   *  its lines sit under the cells. Grid lines are world-aligned (stable across recenters);
+   *  only the outer border tracks the framebuffer bounds. */
+  private drawGridBackdrop(snap: WorldSnapshot): void {
+    const g = this.gridGfx;
+    g.clear();
+    const w = snap.field * snap.scale;
+    const left = snap.originWX;
+    const top = snap.originWY;
+    const right = left + w;
+    const bottom = top + w;
+    g.fillStyle(0x0b1119, 1).fillRect(left, top, w, w);
+    const step = snap.scale * 8; // one grid cell = 8 lattice px
+    g.lineStyle(1, 0x16222e, 1).beginPath();
+    for (let x = Math.ceil(left / step) * step; x < right; x += step) {
+      g.moveTo(x, top);
+      g.lineTo(x, bottom);
     }
-    this.bg = this.add
-      .tileSprite(0, 0, this.scale.width, this.scale.height, key)
-      .setOrigin(0, 0)
-      .setScrollFactor(0)
-      .setDepth(-100);
-    this.scale.on("resize", (size: Phaser.Structs.Size) => this.bg.setSize(size.width, size.height));
+    for (let y = Math.ceil(top / step) * step; y < bottom; y += step) {
+      g.moveTo(left, y);
+      g.lineTo(right, y);
+    }
+    g.strokePath();
+    // Bright boundary = the edge of CPM rendering (what the user wants the grid to show).
+    g.lineStyle(2, 0x3a5a6a, 1).strokeRect(left, top, w, w);
   }
 
   /** Brief expanding, fading ring + flash where a cell died/digested. */
@@ -267,10 +306,37 @@ export class CpmWorldScene extends Phaser.Scene {
     const v = this.cameras.main.worldView;
     const m = 40; // margin so discs near the edge still draw
     const minX = v.x - m, maxX = v.right + m, minY = v.y - m, maxY = v.bottom + m;
+    const ringW = Math.max(1.5, snap.scale * 0.3);
     for (const a of snap.agents) {
       if (a.x < minX || a.x > maxX || a.y < minY || a.y > maxY) continue;
+      if (this.diag) {
+        // Uniform cyan = an agent-tier LOD disc; a magenta ring = the durable record of a
+        // cell PROMOTED to CPM (drawn over its orange blob, so a mis-snap shows as
+        // ring-not-on-blob and a demote flips the ring back to a cyan disc). A RED ring =
+        // a GHOST: a record claiming a CPM shadow that no longer exists (a leak).
+        if (a.tier === "cpm") {
+          g.lineStyle(a.ghost ? ringW * 1.6 : ringW, a.ghost ? 0xff2a2a : 0xff00ff, 1);
+          g.beginPath(); // reset the path so consecutive rings aren't joined by stray lines
+          g.strokeCircle(a.x, a.y, a.r);
+        } else {
+          g.fillStyle(0x00e5ff, 1);
+          g.fillCircle(a.x, a.y, a.r);
+        }
+        continue;
+      }
       g.fillStyle(a.color, 1);
       g.fillCircle(a.x, a.y, a.r);
+    }
+
+    // Diagnostic: true ORPHAN CPM cells (no agent link) — draw a bold red ring at the
+    // blob so a real leak stands out from the benign magenta/cyan handoff markers.
+    if (this.diag) {
+      for (const o of snap.diagOrphans) {
+        if (o.wx < minX || o.wx > maxX || o.wy < minY || o.wy > maxY) continue;
+        g.lineStyle(ringW * 1.6, 0xff2a2a, 1);
+        g.beginPath();
+        g.strokeCircle(o.wx, o.wy, o.r);
+      }
     }
   }
 

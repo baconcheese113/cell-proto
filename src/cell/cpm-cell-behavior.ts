@@ -149,7 +149,12 @@ export class CpmCellBehavior {
       if (st.retargetIn > 0) continue;
 
       const sense = 60 + caps.chemotaxis * 34;
-      const fleeDist = 40 + caps.motility * 14;
+      // Flee distance is LATTICE px (scale ~7 world px each). Kept SMALL so prey hold their
+      // ground and only bolt when a predator is nearly on top of them (~3-6 lattice ≈
+      // 20-45 world px) — bacteria that aren't terrified from across the vessel, so you can
+      // actually close in for a kill. Doubles as the flee-step size, so a small value reads
+      // as a last-moment dodge rather than a panicked sprint. Tune here for feel.
+      const fleeDist = 3 + caps.motility * 3;
       const choice = chooseSteer(self, agents, sense, fleeDist);
 
       let tx: number;

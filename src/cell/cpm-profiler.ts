@@ -2,14 +2,13 @@
 // of scaling the living world up is visible immediately (not profiled after the
 // fact). Wrap each subsystem with `measure(name, fn)` each frame, call `frame()`
 // once at the end, and read `report()` for a smoothed ms/frame breakdown, FPS, the
-// scale drivers (active/dormant cell counts, CPM border-pixel total), and a derived
+// scale drivers (active cell count, CPM border-pixel total), and a derived
 // ms-per-active-cell. The scene renders this as an overlay and exposes it on __cpm.
 //
 // The clock is injectable so the aggregation/EMA math is deterministic in tests.
 
 export interface ProfilerMetrics {
   activeCells: number;
-  dormantCells: number;
   /** Total CPM border pixels — the real driver of CPM step cost. */
   borderPixels: number;
 }
@@ -35,7 +34,7 @@ export class CpmProfiler {
   private readonly startStack: Array<{ name: string; t: number }> = [];
   private fpsEma = 60;
   private lastFrameTs = 0;
-  metrics: ProfilerMetrics = { activeCells: 0, dormantCells: 0, borderPixels: 0 };
+  metrics: ProfilerMetrics = { activeCells: 0, borderPixels: 0 };
 
   constructor(now: () => number = () => performance.now()) {
     this.now = now;
@@ -106,7 +105,7 @@ export class CpmProfiler {
     const r = this.report();
     const lines = [
       `FPS ${r.fps.toFixed(0)}  sim ${r.totalMs.toFixed(1)}ms  ` +
-        `cells ${r.metrics.activeCells}(+${r.metrics.dormantCells} dormant)  ` +
+        `cells ${r.metrics.activeCells}  ` +
         `border ${r.metrics.borderPixels}  ${r.msPerActiveCell.toFixed(2)}ms/cell`,
     ];
     for (const [name, ms] of r.sections) {

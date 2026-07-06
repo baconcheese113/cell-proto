@@ -74,7 +74,18 @@ class Adhesion extends SoftConstraint {
 	 @param {CellId} tgt_type - cellid of the target pixel. 
 	 @return {number} the change in Hamiltonian for this copy attempt and this constraint.*/ 
 	deltaH( sourcei, targeti, src_type, tgt_type ){
-		return this.H( targeti, src_type ) - this.H( targeti, tgt_type )
+		// Equivalent to H(targeti,src_type) - H(targeti,tgt_type), but in ONE pass over the
+		// neighbours: the two H calls otherwise recompute neighi(targeti) AND re-read each
+		// neighbour's type twice. Same math, fewer allocations/lookups. (Perf experiment,
+		// measured against __cpm.bench.)
+		const N = this.C.grid.neighi( targeti )
+		let r = 0
+		for( let j = 0 ; j < N.length ; j++ ){
+			const tn = this.C.pixti( N[j] )
+			if( tn !== src_type ) r += this.J( tn, src_type )
+			if( tn !== tgt_type ) r -= this.J( tn, tgt_type )
+		}
+		return r
 	}
 }
 

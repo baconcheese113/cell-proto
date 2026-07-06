@@ -72,7 +72,11 @@ const BUILDABLES = [
   { type: "golgi", color: 0xffe066, radius: 3 },
 ];
 
-const MICROBE_CAP = 110;
+// 60 (was 110): the big bubble promoted the whole cap into full CPM at once — clutter + the
+// dominant AWAKE border cost now that walls sleep. 60 still reads as a busy vessel while
+// halving the promoted microbe load. Total across the agent tier (they persist — no distance
+// culling; far ones are cheap discs), biased to spawn near the player.
+const MICROBE_CAP = 60;
 const IMMUNE_CAP = 14;
 // How firmly a promoted wall cell is anchored to its home slot — the SNAP-BACK force
 // that pulls the floppy lining cells back to their original configuration after an
@@ -84,6 +88,16 @@ const WALL_SEAL_LAMBDA = 110;
 // lingers so they reconnect/regrow after the player passes.
 const XMIGRATE_R = 22;
 const XMIGRATE_TICKS = 60;
+
+// ---- wall sleeping (cpm.step optimization) --------------------------------
+// Sessile vessel walls are ~3/4 of the CPM border, and every Monte-Carlo sweep pays the
+// full soft-constraint deltaH on each of their border pixels only to reject the copy. So a
+// wall that has SETTLED into the sealed sheet AND is FAR from the player is put to SLEEP
+// (per-cell barrier): its copy attempts reject at the cheap hard-check. It runs full CPM
+// again the moment the player nears it (deform/reseal) — so behaviour is preserved where it
+// matters, and a resting wall (which never moves anyway) just stops burning CPU.
+const WALL_SETTLE_TICKS = 40; // run full CPM this long after promotion so it packs + seals first
+const WALL_WAKE_R = 34; // lattice px: walls within this of the player stay awake (deformable)
 
 /** How long a ripped membrane fragment persists (seconds) before it fades out + is
  *  removed. It holds full opacity for the first ~40%, then fades to nothing. */
@@ -130,6 +144,8 @@ export interface WorldInput {
   pointerSpeed: number; // cursor speed in SCREEN px/sec — the trogocytosis THRASH signal
                         // (screen space so holding while the camera drifts doesn't tear)
   viewHalfDiag: number; // world px from screen centre to a corner (bubble promote radius)
+  diag: boolean; // DEV seam-diagnostic overlay (G): tint CPM cells + emit promoted agents
+                 // as durable-record markers so the agent↔CPM handoff is visible.
 }
 
 /** A one-shot visual effect to play on the render thread (a death/digest pop). */
@@ -147,6 +163,13 @@ export interface SnapshotAgent {
   y: number;
   r: number;
   color: number;
+  /** Which tier the durable record is in. "agent" = a normal LOD disc; "cpm" = it has a
+   *  CPM shadow (normally NOT emitted, but the seam-diagnostic overlay emits it so the
+   *  durable record can be drawn over its blob to check the handoff). */
+  tier: "agent" | "cpm";
+  /** Diagnostic: this record claims a CPM shadow (tier "cpm") but no live CPM cell exists
+   *  for it — a LEAK (the handoff back to a disc was missed). Drawn red, not magenta. */
+  ghost?: boolean;
 }
 
 /** A team NUCLEUS DOT at a cell's centre (world coords), coloured by allegiance. Emitted
@@ -192,6 +215,10 @@ export interface WorldSnapshot {
   scale: number;
   agents: SnapshotAgent[];
   markers: SnapshotMarker[];
+  /** Diagnostic (diag only): CPM cells with NO durable agent link — true orphans that would
+   *  vanish (not demote to a disc) on stream-out. The player is excluded (it's CPM-only by
+   *  design). Drawn as red rings so a real leak is unmistakable. */
+  diagOrphans: SnapshotMarker[];
   occupants: SnapshotOccupant[];
   organelles: SnapshotOrganelle[];
   playerWorld: { x: number; y: number } | null;
@@ -241,6 +268,14 @@ export class WorldSim {
    *  is currently crossing is exempt from structural-failure/damage death (crossing
    *  transiently splits it; it reconnects + regrows after). Real diapedesis is non-lethal. */
   private readonly xmigrateTTL = new Map<number, number>();
+  /** Wall cell id -> ticks it has been on the lattice (its "settle" age). Used by the
+   *  wall-sleep pass: a wall only sleeps once it has run full CPM long enough to pack into
+   *  the sealed sheet. */
+  private readonly wallAge = new Map<number, number>();
+  /** DEV: cpm id -> a short tag of the code path that created it (promote/preset/rip/…),
+   *  for the hover-inspect logger to trace where an unexpected/orphan cell came from. */
+  private readonly cellOrigin = new Map<number, string>();
+  private originSeq = 0;
 
   controlledCellId = 0;
   deaths = 0;
@@ -272,7 +307,7 @@ export class WorldSim {
   private streamAccumMs = 0;
   private timeSec = 0;
   private buildIndex = 0;
-  private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, pointerSpeed: 0, viewHalfDiag: 600 };
+  private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, pointerSpeed: 0, viewHalfDiag: 600, diag: false };
 
   constructor(config: CpmWorldConfig = DEFAULT_WORLD_CONFIG) {
     const cfg = config;
@@ -323,12 +358,6 @@ export class WorldSim {
     }
     this.sim.setKindAdhesion(MICROBE_KIND, ENDOTHELIAL_KIND, MICROBE_ENDO);
     this.sim.setKindAdhesion(MICROBE_KIND, FIBROBLAST_KIND, MICROBE_ENDO);
-
-    this.sim.setTransient(ENDOTHELIAL_KIND);
-    this.sim.setTransient(FIBROBLAST_KIND);
-    this.sim.setTransient(MICROBE_KIND);
-    this.sim.setTransient(DEBRIS_KIND); // debris is in-bubble-only — drop it on stream-out
-
 
 
     this.behavior = new CpmCellBehavior(this.sim, {
@@ -414,6 +443,8 @@ export class WorldSim {
     this.colorOverride.delete(id);
     this.debris.delete(id);
     this.debrisAlpha.delete(id);
+    this.cellOrigin.delete(id);
+    this.wallAge.delete(id);
   }
 
   private channels(id: number): { r: number; g: number; b: number; maxAct: number } {
@@ -442,6 +473,9 @@ export class WorldSim {
     const field = this.sim.field;
     const molField = this.signal;
     const hasDebris = this.debrisAlpha.size > 0;
+    // Seam diagnostic: push every CPM cell's body toward a distinct orange so a blob can
+    // never be mistaken for its cyan/magenta agent overlay (border + activity still read).
+    const diag = this.input.diag;
     for (const [[x, y], id] of grid.pixels()) {
       const c = this.channels(id);
       const a = this.sim.activityAtIndex(grid.p2i([x, y])) / c.maxAct;
@@ -449,6 +483,11 @@ export class WorldSim {
       let r = (c.r + (255 - c.r) * t) | 0;
       let g = (c.g + (245 - c.g) * t) | 0;
       let b = (c.b + (200 - c.b) * t) | 0;
+      if (diag) {
+        r = (r + (0xff - r) * 0.55) | 0;
+        g = (g + (0x8c - g) * 0.55) | 0;
+        b = (b + (0x2a - b) * 0.55) | 0;
+      }
       const right = grid.pixt([x + 1, y]);
       const down = grid.pixt([x, y + 1]);
       if ((right !== id && right !== 0) || (down !== id && down !== 0)) {
@@ -478,6 +517,7 @@ export class WorldSim {
     this.renderLattice();
 
     const scale = this.sim.scale;
+    const diag = this.input.diag;
     const agents: SnapshotAgent[] = [];
     const markers: SnapshotMarker[] = [];
     for (const a of this.agentWorld.all()) {
@@ -487,13 +527,37 @@ export class WorldSim {
       if (teamColor !== undefined) {
         markers.push({ wx: a.x, wy: a.y, r: Math.max(2, Math.sqrt(a.vol / Math.PI) * scale * 0.34), color: teamColor });
       }
-      if (a.tier === "cpm") continue; // rendered as its CPM shadow, not a disc
+      // Normally a promoted cell renders ONLY as its CPM shadow. In diag mode we ALSO emit
+      // its durable record (tier "cpm") so the scene can draw it over the blob and reveal
+      // whether the agent↔CPM handoff landed in the right place/size.
+      if (a.tier === "cpm" && !diag) continue;
+      // A tier-"cpm" record whose CPM cell no longer exists is a GHOST leak (marker with no
+      // body): the demote-to-disc handoff was missed and the record is stranded off-tier.
+      const ghost = a.tier === "cpm" && (a.cpmId === undefined || !this.sim.getCell(a.cpmId));
       agents.push({
         x: a.x,
         y: a.y,
         r: Math.sqrt(a.vol / Math.PI) * scale,
         color: AGENT_COLOR[a.bodyKind] ?? 0x888888,
+        tier: a.tier,
+        ghost,
       });
+    }
+
+    // Diagnostic: find true ORPHANS — live CPM cells with no durable agent link that
+    // aren't the player or a transient body kind (debris/gripped/digest). These would
+    // vanish, not demote, if they left the bubble.
+    const diagOrphans: SnapshotMarker[] = [];
+    if (diag) {
+      for (const rec of this.sim.getCells()) {
+        if (rec.id === this.controlledCellId) continue; // player is CPM-only by design
+        if (rec.kind === DEBRIS_KIND || rec.kind === GRIPPED_KIND || rec.kind === DIGEST_KIND) continue;
+        if (this.cpmToAgent.has(rec.id)) continue; // properly linked
+        const c = this.sim.centroidLattice(rec.id);
+        if (!c) continue;
+        const [wx, wy] = this.sim.latticeToWorld(c.x, c.y);
+        diagOrphans.push({ wx, wy, r: Math.sqrt(c.pixels / Math.PI) * scale, color: 0xff2a2a });
+      }
     }
 
     // Interior (small organelles + nucleus soft body) — only meaningful relative
@@ -536,6 +600,7 @@ export class WorldSim {
       scale,
       agents,
       markers,
+      diagOrphans,
       occupants,
       organelles,
       playerWorld: this.playerWorldPos(),
@@ -582,6 +647,7 @@ export class WorldSim {
       this.mirrorShadows(centroids);
       this.resealWalls(centroids);
       this.protectTransmigrated(centroids, input.steering);
+      this.updateWallSleep(centroids);
     });
     this.prof.measure("behavior", () => this.behavior.update(dtSec, centroids));
     this.prof.measure("life", () => this.life.update(centroids));
@@ -724,7 +790,6 @@ export class WorldSim {
               : "resting",
     };
     this.prof.metrics.activeCells = activeCells;
-    this.prof.metrics.dormantCells = this.sim.dormantCount;
     this.prof.metrics.borderPixels = borderPixels;
   }
 
@@ -768,7 +833,56 @@ export class WorldSim {
       this.life.seed(rec.id, a.energy);
       this.agentWorld.markPromoted(a.id, rec.id);
       this.cpmToAgent.set(rec.id, a.id);
+      this.tagOrigin(rec.id, `promote:${a.bodyKind}#agent${a.id}`);
     }
+  }
+
+  /** DEV: record where a CPM cell was created, for the hover-inspect provenance logger. */
+  private tagOrigin(id: number, reason: string): void {
+    this.cellOrigin.set(id, `${reason} @tick${this.tickSeq}#${this.originSeq++}`);
+  }
+
+  /** DEV (hover + I): log full provenance of the CPM cell at a world position so we can trace
+   *  where an unexpected/orphan cell (a CPM cell with no durable agent link) came from. */
+  pickCellAt(wx: number, wy: number): void {
+    const [lxf, lyf] = this.sim.worldToLattice(wx, wy);
+    const lx = Math.round(lxf);
+    const ly = Math.round(lyf);
+    const id = this.sim.ownerAtLattice(lx, ly);
+    if (id === 0) {
+      console.log(`🔍 pick @(${lx},${ly}) lattice: BACKGROUND (no cell)`);
+      return;
+    }
+    const rec = this.sim.getCell(id);
+    const c = this.sim.centroidLattice(id);
+    const agentId = this.cpmToAgent.get(id);
+    const agent = agentId !== undefined ? this.agentWorld.get(agentId) : undefined;
+    const linked = agentId !== undefined;
+    const isPlayer = id === this.controlledCellId;
+    const transient =
+      rec !== undefined &&
+      (rec.kind === DEBRIS_KIND || rec.kind === GRIPPED_KIND || rec.kind === DIGEST_KIND);
+    const isOrphan = rec !== undefined && !isPlayer && !linked && !transient;
+    console.log(
+      `🔍 PICK cell ${id} — ${isOrphan ? "⚠️ ORPHAN (no agent link)" : isPlayer ? "PLAYER" : linked ? "linked" : "transient/unlinked"}`,
+      {
+        kind: rec?.kind,
+        profile: rec?.profile.name,
+        origin: this.cellOrigin.get(id) ?? "(untracked — created before tagging or by a path with no tag)",
+        isPlayer,
+        linkedToAgent: linked,
+        agentId,
+        frozen: this.sim.isFrozen(id),
+        wallAge: this.wallAge.get(id),
+        pixels: c?.pixels,
+        lattice: c ? { x: Math.round(c.x), y: Math.round(c.y) } : null,
+        team: this.teamOf(id),
+        hasComposition: this.compositions.has(id),
+        agent: agent
+          ? { tier: agent.tier, body: agent.bodyKind, team: agent.team, x: Math.round(agent.x), y: Math.round(agent.y), cpmId: agent.cpmId }
+          : null,
+      }
+    );
   }
 
   /** Drop a CPM shadow and hand its durable agent back to the agent tier at a world
@@ -837,6 +951,33 @@ export class WorldSim {
     for (const [id, t] of this.xmigrateTTL) {
       if (t <= 1) this.xmigrateTTL.delete(id);
       else this.xmigrateTTL.set(id, t - 1);
+    }
+  }
+
+  /** WALL SLEEP: put settled, far-from-player wall cells to sleep (per-cell barrier) so the
+   *  Monte-Carlo step stops paying the soft-constraint deltaH on their border (~3/4 of it).
+   *  A wall stays AWAKE while it settles (WALL_SETTLE_TICKS after promotion) and whenever the
+   *  player is within WALL_WAKE_R — so it still packs into the seal and still deforms/reseals
+   *  for a transmigrating player. A sleeping wall never moves, so this is ~behaviour-neutral. */
+  private updateWallSleep(
+    centroids: Map<number, { x: number; y: number; pixels: number }>
+  ): void {
+    const pc = centroids.get(this.controlledCellId);
+    const wakeR2 = WALL_WAKE_R * WALL_WAKE_R;
+    for (const rec of this.sim.getCells()) {
+      if (rec.kind !== ENDOTHELIAL_KIND && rec.kind !== FIBROBLAST_KIND) continue;
+      const c = centroids.get(rec.id);
+      if (!c) continue;
+      const age = (this.wallAge.get(rec.id) ?? 0) + 1;
+      this.wallAge.set(rec.id, age);
+      const settled = age >= WALL_SETTLE_TICKS;
+      const near =
+        pc !== undefined && (c.x - pc.x) ** 2 + (c.y - pc.y) ** 2 < wakeR2;
+      this.sim.setCellFrozen(rec.id, settled && !near);
+    }
+    // Forget ages for walls that have left the lattice.
+    for (const id of [...this.wallAge.keys()]) {
+      if (!this.sim.getCell(id)) this.wallAge.delete(id);
     }
   }
 
@@ -909,6 +1050,7 @@ export class WorldSim {
     const color = (ch.r << 16) | (ch.g << 8) | ch.b; // the torn cell's current render hue
     const res = this.sim.tearChunkToward(targetId, towardLX, towardLY, count, DEBRIS_KIND);
     if (!res) return null;
+    this.tagOrigin(res.fragmentId, `rip-debris(from ${targetId})`);
     this.colorOverride.set(res.fragmentId, color);
     this.debris.set(res.fragmentId, DEBRIS_TTL);
     this.debrisAlpha.set(res.fragmentId, 0xff);
@@ -1097,6 +1239,7 @@ export class WorldSim {
     const rec = this.sim.spawnCellAtLattice(kind, Math.round(lx), Math.round(ly));
     this.compositions.set(rec.id, new CellComposition(rollComponents(preset, Math.random)));
     this.life.seed(rec.id);
+    this.tagOrigin(rec.id, `preset:${presetName}${asControlled ? "(controlled)" : ""}`);
     return rec.id;
   }
 

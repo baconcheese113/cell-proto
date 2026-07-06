@@ -32,15 +32,23 @@ import type { CpmCellProfile, CpmWorldConfig } from "./cpm-config";
 class PermeableBarrierConstraint extends HardConstraint {
   confChecker(): void {}
   fulfilled(_si: number, _ti: number, srcType: number, tgtType: number): boolean {
-    const conf = this.conf as unknown as { IS_BARRIER: boolean[]; PERMEABLE_KIND: number };
+    const conf = this.conf as unknown as {
+      IS_BARRIER: boolean[];
+      PERMEABLE_KIND: number;
+      FROZEN: Set<number>;
+    };
     const C = (this as unknown as { C: { cellKind(id: number): number } }).C;
     const sk = C.cellKind(srcType);
     const tk = C.cellKind(tgtType);
-    const sB = conf.IS_BARRIER[sk];
-    const tB = conf.IS_BARRIER[tk];
-    if (!sB && !tB) return true; // neither side is a barrier: unaffected
-    const other = sB ? tk : sk; // the non-barrier party
-    return other === conf.PERMEABLE_KIND; // only the player may cross a barrier boundary
+    // A pixel is impassable if its KIND is a barrier (debris) OR its CELL is asleep (a
+    // settled, far-from-player wall — see world-sim's wall-sleep pass). Sleeping is the hot
+    // path here: it makes every copy attempt on a resting wall reject at THIS cheap check,
+    // before the 7-constraint deltaH ever runs.
+    const sB = conf.IS_BARRIER[sk] || conf.FROZEN.has(srcType);
+    const tB = conf.IS_BARRIER[tk] || conf.FROZEN.has(tgtType);
+    if (!sB && !tB) return true; // neither side is a barrier/asleep: unaffected
+    const otherKind = sB ? tk : sk; // the non-barrier party's KIND
+    return otherKind === conf.PERMEABLE_KIND; // only the player may cross a barrier boundary
   }
 }
 
@@ -83,16 +91,18 @@ export class CpmSimulation {
   readonly scale: number;
   private readonly stepsPerFrame: number;
 
-  // Infinite-world streaming. Cells that leave the bubble are demoted to dormant
-  // (remembered by world position + kind) and re-activated when they return.
+  // Infinite-world streaming. The bubble recenters on the player; a cell whose centroid
+  // leaves the lattice is DROPPED here (its CPM cell killed, returned in `demoted`) and
+  // world-sim hands its durable state back to the agent tier. Re-entry is handled by the
+  // agent tier too (bubbleManagerStep re-promotes), so the sim keeps no off-bubble memory
+  // of its own — the agent tier IS the source of truth.
   private readonly recenterMargin: number;
   private readonly edgeBand = 18; // lattice px from the boundary = "leaving"
-  private readonly dormant: { kind: number; wx: number; wy: number }[] = [];
-  // Kinds whose cells are KILLED (not remembered as dormant) when they leave the
-  // bubble. Used for procedurally-refilled tissue: individual tissue cells are
-  // generic and re-spawned to fill space, so remembering each one would bloat the
-  // dormant list as you migrate. The owner (CpmTissue) maintains density instead.
-  private readonly transientKinds = new Set<number>();
+  /** Cells currently ASLEEP: settled, far-from-player walls whose copy attempts the
+   *  PermeableBarrierConstraint rejects cheaply (skipping the soft-constraint deltaH). A
+   *  sleeping cell never moves; it is woken (removed here) the instant the player nears it
+   *  or it is otherwise disturbed. Passed BY REFERENCE into the barrier constraint. */
+  private readonly frozenCells = new Set<CellId>();
 
   constructor(
     readonly worldConfig: CpmWorldConfig,
@@ -192,7 +202,11 @@ export class CpmSimulation {
     // intact for their TTL — but PERMEABLE to the player so it plows right over them
     // (created/removed by direct setpix, which bypasses this).
     this.cpm.add(
-      new PermeableBarrierConstraint({ IS_BARRIER, PERMEABLE_KIND: this.barrierPermeableKind })
+      new PermeableBarrierConstraint({
+        IS_BARRIER,
+        PERMEABLE_KIND: this.barrierPermeableKind,
+        FROZEN: this.frozenCells,
+      })
     );
     // NOTE: no SoftConnectivityConstraint. Profiling showed it was ~72% of the CPM
     // step cost (a per-copy-attempt local flood-fill), and it was leftover from the
@@ -237,27 +251,26 @@ export class CpmSimulation {
     return rec;
   }
 
-  /** Spawn a cell at a WORLD position (converted to lattice). */
-  spawnCellAtWorld(kind: number, wx: number, wy: number): CellRecord {
-    const [lx, ly] = this.worldToLattice(wx, wy);
-    return this.spawnCellAtLattice(kind, lx, ly);
-  }
-
   killCell(id: CellId): void {
     const rec = this.cells.get(id);
     if (!rec) return;
     this.gm.killCell(id);
     this.attraction.forget(id);
+    this.frozenCells.delete(id);
     rec.alive = false;
     this.cells.delete(id);
   }
 
-  /** Mark a kind as transient: its cells are KILLED (not remembered as dormant)
-   *  when they leave the bubble. For procedurally-refilled background populations
-   *  whose individuals are generic and re-spawned rather than tracked. */
-  setTransient(kind: number, on = true): void {
-    if (on) this.transientKinds.add(kind);
-    else this.transientKinds.delete(kind);
+  /** Put a cell to SLEEP (or wake it): a sleeping cell's copy attempts are rejected at the
+   *  barrier hard-check, so it costs ~nothing in the Monte-Carlo step. Only sessile cells at
+   *  rest should sleep — a moving/steered cell must stay awake. Idempotent. */
+  setCellFrozen(id: CellId, frozen: boolean): void {
+    if (frozen) this.frozenCells.add(id);
+    else this.frozenCells.delete(id);
+  }
+
+  isFrozen(id: CellId): boolean {
+    return this.frozenCells.has(id);
   }
 
   // ---- stepping & steering -------------------------------------------------
@@ -685,19 +698,16 @@ export class CpmSimulation {
 
   // ---- infinite-world streaming -------------------------------------------
 
-  /** Keep `anchorId` (the player) centered for an effectively infinite world:
-   *  recenter the bubble when it drifts, demote cells that left the bubble to
-   *  dormant, and re-activate dormant cells whose world position re-enters.
-   *  Returns the set of cell ids that changed (demoted/promoted) for the
-   *  renderer to forget/refresh. */
+  /** Keep `anchorId` (the player) centered for an effectively infinite world: recenter the
+   *  bubble when it drifts, and DROP any cell that left the lattice (its CPM cell killed).
+   *  Returns the dropped ids in `demoted` so world-sim hands their durable state back to the
+   *  agent tier (which also re-promotes them on re-entry — the sim keeps no off-bubble memory). */
   streamAround(anchorId: CellId): {
     demoted: CellId[];
-    promoted: CellId[];
     shiftX: number;
     shiftY: number;
   } {
     const demoted: CellId[] = [];
-    const promoted: CellId[] = [];
     let shiftX = 0,
       shiftY = 0;
 
@@ -718,13 +728,12 @@ export class CpmSimulation {
     }
 
     this.demoteEdgeCells(anchorId, demoted, cents);
-    this.promoteDormant(promoted);
-    return { demoted, promoted, shiftX, shiftY };
+    return { demoted, shiftX, shiftY };
   }
 
   /** Translate all live pixels by (dx,dy) lattice px and shift the world origin
    *  oppositely so every cell keeps its world position. Cells whose shifted
-   *  centroid leaves the keep-region are demoted to dormant.
+   *  centroid leaves the keep-region are dropped (returned in `demoted`).
    *
    *  Implementation note (Artistoo internals): we clear then re-stamp via setpix
    *  so border bookkeeping stays correct, but clearing a cell to volume 0 makes
@@ -740,8 +749,6 @@ export class CpmSimulation {
   ): void {
     if (dx === 0 && dy === 0) return;
     const grid = this.cpm.grid;
-    const oldOriginWX = this.originWX;
-    const oldOriginWY = this.originWY;
 
     // Group pixels (with Act) by cell id, accumulating the centroid.
     interface CellSnap {
@@ -776,14 +783,10 @@ export class CpmSimulation {
       const keep =
         id === anchorId || (cx >= lo && cx <= hi && cy >= lo && cy <= hi);
       if (!keep) {
-        // Demote: remember its world position (invariant under the shift) — unless
-        // the kind is transient, in which case it's dropped (the owner refills).
-        if (!this.transientKinds.has(s.kind)) {
-          const wx = oldOriginWX + (s.sx / s.px.length) * this.scale;
-          const wy = oldOriginWY + (s.sy / s.px.length) * this.scale;
-          this.dormant.push({ kind: s.kind, wx, wy });
-        }
+        // Left the lattice on recenter: drop the CPM cell. world-sim releases its durable
+        // agent from `demoted`; the pixels are already cleared above.
         this.attraction.forget(id);
+        this.frozenCells.delete(id);
         this.cells.delete(id);
         demoted.push(id);
         continue;
@@ -804,9 +807,9 @@ export class CpmSimulation {
     }
   }
 
-  /** Demote cells whose centroid sits in the edge band (about to leave) to
-   *  dormant, removing them cleanly instead of letting them bulge against the
-   *  hard boundary. */
+  /** Drop cells whose centroid sits in the edge band (about to leave) — killing them cleanly
+   *  (returned in `demoted` for world-sim to release to the agent tier) instead of letting
+   *  them bulge against the hard boundary. */
   private demoteEdgeCells(
     anchorId: CellId,
     demoted: CellId[],
@@ -818,43 +821,13 @@ export class CpmSimulation {
       if (rec.id === anchorId) continue;
       const cc = cents.get(rec.id);
       if (!cc || cc.x < lo || cc.x > hi || cc.y < lo || cc.y > hi) {
-        this.makeDormant(rec, demoted);
+        this.gm.killCell(rec.id);
+        this.attraction.forget(rec.id);
+        this.frozenCells.delete(rec.id);
+        this.cells.delete(rec.id);
+        demoted.push(rec.id);
       }
     }
-  }
-
-  private makeDormant(rec: CellRecord, demoted: CellId[]): void {
-    if (!this.transientKinds.has(rec.kind)) {
-      const cc = this.centroidLattice(rec.id);
-      const wx = cc ? this.latticeToWorld(cc.x, cc.y)[0] : this.originWX;
-      const wy = cc ? this.latticeToWorld(cc.x, cc.y)[1] : this.originWY;
-      this.dormant.push({ kind: rec.kind, wx, wy });
-    }
-    this.gm.killCell(rec.id);
-    this.attraction.forget(rec.id);
-    this.cells.delete(rec.id);
-    demoted.push(rec.id);
-  }
-
-  /** Re-activate dormant cells whose remembered world position has re-entered
-   *  the bubble's interior (not the edge band). */
-  private promoteDormant(promoted: CellId[]): void {
-    const lo = this.edgeBand + 4;
-    const hi = this.field - this.edgeBand - 4;
-    for (let i = this.dormant.length - 1; i >= 0; i--) {
-      const d = this.dormant[i];
-      const [lx, ly] = this.worldToLattice(d.wx, d.wy);
-      if (lx >= lo && lx <= hi && ly >= lo && ly <= hi) {
-        const rec = this.spawnCellAtLattice(d.kind, lx, ly);
-        promoted.push(rec.id);
-        this.dormant.splice(i, 1);
-      }
-    }
-  }
-
-  /** Number of cells currently remembered as dormant (off-bubble). */
-  get dormantCount(): number {
-    return this.dormant.length;
   }
 }
 

@@ -17,7 +17,8 @@ import type { WorldInput, WorldSnapshot } from "./world-sim";
 export type ToWorker =
   | { t: "input"; input: WorldInput }
   | { t: "build"; wx: number; wy: number }
-  | { t: "mcs"; delta: number };
+  | { t: "mcs"; delta: number }
+  | { t: "pick"; wx: number; wy: number };
 
 export type FromWorker = { t: "snapshot"; snap: WorldSnapshot };
 
@@ -28,6 +29,8 @@ export interface SimClient {
   build(wx: number, wy: number): void;
   /** Nudge the Monte-Carlo rate (live speed/smoothness dial). */
   adjustMcs(delta: number): void;
+  /** DEV: log full provenance of the CPM cell under a world position (hover + I). */
+  pickCell(wx: number, wy: number): void;
   /** The freshest snapshot to render, or null if none has arrived yet. */
   takeSnapshot(): WorldSnapshot | null;
   dispose(): void;
@@ -46,6 +49,9 @@ export class LocalSimClient implements SimClient {
   }
   adjustMcs(delta: number): void {
     this.worldSim.setMcsRate(delta);
+  }
+  pickCell(wx: number, wy: number): void {
+    this.worldSim.pickCellAt(wx, wy);
   }
   takeSnapshot(): WorldSnapshot {
     const now = performance.now();
@@ -77,6 +83,9 @@ export class WorkerSimClient implements SimClient {
   }
   adjustMcs(delta: number): void {
     this.worker.postMessage({ t: "mcs", delta } satisfies ToWorker);
+  }
+  pickCell(wx: number, wy: number): void {
+    this.worker.postMessage({ t: "pick", wx, wy } satisfies ToWorker);
   }
   takeSnapshot(): WorldSnapshot | null {
     return this.latest;
