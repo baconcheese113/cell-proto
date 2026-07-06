@@ -1,18 +1,22 @@
-// cpm-gpu-bench.ts — live A/B: GpuCpm vs an identical single-thread CPU reference at equal border.
-// This is the M1a completion gate — it must show a real GPU speedup with volume drift under
-// control. Exposed via window.__cpm.gpuBench().
+// cpm-gpu-bench.ts — live A/B: GpuCpm vs an identical single-thread CPU reference at equal border,
+// now running the full reduced model WITH the Act model (crawl). The M1b gate: the GPU must (a)
+// beat the CPU, (b) keep volume drift + fragmentation low, and (c) show the Act model actually
+// engaged (a non-trivial fraction of active pixels, matching the CPU reference). Headless via
+// window.__cpm.gpuBench().
 
 import { GpuCpm } from "./cpm-gpu";
 import { packSquareLattice, flattenJ } from "./cpm-gpu-encoding";
 import { buildKindColorLut } from "./cpm-gpu-palette";
 
-// Single-kind reduced J: background<->cell adhesion = 20, like<->like = 0.
+// Single-kind reduced model. background<->cell adhesion = 20, like<->like = 0.
 const J_ROWS = [
   [0, 20],
   [20, 0],
 ];
 const LAMBDA_V = 50;
 const T = 20;
+const MAX_ACT = [0, 20]; // per kind (0 = background)
+const LAMBDA_ACT = [0, 200];
 
 export async function gpuBench(
   opts: { field?: number; cellSize?: number; mcs?: number; B?: number } = {}
@@ -28,46 +32,106 @@ export async function gpuBench(
   const target = (cellSize - 1) * (cellSize - 1);
 
   const gpu = await GpuCpm.create({
-    field, B, lambdaV: LAMBDA_V, T, J, nKinds, lut,
+    field, B, lambdaV: LAMBDA_V, T, J, nKinds, lut, maxAct: MAX_ACT, lambdaAct: LAMBDA_ACT,
     lattice: packed.lattice.slice(), kind: packed.kind, targetVol: packed.targetVol, maxId: packed.maxId,
   });
   if ("error" in gpu) return gpu;
 
-  // warmup + timed GPU run
   gpu.stepN(20); await gpu.flush();
   const g0 = performance.now();
   gpu.stepN(mcs); await gpu.flush();
   const gpuMs = (performance.now() - g0) / mcs;
 
   const vols = await gpu.readVolumes();
-  let dev = 0, n = 0;
-  for (let i = 1; i < vols.length; i++) if (vols[i] > 0) { dev += Math.abs(vols[i] - target) / target; n++; }
+  const lat = await gpu.readLattice();
+  const act = await gpu.readAct();
   gpu.destroy();
 
-  const cpuMs = cpuReference(packed.lattice.slice(), packed.kind, packed.targetVol, field, B, mcs);
+  const gpuVolDev = meanVolDevPct(vols, target);
+  const gpuFrag = fragmentedCount(lat, field, packed.maxId);
+  const gpuActive = activeFraction(lat, act);
+  let gpuActMax = 0;
+  for (let i = 0; i < act.length; i++) if (act[i] > gpuActMax) gpuActMax = act[i];
+  let latChanged = 0;
+  for (let i = 0; i < lat.length; i++) if (lat[i] !== packed.lattice[i]) latChanged++;
+
+  const cpu = cpuReference(packed.lattice.slice(), packed.kind, packed.targetVol, field, B, mcs, target);
 
   const out = {
     field, B, mcs, border: packed.border, cells: packed.maxId,
     gpu_msPerMCS: +gpuMs.toFixed(3),
-    cpu_msPerMCS: +cpuMs.toFixed(3),
-    speedup: +(cpuMs / gpuMs).toFixed(1),
-    gpu_meanVolDevPct: n ? +((dev / n) * 100).toFixed(1) : 0,
+    cpu_msPerMCS: +cpu.ms.toFixed(3),
+    speedup: +(cpu.ms / gpuMs).toFixed(1),
+    gpu_meanVolDevPct: gpuVolDev,
+    cpu_meanVolDevPct: cpu.meanVolDevPct,
+    gpu_activeFrac: gpuActive,
+    gpu_actMax: gpuActMax,
+    gpu_latChanged: latChanged,
+    cpu_activeFrac: cpu.activeFrac,
+    gpu_fragmented: gpuFrag,
+    cpu_fragmented: cpu.fragmented,
   };
-  console.log("🟢 gpuBench (GpuCpm vs CPU ref, equal border):", out);
+  console.log("🟢 gpuBench (GpuCpm vs CPU ref, Act model on, equal border):", out);
   return out;
 }
 
-/** Identical reduced model, single-thread, for the speed baseline + fidelity anchor. */
+/** Mean |vol-target|/target over live cells, in %. */
+function meanVolDevPct(vol: Int32Array, target: number): number {
+  let dev = 0, n = 0;
+  for (let i = 1; i < vol.length; i++) if (vol[i] > 0) { dev += Math.abs(vol[i] - target) / target; n++; }
+  return n ? +((dev / n) * 100).toFixed(1) : 0;
+}
+
+/** Fraction of cell pixels (id>0) whose activity is > 0 — proves the Act model is engaged. */
+function activeFraction(lat: Int32Array, act: Int32Array): number {
+  let cell = 0, active = 0;
+  for (let i = 0; i < lat.length; i++) if (lat[i] > 0) { cell++; if (act[i] > 0) active++; }
+  return cell ? +(active / cell).toFixed(3) : 0;
+}
+
+/** Count cells whose pixels form more than one 8-connected component (fragmentation = broken cell). */
+function fragmentedCount(lat: Int32Array, field: number, maxId: number): number {
+  const seen = new Uint8Array(lat.length);
+  const comps = new Int32Array(maxId + 1);
+  const stack: number[] = [];
+  for (let i = 0; i < lat.length; i++) {
+    const id = lat[i];
+    if (id <= 0 || seen[i]) continue;
+    comps[id]++;
+    seen[i] = 1;
+    stack.length = 0;
+    stack.push(i);
+    while (stack.length) {
+      const p = stack.pop()!;
+      const px = p % field, py = (p / field) | 0;
+      for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) {
+        if (kx === 0 && ky === 0) continue;
+        const nx = px + kx, ny = py + ky;
+        if (nx < 0 || nx >= field || ny < 0 || ny >= field) continue;
+        const q = ny * field + nx;
+        if (!seen[q] && lat[q] === id) { seen[q] = 1; stack.push(q); }
+      }
+    }
+  }
+  let frag = 0;
+  for (let id = 1; id <= maxId; id++) if (comps[id] > 1) frag++;
+  return frag;
+}
+
+/** Identical reduced model + Act, single-thread — the speed baseline and fidelity anchor. */
 function cpuReference(
   lat: Int32Array, kind: Int32Array, targetVol: Float32Array,
-  field: number, B: number, mcs: number
-): number {
-  const W = field, H = field;
+  field: number, B: number, mcs: number, target: number
+): { ms: number; meanVolDevPct: number; activeFrac: number; fragmented: number } {
+  const W = field, H = field, N = W * H;
   const vol = new Int32Array(targetVol.length);
   for (let i = 0; i < lat.length; i++) if (lat[i] > 0) vol[lat[i]]++;
+  const act = new Int32Array(N);
+  const maxId = targetVol.length - 1;
   const nk = 2;
-  const J = [0, 20, 20, 0]; // flat 2x2
+  const J = [0, 20, 20, 0];
   const latAt = (x: number, y: number): number => (x < 0 || x >= W || y < 0 || y >= H ? 0 : lat[y * W + x]);
+  const actAt = (x: number, y: number): number => (x < 0 || x >= W || y < 0 || y >= H ? 0 : act[y * W + x]);
   const kindAt = (x: number, y: number): number => kind[latAt(x, y)];
   const adh = (x: number, y: number, k: number): number => {
     let e = 0;
@@ -76,6 +140,19 @@ function cpuReference(
       e += J[k * nk + kindAt(x + kx, y + ky)];
     }
     return e;
+  };
+  const actGeom = (x: number, y: number, id: number): number => {
+    if (id <= 0) return 0;
+    let r = actAt(x, y), nN = 1;
+    for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) {
+      if (kx === 0 && ky === 0) continue;
+      if (latAt(x + kx, y + ky) === id) {
+        const a = actAt(x + kx, y + ky);
+        if (a === 0) return 0;
+        r *= a; nN++;
+      }
+    }
+    return Math.pow(r, 1 / nN);
   };
   const dxs = [-1, 0, 1, -1, 1, -1, 0, 1], dys = [-1, -1, -1, 0, 0, 1, 1, 1];
   const nbx = Math.ceil(W / B), nby = Math.ceil(H / B);
@@ -104,16 +181,30 @@ function cpuReference(
         if (sx < 0 || sx >= W || sy < 0 || sy >= H) continue;
         const srcId = lat[sy * W + sx], tgtId = lat[cy * W + cx];
         if (srcId === tgtId) continue;
-        let dH = adh(cx, cy, kind[srcId]) - adh(cx, cy, kind[tgtId]);
+        const kSrc = kind[srcId], kTgt = kind[tgtId];
+        let dH = adh(cx, cy, kSrc) - adh(cx, cy, kTgt);
         if (tgtId > 0) { const v = vol[tgtId], tv = targetVol[tgtId]; dH += LAMBDA_V * ((v - 1 - tv) ** 2 - (v - tv) ** 2); }
         if (srcId > 0) { const v = vol[srcId], tv = targetVol[srcId]; dH += LAMBDA_V * ((v + 1 - tv) ** 2 - (v - tv) ** 2); }
+        const ak = srcId !== 0 ? kSrc : kTgt;
+        const maxact = MAX_ACT[ak], lambdaact = LAMBDA_ACT[ak];
+        if (maxact > 0 && lambdaact > 0) {
+          dH += lambdaact * (actGeom(cx, cy, tgtId) - actGeom(sx, sy, srcId)) / maxact;
+        }
         if (dH < 0 || Math.random() < Math.exp(-dH / T)) {
           lat[cy * W + cx] = srcId;
+          act[cy * W + cx] = MAX_ACT[kSrc];
           if (tgtId > 0) vol[tgtId]--;
           if (srcId > 0) vol[srcId]++;
         }
       }
     }
+    for (let i = 0; i < N; i++) if (act[i] > 0) act[i]--;
   }
-  return (performance.now() - t0) / mcs;
+  const ms = (performance.now() - t0) / mcs;
+  return {
+    ms,
+    meanVolDevPct: meanVolDevPct(vol, target),
+    activeFrac: activeFraction(lat, act),
+    fragmented: fragmentedCount(lat, field, maxId),
+  };
 }

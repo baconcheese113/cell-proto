@@ -3,7 +3,7 @@
 // Worker-safe (no Phaser). Physics is intentionally reduced (no Act/perimeter/barrier yet — M1b).
 
 import { acquireGpu, BUF, MAP_READ_FLAG } from "./cpm-gpu-device";
-import { STEP_WGSL, VOL_WGSL, COLORMAP_WGSL } from "./cpm-gpu-wgsl";
+import { STEP_WGSL, VOL_WGSL, COLORMAP_WGSL, ACT_DECAY_WGSL } from "./cpm-gpu-wgsl";
 import { blockDispatch, encodeParams } from "./cpm-gpu-encoding";
 
 const WG = 64;
@@ -29,6 +29,7 @@ export class GpuCpm {
     field: number; B?: number; lambdaV: number; T: number;
     J: Float32Array; nKinds: number; lut: Uint32Array;
     lattice: Int32Array; kind: Int32Array; targetVol: Float32Array; maxId: number;
+    maxAct: number[]; lambdaAct: number[]; // per-kind (index 0 = background), Act model params
   }): Promise<GpuCpm | { error: string }> {
     const g = await acquireGpu();
     if ("error" in g) return g;
@@ -45,6 +46,13 @@ export class GpuCpm {
     const uniform = (bytes: number): any =>
       d.createBuffer({ size: bytes, usage: BUF.UNIFORM() | BUF.COPY_DST() });
 
+    // per-kind Act params packed as vec4 (x=maxAct, y=lambdaAct, z/w reserved for perimeter later).
+    const kindParams = new Float32Array(opts.nKinds * 4);
+    for (let k = 0; k < opts.nKinds; k++) {
+      kindParams[k * 4] = opts.maxAct[k] ?? 0;
+      kindParams[k * 4 + 1] = opts.lambdaAct[k] ?? 0;
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const buf: any = {
       lattice: store(N * 4),
@@ -53,6 +61,8 @@ export class GpuCpm {
       targetVol: store(volN * 4),
       J: store(opts.J.byteLength),
       lut: store(opts.lut.byteLength),
+      act: store(N * 4), // zero-initialised by WebGPU
+      kindParams: store(kindParams.byteLength),
       framebuffer: store(N * 4),
       params: uniform(48),
       nk: uniform(16),
@@ -60,12 +70,14 @@ export class GpuCpm {
       cmDim: uniform(16),
       volStaging: d.createBuffer({ size: volN * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
       fbStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
+      latStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
     };
     d.queue.writeBuffer(buf.lattice, 0, opts.lattice);
     d.queue.writeBuffer(buf.kind, 0, opts.kind);
     d.queue.writeBuffer(buf.targetVol, 0, opts.targetVol);
     d.queue.writeBuffer(buf.J, 0, opts.J);
     d.queue.writeBuffer(buf.lut, 0, opts.lut);
+    d.queue.writeBuffer(buf.kindParams, 0, kindParams);
     d.queue.writeBuffer(buf.nk, 0, new Uint32Array([opts.nKinds, 0, 0, 0]));
     d.queue.writeBuffer(buf.volDim, 0, new Uint32Array([N, volN, 0, 0]));
     d.queue.writeBuffer(buf.cmDim, 0, new Uint32Array([N, 0, 0, 0]));
@@ -77,6 +89,7 @@ export class GpuCpm {
       volClear: d.createComputePipeline({ layout: "auto", compute: { module: mod(VOL_WGSL), entryPoint: "clear" } }),
       volScatter: d.createComputePipeline({ layout: "auto", compute: { module: mod(VOL_WGSL), entryPoint: "scatter" } }),
       colormap: d.createComputePipeline({ layout: "auto", compute: { module: mod(COLORMAP_WGSL), entryPoint: "main" } }),
+      actDecay: d.createComputePipeline({ layout: "auto", compute: { module: mod(ACT_DECAY_WGSL), entryPoint: "decay" } }),
     };
     const bind = {
       step: d.createBindGroup({
@@ -89,12 +102,23 @@ export class GpuCpm {
           { binding: 4, resource: { buffer: buf.J } },
           { binding: 5, resource: { buffer: buf.params } },
           { binding: 6, resource: { buffer: buf.nk } },
+          { binding: 7, resource: { buffer: buf.act } },
+          { binding: 8, resource: { buffer: buf.kindParams } },
         ],
       }),
+      actDecay: d.createBindGroup({
+        layout: pipe.actDecay.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: buf.act } },
+          { binding: 1, resource: { buffer: buf.cmDim } },
+        ],
+      }),
+      // `clear` does not read the lattice, so with layout:"auto" its bind-group layout omits
+      // binding 0 — the bind group must match exactly (only vol + DIM), or the whole command
+      // buffer is invalidated.
       volClear: d.createBindGroup({
         layout: pipe.volClear.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: buf.lattice } },
           { binding: 1, resource: { buffer: buf.vol } },
           { binding: 2, resource: { buffer: buf.volDim } },
         ],
@@ -152,6 +176,8 @@ export class GpuCpm {
       // drift-safe volume recompute (once per MCS): clear then scatter from the lattice.
       this.dispatch(enc, this.pipe.volClear, this.bind.volClear, this.volN);
       this.dispatch(enc, this.pipe.volScatter, this.bind.volScatter, N);
+      // Act model decays by 1 each MCS (postMCSListener in Artistoo).
+      this.dispatch(enc, this.pipe.actDecay, this.bind.actDecay, N);
       this.d.queue.submit([enc.finish()]);
     }
   }
@@ -167,6 +193,28 @@ export class GpuCpm {
     await this.buf.volStaging.mapAsync(MAP_READ_FLAG());
     const out = new Int32Array(this.buf.volStaging.getMappedRange().slice(0));
     this.buf.volStaging.unmap();
+    return out;
+  }
+
+  async readLattice(): Promise<Int32Array> {
+    const N = this.field * this.field;
+    const enc = this.d.createCommandEncoder();
+    enc.copyBufferToBuffer(this.buf.lattice, 0, this.buf.latStaging, 0, N * 4);
+    this.d.queue.submit([enc.finish()]);
+    await this.buf.latStaging.mapAsync(MAP_READ_FLAG());
+    const out = new Int32Array(this.buf.latStaging.getMappedRange().slice(0));
+    this.buf.latStaging.unmap();
+    return out;
+  }
+
+  async readAct(): Promise<Int32Array> {
+    const N = this.field * this.field;
+    const enc = this.d.createCommandEncoder();
+    enc.copyBufferToBuffer(this.buf.act, 0, this.buf.latStaging, 0, N * 4);
+    this.d.queue.submit([enc.finish()]);
+    await this.buf.latStaging.mapAsync(MAP_READ_FLAG());
+    const out = new Int32Array(this.buf.latStaging.getMappedRange().slice(0));
+    this.buf.latStaging.unmap();
     return out;
   }
 

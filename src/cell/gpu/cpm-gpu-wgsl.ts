@@ -1,6 +1,13 @@
-// cpm-gpu-wgsl.ts — WGSL for the reduced GPU CPM (adhesion matrix + volume).
-// The Act model, perimeter, steering, and the hard barrier are deliberately NOT here yet
-// (M1b). Bindings are shared across the step/colourmap passes where possible.
+// cpm-gpu-wgsl.ts — WGSL for the GPU CPM: adhesion matrix + volume + the Act model (crawl).
+// Perimeter, steering, and the hard barrier are still deliberately NOT here yet (later M1
+// steps). Bindings are shared across the step/colourmap passes where possible.
+//
+// Act model (Niculescu et al. 2015, as in Artistoo's ActivityConstraint): each pixel carries an
+// integer activity in [0, MAX_ACT]. On an accepted copy the target pixel's activity is reset to
+// its new cell-kind's MAX_ACT; every MCS all activities decay by 1. deltaH_act =
+// lambdaAct * (GM(target) - GM(source)) / maxAct, where GM is the geometric mean of activity over
+// a pixel and its same-cell 8-neighbours (0 if any is 0). Params (maxAct, lambdaAct) are per-kind,
+// packed into kindParams.xy.
 
 export const STEP_WGSL = /* wgsl */ `
 struct Params {
@@ -15,10 +22,13 @@ struct Params {
 @group(0) @binding(4) var<storage, read> J: array<f32>;
 @group(0) @binding(5) var<uniform> P: Params;
 @group(0) @binding(6) var<uniform> NK: vec4<u32>; // NK.x = nKinds
+@group(0) @binding(7) var<storage, read_write> act: array<i32>;      // per-pixel activity
+@group(0) @binding(8) var<storage, read> kindParams: array<vec4<f32>>; // per-kind: x=maxAct y=lambdaAct
 
 fn inb(x: i32, y: i32) -> bool { return x >= 0 && x < i32(P.W) && y >= 0 && y < i32(P.H); }
 fn latAt(x: i32, y: i32) -> i32 { if (inb(x,y)) { return lattice[y * i32(P.W) + x]; } return 0; }
 fn kindAt(x: i32, y: i32) -> u32 { return cellKind[latAt(x,y)]; }
+fn actAt(x: i32, y: i32) -> f32 { if (inb(x,y)) { return f32(act[y * i32(P.W) + x]); } return 0.0; }
 
 fn rng(state: ptr<function, u32>) -> f32 {
   var s = *state; s ^= s << 13u; s ^= s >> 17u; s ^= s << 5u; *state = s;
@@ -35,6 +45,24 @@ fn adh(x: i32, y: i32, k: u32) -> f32 {
     }
   }
   return e;
+}
+// geometric mean of activity over pixel (x,y) and its same-cell 8-neighbours; 0 if any is 0 or
+// (x,y) is background. Matches ActivityConstraint.activityAtGeom.
+fn actGeom(x: i32, y: i32, id: i32) -> f32 {
+  if (id <= 0) { return 0.0; }
+  var r = actAt(x, y);
+  var nN = 1.0;
+  for (var ky = -1; ky <= 1; ky++) {
+    for (var kx = -1; kx <= 1; kx++) {
+      if (kx == 0 && ky == 0) { continue; }
+      if (latAt(x+kx, y+ky) == id) {
+        let a = actAt(x+kx, y+ky);
+        if (a == 0.0) { return 0.0; }
+        r *= a; nN += 1.0;
+      }
+    }
+  }
+  return pow(r, 1.0 / nN);
 }
 
 @compute @workgroup_size(64)
@@ -91,13 +119,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v = f32(atomicLoad(&vol[srcId])); let tv = targetVol[srcId];
     dH += P.lambdaV * ((v+1.0-tv)*(v+1.0-tv) - (v-tv)*(v-tv));
   }
+  // Act term: use source cell's params, or target's if the source is background (retraction).
+  var ak = kSrc;
+  if (srcId == 0) { ak = kTgt; }
+  let maxAct = kindParams[ak].x;
+  let lambdaAct = kindParams[ak].y;
+  if (maxAct > 0.0 && lambdaAct > 0.0) {
+    dH += lambdaAct * (actGeom(cx, cy, tgtId) - actGeom(sx, sy, srcId)) / maxAct;
+  }
   var accept = dH < 0.0;
   if (!accept) { accept = rng(&st) < exp(-dH / P.T); }
   if (accept) {
     lattice[cy * i32(P.W) + cx] = srcId;
+    // freshly set pixel gets its new cell-kind's MAX_ACT (0 for background).
+    act[cy * i32(P.W) + cx] = i32(kindParams[kSrc].x);
     if (tgtId > 0) { atomicSub(&vol[tgtId], 1); }
     if (srcId > 0) { atomicAdd(&vol[srcId], 1); }
   }
+}
+`;
+
+export const ACT_DECAY_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> act: array<i32>;
+@group(0) @binding(1) var<uniform> DIM: vec4<u32>; // x=N pixels
+
+@compute @workgroup_size(64)
+fn decay(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= DIM.x) { return; }
+  let a = act[i];
+  if (a > 0) { act[i] = a - 1; }
 }
 `;
 

@@ -18,6 +18,13 @@ export async function acquireGpu(): Promise<GpuHandle | { error: string }> {
   if (!adapter) return { error: "no GPU adapter" };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const device: any = await adapter.requestDevice();
+  // Surface async validation errors (which otherwise silently drop passes) to the console.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    device.addEventListener?.("uncapturederror", (e: any) =>
+      console.error("WebGPU uncaptured error:", e?.error?.message ?? e?.message ?? e)
+    );
+  } catch { /* addEventListener not present on this impl */ }
   return { device, queue: device.queue };
 }
 
