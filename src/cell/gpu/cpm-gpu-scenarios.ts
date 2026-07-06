@@ -74,6 +74,52 @@ export async function gpuSteerTest(mcs = 1000): Promise<object> {
   };
 }
 
+/** Movement test: a lone player cell with the tuned PLAYER_PROFILE Act params, steered to a far
+ *  point, must actually TRANSLATE there (not just bulge). Proves amoeboid crawl works on the GPU
+ *  with real params. Speed is MCS-bound, so this runs a healthy number of MCS. */
+export async function gpuMoveTest(
+  mcs = 2500,
+  opts: { lambdaV?: number; lambdaP?: number; maxAct?: number; lambdaAct?: number; steerLambda?: number; B?: number } = {}
+): Promise<object> {
+  const field = 96;
+  const startX = 26, startY = 48, targetX = 74, targetY = 48;
+  const lattice = new Int32Array(field * field);
+  stampDisc(lattice, field, 1, startX, startY, 9);
+  const kind = Int32Array.from([0, 1]);
+  let area = 0;
+  for (const v of lattice) if (v === 1) area++;
+  const targetVol = Float32Array.from([0, area]);
+  const { J, nKinds } = flattenJ([[0, 20], [20, 0]]);
+  const lut = buildKindColorLut([0x000000, 0x49d0ff]);
+  const gpu = await GpuCpm.create({
+    field, B: opts.B ?? 4, lambdaV: opts.lambdaV ?? 50, T: 20, J, nKinds, lut,
+    maxAct: [0, opts.maxAct ?? 80], lambdaAct: [0, opts.lambdaAct ?? 220],
+    lambdaP: [0, opts.lambdaP ?? 2], targetP: [0, perimOf(lattice, field, 1)],
+    lattice, kind, targetVol, maxId: 1, permeableKind: 1,
+  });
+  if ("error" in gpu) return gpu;
+  const steerLambda = opts.steerLambda ?? 260;
+
+  const cen = (lat: Int32Array): { x: number; y: number } => {
+    let sx = 0, sy = 0, n = 0;
+    for (let y = 0; y < field; y++) for (let x = 0; x < field; x++) {
+      if (lat[y * field + x] === 1) { sx += x; sy += y; n++; }
+    }
+    return n ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
+  };
+  const start = cen(await gpu.readLattice());
+  gpu.setSteer(1, targetX, targetY, steerLambda);
+  gpu.stepN(mcs); await gpu.flush();
+  const end = cen(await gpu.readLattice());
+  gpu.destroy();
+
+  return {
+    startX: +start.x.toFixed(1), endX: +end.x.toFixed(1),
+    dx: +(end.x - start.x).toFixed(1), dy: +(end.y - start.y).toFixed(1),
+    fractionOfWay: +(((end.x - start.x) / (targetX - startX)) * 100).toFixed(0), // % toward target
+  };
+}
+
 /** Barrier test: a solid barrier-kind wall down the middle; a cell steered hard into it. When the
  *  mover is a non-permeable kind it must NOT cross; when it is the permeable (player) kind it must.
  *  Proves the hard PermeableBarrierConstraint + permeability on the GPU. */

@@ -199,6 +199,30 @@ export function spikeCompare(targetBorder = 20000, B = 4, mcs = 80): object {
   return out;
 }
 
+/** Reference: how far the REAL CPU Artistoo moves a lone steered player in `mcs` MCS — the target
+ *  the GPU port's migration should approach. Same field/params as gpuMoveTest for comparison. */
+export function cpuMoveTest(mcs = 2500): object {
+  const cfg: CpmWorldConfig = { ...DEFAULT_WORLD_CONFIG, fieldSize: 96 };
+  const sim = makeBenchSim(cfg);
+  sim.setKindActive(CONTROLLED_KIND, true);
+  const player = sim.spawnCellFilled(CONTROLLED_KIND, 26, 48, 9).id;
+  for (let i = 0; i < 20; i++) sim.step();
+  const c0 = sim.centroidsAll().get(player);
+  sim.steerCell(player, 74, 48);
+  const t0 = performance.now();
+  for (let i = 0; i < mcs; i++) sim.step();
+  const ms = performance.now() - t0;
+  const c1 = sim.centroidsAll().get(player);
+  const dx = c1 && c0 ? c1.x - c0.x : 0;
+  const out = {
+    startX: +(c0?.x ?? 0).toFixed(1), endX: +(c1?.x ?? 0).toFixed(1),
+    dx: +dx.toFixed(1), fractionOfWay: +((dx / (74 - 26)) * 100).toFixed(0),
+    msPerMCS: +(ms / mcs).toFixed(3),
+  };
+  console.log("🔬 cpuMoveTest (real Artistoo, lone steered player):", out);
+  return out;
+}
+
 /** One-call bench for the DEV console/Playwright: pack a fresh sim to ~targetBorder, time the
  *  solver, and return + log the stats. Independent of the live game (own CpmSimulation). */
 export function runBench(targetBorder = 30000, opts?: Parameters<typeof benchStep>[1]): BenchStats {

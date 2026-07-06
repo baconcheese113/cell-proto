@@ -110,12 +110,13 @@ export function buildGpuWorld(field = 200): GpuWorld {
 
   return {
     field, lattice, kind, targetVol, maxId: id, playerId, nKinds, J, lut,
-    // player & microbes crawl (Act); wall is inert.
-    maxAct: [0, 30, 25, 0],
-    lambdaAct: [0, 200, 150, 0],
+    // Matches the tuned PLAYER_PROFILE (cpm-config): hot Act (maxAct 80) is what makes the
+    // amoeboid crawl actually translate; wall is inert. Microbes wander more gently.
+    maxAct: [0, 80, 50, 0],
+    lambdaAct: [0, 220, 120, 0],
     lambdaP: [0, 2, 2, 0],
     targetP,
-    lambdaV: 30,
+    lambdaV: 50,
     T: 20,
     permeableKind: KIND.PLAYER, // the player plows through walls/debris
     barrierKinds: [KIND.WALL],
