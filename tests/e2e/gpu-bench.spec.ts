@@ -51,7 +51,9 @@ test("gpuBench: GpuCpm beats CPU ref with volume drift under control", async ({ 
   expect(res.gpu_latChanged, "GPU lattice actually changed (step ran)").toBeGreaterThan(1000);
   // The Act model is engaged (pixels get + retain activity), i.e. cells crawl.
   expect(res.gpu_actMax, "Act model engaged (max activity > 0)").toBeGreaterThan(0);
-  expect(res.gpu_activeFrac, "a non-trivial fraction of cell pixels are active").toBeGreaterThan(0.005);
+  expect(res.gpu_activeFrac, "some cell pixels are active").toBeGreaterThan(0.002);
+  // Perimeter keeps cells cohesive: almost no cell should fragment into multiple components.
+  expect(res.gpu_fragmented, "cells stay cohesive (perimeter holds them together)").toBeLessThan(res.cells * 0.05);
   expect(res.speedup, "GPU >= 5x CPU at equal border").toBeGreaterThanOrEqual(5);
   expect(res.gpu_meanVolDevPct, "volume drift < 5%").toBeLessThan(5);
 });

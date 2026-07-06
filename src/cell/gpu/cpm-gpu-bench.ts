@@ -17,6 +17,7 @@ const LAMBDA_V = 50;
 const T = 20;
 const MAX_ACT = [0, 20]; // per kind (0 = background)
 const LAMBDA_ACT = [0, 200];
+const LAMBDA_P = [0, 2]; // Perimeter constraint strength per kind — holds cells cohesive vs Act
 
 export async function gpuBench(
   opts: { field?: number; cellSize?: number; mcs?: number; B?: number } = {}
@@ -30,9 +31,13 @@ export async function gpuBench(
   const { J, nKinds } = flattenJ(J_ROWS);
   const lut = buildKindColorLut([0x000000, 0x4fc3f7]);
   const target = (cellSize - 1) * (cellSize - 1);
+  // Target perimeter = the mean perimeter of the freshly-packed cells, so the constraint pulls
+  // cells back toward their compact starting shape (fighting Act-driven fingering/fragmentation).
+  const targetP = [0, perimeterMean(packed.lattice, field, packed.maxId)];
 
   const gpu = await GpuCpm.create({
     field, B, lambdaV: LAMBDA_V, T, J, nKinds, lut, maxAct: MAX_ACT, lambdaAct: LAMBDA_ACT,
+    lambdaP: LAMBDA_P, targetP,
     lattice: packed.lattice.slice(), kind: packed.kind, targetVol: packed.targetVol, maxId: packed.maxId,
   });
   if ("error" in gpu) return gpu;
@@ -55,7 +60,7 @@ export async function gpuBench(
   let latChanged = 0;
   for (let i = 0; i < lat.length; i++) if (lat[i] !== packed.lattice[i]) latChanged++;
 
-  const cpu = cpuReference(packed.lattice.slice(), packed.kind, packed.targetVol, field, B, mcs, target);
+  const cpu = cpuReference(packed.lattice.slice(), packed.kind, packed.targetVol, field, B, mcs, target, targetP);
 
   const out = {
     field, B, mcs, border: packed.border, cells: packed.maxId,
@@ -80,6 +85,26 @@ function meanVolDevPct(vol: Int32Array, target: number): number {
   let dev = 0, n = 0;
   for (let i = 1; i < vol.length; i++) if (vol[i] > 0) { dev += Math.abs(vol[i] - target) / target; n++; }
   return n ? +((dev / n) * 100).toFixed(1) : 0;
+}
+
+/** Per-cell perimeter (sum over cell pixels of unlike 8-neighbours), then mean over live cells. */
+function perimeterMean(lat: Int32Array, field: number, maxId: number): number {
+  const perim = new Int32Array(maxId + 1);
+  for (let y = 0; y < field; y++) for (let x = 0; x < field; x++) {
+    const id = lat[y * field + x];
+    if (id <= 0) continue;
+    let c = 0;
+    for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) {
+      if (kx === 0 && ky === 0) continue;
+      const nx = x + kx, ny = y + ky;
+      const nid = nx < 0 || nx >= field || ny < 0 || ny >= field ? 0 : lat[ny * field + nx];
+      if (nid !== id) c++;
+    }
+    perim[id] += c;
+  }
+  let sum = 0, n = 0;
+  for (let id = 1; id <= maxId; id++) if (perim[id] > 0) { sum += perim[id]; n++; }
+  return n ? Math.round(sum / n) : 0;
 }
 
 /** Fraction of cell pixels (id>0) whose activity is > 0 — proves the Act model is engaged. */
@@ -121,7 +146,7 @@ function fragmentedCount(lat: Int32Array, field: number, maxId: number): number 
 /** Identical reduced model + Act, single-thread — the speed baseline and fidelity anchor. */
 function cpuReference(
   lat: Int32Array, kind: Int32Array, targetVol: Float32Array,
-  field: number, B: number, mcs: number, target: number
+  field: number, B: number, mcs: number, target: number, targetP: number[]
 ): { ms: number; meanVolDevPct: number; activeFrac: number; fragmented: number } {
   const W = field, H = field, N = W * H;
   const vol = new Int32Array(targetVol.length);
@@ -131,6 +156,18 @@ function cpuReference(
   const nk = 2;
   const J = [0, 20, 20, 0];
   const latAt = (x: number, y: number): number => (x < 0 || x >= W || y < 0 || y >= H ? 0 : lat[y * W + x]);
+  // per-cell perimeter, initialised from the lattice (Artistoo initializePerimeters).
+  const perim = new Int32Array(maxId + 1);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const id = lat[y * W + x];
+    if (id <= 0) continue;
+    let c = 0;
+    for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) {
+      if (kx === 0 && ky === 0) continue;
+      if (latAt(x + kx, y + ky) !== id) c++;
+    }
+    perim[id] += c;
+  }
   const actAt = (x: number, y: number): number => (x < 0 || x >= W || y < 0 || y >= H ? 0 : act[y * W + x]);
   const kindAt = (x: number, y: number): number => kind[latAt(x, y)];
   const adh = (x: number, y: number, k: number): number => {
@@ -190,11 +227,30 @@ function cpuReference(
         if (maxact > 0 && lambdaact > 0) {
           dH += lambdaact * (actGeom(cx, cy, tgtId) - actGeom(sx, sy, srcId)) / maxact;
         }
+        // Perimeter term (mirror of the WGSL / Artistoo PerimeterConstraint).
+        const lpSrc = LAMBDA_P[kSrc], lpTgt = LAMBDA_P[kTgt];
+        let pcSrc = 0, pcTgt = 0;
+        if ((srcId > 0 && lpSrc > 0) || (tgtId > 0 && lpTgt > 0)) {
+          for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) {
+            if (kx === 0 && ky === 0) continue;
+            const ntid = latAt(cx + kx, cy + ky);
+            if (ntid !== srcId) pcSrc++; else pcSrc--;
+            if (ntid !== tgtId) pcTgt--; else pcTgt++;
+          }
+          if (srcId > 0 && lpSrc > 0) {
+            const ps = perim[srcId], ptp = targetP[kSrc];
+            dH += lpSrc * ((ps + pcSrc - ptp) ** 2 - (ps - ptp) ** 2);
+          }
+          if (tgtId > 0 && lpTgt > 0) {
+            const ps = perim[tgtId], ptp = targetP[kTgt];
+            dH += lpTgt * ((ps + pcTgt - ptp) ** 2 - (ps - ptp) ** 2);
+          }
+        }
         if (dH < 0 || Math.random() < Math.exp(-dH / T)) {
           lat[cy * W + cx] = srcId;
           act[cy * W + cx] = MAX_ACT[kSrc];
-          if (tgtId > 0) vol[tgtId]--;
-          if (srcId > 0) vol[srcId]++;
+          if (tgtId > 0) { vol[tgtId]--; perim[tgtId] += pcTgt; }
+          if (srcId > 0) { vol[srcId]++; perim[srcId] += pcSrc; }
         }
       }
     }

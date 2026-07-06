@@ -23,7 +23,8 @@ struct Params {
 @group(0) @binding(5) var<uniform> P: Params;
 @group(0) @binding(6) var<uniform> NK: vec4<u32>; // NK.x = nKinds
 @group(0) @binding(7) var<storage, read_write> act: array<i32>;      // per-pixel activity
-@group(0) @binding(8) var<storage, read> kindParams: array<vec4<f32>>; // per-kind: x=maxAct y=lambdaAct
+@group(0) @binding(8) var<storage, read> kindParams: array<vec4<f32>>; // per-kind: x=maxAct y=lambdaAct z=lambdaP w=targetP
+@group(0) @binding(9) var<storage, read_write> perim: array<atomic<i32>>; // per-cell perimeter
 
 fn inb(x: i32, y: i32) -> bool { return x >= 0 && x < i32(P.W) && y >= 0 && y < i32(P.H); }
 fn latAt(x: i32, y: i32) -> i32 { if (inb(x,y)) { return lattice[y * i32(P.W) + x]; } return 0; }
@@ -127,6 +128,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (maxAct > 0.0 && lambdaAct > 0.0) {
     dH += lambdaAct * (actGeom(cx, cy, tgtId) - actGeom(sx, sy, srcId)) / maxAct;
   }
+  // Perimeter term (Artistoo PerimeterConstraint). pchange for the src/tgt cells from the target's
+  // 8-neighbourhood; energy is (LAMBDA_P) * ((P+dP - Ptarget)^2 - (P - Ptarget)^2) per affected cell.
+  let lpSrc = kindParams[kSrc].z;
+  let lpTgt = kindParams[kTgt].z;
+  var pcSrc = 0;
+  var pcTgt = 0;
+  if ((srcId > 0 && lpSrc > 0.0) || (tgtId > 0 && lpTgt > 0.0)) {
+    for (var ky = -1; ky <= 1; ky++) {
+      for (var kx = -1; kx <= 1; kx++) {
+        if (kx == 0 && ky == 0) { continue; }
+        let ntid = latAt(cx+kx, cy+ky);
+        if (ntid != srcId) { pcSrc += 1; } else { pcSrc -= 1; }
+        if (ntid != tgtId) { pcTgt -= 1; } else { pcTgt += 1; }
+      }
+    }
+    if (srcId > 0 && lpSrc > 0.0) {
+      let ps = f32(atomicLoad(&perim[srcId])); let ptp = kindParams[kSrc].w;
+      let hnew = (ps + f32(pcSrc)) - ptp; let hold = ps - ptp;
+      dH += lpSrc * (hnew*hnew - hold*hold);
+    }
+    if (tgtId > 0 && lpTgt > 0.0) {
+      let ps = f32(atomicLoad(&perim[tgtId])); let ptp = kindParams[kTgt].w;
+      let hnew = (ps + f32(pcTgt)) - ptp; let hold = ps - ptp;
+      dH += lpTgt * (hnew*hnew - hold*hold);
+    }
+  }
   var accept = dH < 0.0;
   if (!accept) { accept = rng(&st) < exp(-dH / P.T); }
   if (accept) {
@@ -135,6 +162,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     act[cy * i32(P.W) + cx] = i32(kindParams[kSrc].x);
     if (tgtId > 0) { atomicSub(&vol[tgtId], 1); }
     if (srcId > 0) { atomicAdd(&vol[srcId], 1); }
+    if (srcId > 0) { atomicAdd(&perim[srcId], pcSrc); }
+    if (tgtId > 0) { atomicAdd(&perim[tgtId], pcTgt); }
   }
 }
 `;
@@ -169,6 +198,40 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (i >= DIM.x) { return; }
   let id = lattice[i];
   if (id > 0) { atomicAdd(&vol[id], 1); }
+}
+`;
+
+export const PERIM_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> lattice: array<i32>;
+@group(0) @binding(1) var<storage, read_write> perim: array<atomic<i32>>;
+@group(0) @binding(2) var<uniform> DIM: vec4<u32>; // x=N pixels, y=volN, z=W, w=H
+
+fn latAtP(x: i32, y: i32, W: i32, H: i32) -> i32 {
+  if (x >= 0 && x < W && y >= 0 && y < H) { return lattice[y * W + x]; }
+  return 0;
+}
+@compute @workgroup_size(64)
+fn clear(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= DIM.y) { return; }
+  atomicStore(&perim[i], 0);
+}
+@compute @workgroup_size(64)
+fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= DIM.x) { return; }
+  let id = lattice[i];
+  if (id <= 0) { return; }
+  let W = i32(DIM.z); let H = i32(DIM.w);
+  let x = i32(i % DIM.z); let y = i32(i / DIM.z);
+  var c = 0;
+  for (var ky = -1; ky <= 1; ky++) {
+    for (var kx = -1; kx <= 1; kx++) {
+      if (kx == 0 && ky == 0) { continue; }
+      if (latAtP(x+kx, y+ky, W, H) != id) { c += 1; }
+    }
+  }
+  atomicAdd(&perim[id], c);
 }
 `;
 

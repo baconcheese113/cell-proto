@@ -3,7 +3,7 @@
 // Worker-safe (no Phaser). Physics is intentionally reduced (no Act/perimeter/barrier yet — M1b).
 
 import { acquireGpu, BUF, MAP_READ_FLAG } from "./cpm-gpu-device";
-import { STEP_WGSL, VOL_WGSL, COLORMAP_WGSL, ACT_DECAY_WGSL } from "./cpm-gpu-wgsl";
+import { STEP_WGSL, VOL_WGSL, PERIM_WGSL, COLORMAP_WGSL, ACT_DECAY_WGSL } from "./cpm-gpu-wgsl";
 import { blockDispatch, encodeParams } from "./cpm-gpu-encoding";
 
 const WG = 64;
@@ -30,6 +30,7 @@ export class GpuCpm {
     J: Float32Array; nKinds: number; lut: Uint32Array;
     lattice: Int32Array; kind: Int32Array; targetVol: Float32Array; maxId: number;
     maxAct: number[]; lambdaAct: number[]; // per-kind (index 0 = background), Act model params
+    lambdaP: number[]; targetP: number[]; // per-kind Perimeter constraint params
   }): Promise<GpuCpm | { error: string }> {
     const g = await acquireGpu();
     if ("error" in g) return g;
@@ -46,11 +47,13 @@ export class GpuCpm {
     const uniform = (bytes: number): any =>
       d.createBuffer({ size: bytes, usage: BUF.UNIFORM() | BUF.COPY_DST() });
 
-    // per-kind Act params packed as vec4 (x=maxAct, y=lambdaAct, z/w reserved for perimeter later).
+    // per-kind params packed as vec4 (x=maxAct, y=lambdaAct, z=lambdaP, w=targetP).
     const kindParams = new Float32Array(opts.nKinds * 4);
     for (let k = 0; k < opts.nKinds; k++) {
       kindParams[k * 4] = opts.maxAct[k] ?? 0;
       kindParams[k * 4 + 1] = opts.lambdaAct[k] ?? 0;
+      kindParams[k * 4 + 2] = opts.lambdaP[k] ?? 0;
+      kindParams[k * 4 + 3] = opts.targetP[k] ?? 0;
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,6 +66,7 @@ export class GpuCpm {
       lut: store(opts.lut.byteLength),
       act: store(N * 4), // zero-initialised by WebGPU
       kindParams: store(kindParams.byteLength),
+      perim: store(volN * 4),
       framebuffer: store(N * 4),
       params: uniform(48),
       nk: uniform(16),
@@ -79,7 +83,7 @@ export class GpuCpm {
     d.queue.writeBuffer(buf.lut, 0, opts.lut);
     d.queue.writeBuffer(buf.kindParams, 0, kindParams);
     d.queue.writeBuffer(buf.nk, 0, new Uint32Array([opts.nKinds, 0, 0, 0]));
-    d.queue.writeBuffer(buf.volDim, 0, new Uint32Array([N, volN, 0, 0]));
+    d.queue.writeBuffer(buf.volDim, 0, new Uint32Array([N, volN, field, field]));
     d.queue.writeBuffer(buf.cmDim, 0, new Uint32Array([N, 0, 0, 0]));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -88,6 +92,8 @@ export class GpuCpm {
       step: d.createComputePipeline({ layout: "auto", compute: { module: mod(STEP_WGSL), entryPoint: "main" } }),
       volClear: d.createComputePipeline({ layout: "auto", compute: { module: mod(VOL_WGSL), entryPoint: "clear" } }),
       volScatter: d.createComputePipeline({ layout: "auto", compute: { module: mod(VOL_WGSL), entryPoint: "scatter" } }),
+      perimClear: d.createComputePipeline({ layout: "auto", compute: { module: mod(PERIM_WGSL), entryPoint: "clear" } }),
+      perimScatter: d.createComputePipeline({ layout: "auto", compute: { module: mod(PERIM_WGSL), entryPoint: "scatter" } }),
       colormap: d.createComputePipeline({ layout: "auto", compute: { module: mod(COLORMAP_WGSL), entryPoint: "main" } }),
       actDecay: d.createComputePipeline({ layout: "auto", compute: { module: mod(ACT_DECAY_WGSL), entryPoint: "decay" } }),
     };
@@ -104,6 +110,7 @@ export class GpuCpm {
           { binding: 6, resource: { buffer: buf.nk } },
           { binding: 7, resource: { buffer: buf.act } },
           { binding: 8, resource: { buffer: buf.kindParams } },
+          { binding: 9, resource: { buffer: buf.perim } },
         ],
       }),
       actDecay: d.createBindGroup({
@@ -131,6 +138,21 @@ export class GpuCpm {
           { binding: 2, resource: { buffer: buf.volDim } },
         ],
       }),
+      perimClear: d.createBindGroup({
+        layout: pipe.perimClear.getBindGroupLayout(0),
+        entries: [
+          { binding: 1, resource: { buffer: buf.perim } },
+          { binding: 2, resource: { buffer: buf.volDim } },
+        ],
+      }),
+      perimScatter: d.createBindGroup({
+        layout: pipe.perimScatter.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: buf.lattice } },
+          { binding: 1, resource: { buffer: buf.perim } },
+          { binding: 2, resource: { buffer: buf.volDim } },
+        ],
+      }),
       colormap: d.createBindGroup({
         layout: pipe.colormap.getBindGroupLayout(0),
         entries: [
@@ -142,6 +164,21 @@ export class GpuCpm {
         ],
       }),
     };
+    // Initialise vol + perim from the uploaded lattice so the first MCS reads correct baselines
+    // (otherwise deltaH on MCS 1 sees zeroed state and over-accepts).
+    {
+      const enc = d.createCommandEncoder();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const disp = (pl: any, bg: any, threads: number): void => {
+        const p = enc.beginComputePass();
+        p.setPipeline(pl); p.setBindGroup(0, bg); p.dispatchWorkgroups(Math.ceil(threads / WG)); p.end();
+      };
+      disp(pipe.volClear, bind.volClear, volN);
+      disp(pipe.volScatter, bind.volScatter, N);
+      disp(pipe.perimClear, bind.perimClear, volN);
+      disp(pipe.perimScatter, bind.perimScatter, N);
+      d.queue.submit([enc.finish()]);
+    }
     return new GpuCpm(d, field, B, opts.lambdaV, opts.T, volN, buf, pipe, bind);
   }
 
@@ -173,9 +210,11 @@ export class GpuCpm {
         pass.dispatchWorkgroups(workgroups);
         pass.end();
       }
-      // drift-safe volume recompute (once per MCS): clear then scatter from the lattice.
+      // drift-safe volume + perimeter recompute (once per MCS): clear then scatter from the lattice.
       this.dispatch(enc, this.pipe.volClear, this.bind.volClear, this.volN);
       this.dispatch(enc, this.pipe.volScatter, this.bind.volScatter, N);
+      this.dispatch(enc, this.pipe.perimClear, this.bind.perimClear, this.volN);
+      this.dispatch(enc, this.pipe.perimScatter, this.bind.perimScatter, N);
       // Act model decays by 1 each MCS (postMCSListener in Artistoo).
       this.dispatch(enc, this.pipe.actDecay, this.bind.actDecay, N);
       this.d.queue.submit([enc.finish()]);
