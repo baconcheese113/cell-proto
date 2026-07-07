@@ -348,6 +348,41 @@ export class GpuCpm {
     return out;
   }
 
+  async readPerimeters(): Promise<Int32Array> {
+    const enc = this.d.createCommandEncoder();
+    enc.copyBufferToBuffer(this.buf.perim, 0, this.buf.volStaging, 0, this.volN * 4);
+    this.d.queue.submit([enc.finish()]);
+    await this.buf.volStaging.mapAsync(MAP_READ_FLAG());
+    const out = new Int32Array(this.buf.volStaging.getMappedRange().slice(0));
+    this.buf.volStaging.unmap();
+    return out;
+  }
+
+  // ---- state sync (for the retrofit bridge: push Artistoo state in, pull the stepped state out) --
+
+  /** Overwrite the resident lattice (y*field+x, cell id per pixel). */
+  uploadLattice(lat: Int32Array): void { this.d.queue.writeBuffer(this.buf.lattice, 0, lat); }
+  /** Overwrite the resident per-pixel activity field. */
+  uploadAct(act: Int32Array): void { this.d.queue.writeBuffer(this.buf.act, 0, act); }
+  /** Overwrite per-cell kind ids (index 0 = background). */
+  uploadKind(kind: Int32Array): void { this.d.queue.writeBuffer(this.buf.kind, 0, kind); }
+  /** Overwrite per-cell target volumes. */
+  uploadTargetVol(tv: Float32Array): void { this.d.queue.writeBuffer(this.buf.targetVol, 0, tv); }
+  /** Overwrite the whole per-cell steer buffer (vec4 per cell: targetX, targetY, lambda, frozen). */
+  uploadSteer(steer: Float32Array): void { this.d.queue.writeBuffer(this.buf.steer, 0, steer); }
+
+  /** Recompute vol + perim from the current lattice (call after uploadLattice so the next step's
+   *  deltaH reads correct baselines). */
+  recomputeReductions(): void {
+    const N = this.field * this.field;
+    const enc = this.d.createCommandEncoder();
+    this.dispatch(enc, this.pipe.volClear, this.bind.volClear, this.volN);
+    this.dispatch(enc, this.pipe.volScatter, this.bind.volScatter, N);
+    this.dispatch(enc, this.pipe.perimClear, this.bind.perimClear, this.volN);
+    this.dispatch(enc, this.pipe.perimScatter, this.bind.perimScatter, N);
+    this.d.queue.submit([enc.finish()]);
+  }
+
   /** Pipelined (non-blocking) framebuffer readback: colour-map + copy into a free ping-pong
    *  staging buffer and start its mapAsync WITHOUT awaiting; a completed map is harvested into a
    *  persistent array in the background. Call once per rendered frame, then blit newestFramebuffer().
