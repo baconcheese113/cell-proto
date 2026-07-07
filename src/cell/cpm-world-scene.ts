@@ -12,7 +12,7 @@ import type { WorldSnapshot, SnapshotOccupant } from "./world-sim";
 import { LocalSimClient, WorkerSimClient, type SimClient } from "./sim-client";
 import { runBench, spikeCompare, cpuMoveTest } from "./cpm-bench";
 import { gpuSpike } from "./cpm-gpu-spike";
-import { gpuBench } from "./gpu/cpm-gpu-bench";
+import { gpuBench, gpuScale } from "./gpu/cpm-gpu-bench";
 import { gpuSteerTest, gpuBarrierTest, gpuMoveTest } from "./gpu/cpm-gpu-scenarios";
 
 export class CpmWorldScene extends Phaser.Scene {
@@ -132,6 +132,7 @@ export class CpmWorldScene extends Phaser.Scene {
       // GpuCpm foundation A/B: real class (J matrix + volume + drift fix) vs CPU ref at equal
       // border. The M1a gate. __cpm.gpuBench({ mcs: 200 }).
       gpuBench: (o?: Parameters<typeof gpuBench>[0]) => gpuBench(o),
+      gpuScale: (o?: Parameters<typeof gpuScale>[0]) => gpuScale(o),
       // M1c behaviour tests: a steered cell migrates; a barrier blocks non-players, not the player.
       gpuSteerTest: (mcs?: number) => gpuSteerTest(mcs),
       gpuBarrierTest: (mcs?: number, cellParallel?: boolean) => gpuBarrierTest(mcs, cellParallel),

@@ -81,6 +81,50 @@ export async function gpuBench(
   return out;
 }
 
+/** Scaling probe: build a packed world of a given resolution/cell-size, then time a realistic sim
+ *  "frame" = stepCellParallelN(mcsPerFrame) + framebuffer readback + GPU sync. Returns frame ms and
+ *  the implied max fps, so we can see where the GPU sim drops below 60fps as cells/resolution grow. */
+export async function gpuScale(
+  opts: { field?: number; cellSize?: number; mcsPerFrame?: number } = {}
+): Promise<object> {
+  const field = opts.field ?? 400;
+  const cellSize = opts.cellSize ?? 10;
+  const mcsPerFrame = opts.mcsPerFrame ?? 3;
+
+  const packed = packSquareLattice(field, cellSize);
+  const { J, nKinds } = flattenJ(J_ROWS);
+  const lut = buildKindColorLut([0x000000, 0x4fc3f7]);
+  const gpu = await GpuCpm.create({
+    field, lambdaV: LAMBDA_V, T, J, nKinds, lut, maxAct: MAX_ACT, lambdaAct: LAMBDA_ACT,
+    lambdaP: LAMBDA_P, targetP: [0, 0], permeableKind: 1,
+    lattice: packed.lattice.slice(), kind: packed.kind, targetVol: packed.targetVol, maxId: packed.maxId,
+  });
+  if ("error" in gpu) return gpu;
+
+  gpu.stepCellParallelN(5); await gpu.flush(); // warmup
+
+  const frames = 30;
+  const t0 = performance.now();
+  for (let f = 0; f < frames; f++) {
+    gpu.stepCellParallelN(mcsPerFrame);
+    await gpu.readFramebuffer(); // colour-map + readback + GPU sync == realistic per-frame cost
+  }
+  const frameMs = (performance.now() - t0) / frames;
+
+  // pure step ms (no readback) for reference
+  gpu.stepCellParallelN(mcsPerFrame); await gpu.flush();
+  const s0 = performance.now();
+  gpu.stepCellParallelN(mcsPerFrame * frames); await gpu.flush();
+  const stepMs = (performance.now() - s0) / frames;
+  gpu.destroy();
+
+  return {
+    field, cellSize, cells: packed.maxId, border: packed.border, mcsPerFrame,
+    frameMs: +frameMs.toFixed(2), fps: Math.round(1000 / frameMs),
+    stepMs: +stepMs.toFixed(2), readbackMs: +(frameMs - stepMs).toFixed(2),
+  };
+}
+
 /** Mean |vol-target|/target over live cells, in %. */
 function meanVolDevPct(vol: Int32Array, target: number): number {
   let dev = 0, n = 0;
