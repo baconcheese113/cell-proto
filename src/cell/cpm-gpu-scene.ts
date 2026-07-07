@@ -33,10 +33,10 @@ export class CpmGpuScene extends Phaser.Scene {
 
   create(): void {
     const view = this.scale;
-    // Dense lawn ~50k border pixels (field 400, tight small microbes) to stress the GPU step;
-    // ?sparse falls back to the light 200-field world.
-    const sparse = new URLSearchParams(location.search).has("sparse");
-    this.world = sparse ? buildGpuWorld(200) : buildGpuWorld(400, 8, 4);
+    // Vessel world: endothelial walls confine the player + a lumen of distinct microbes.
+    // ?dense packs a bigger, busier vessel (more border) to stress the GPU step.
+    const dense = new URLSearchParams(location.search).has("dense");
+    this.world = dense ? buildGpuWorld(440, 11, 4) : buildGpuWorld();
     const field = this.world.field;
     this.scaleF = Math.max(1, Math.floor(Math.min(view.width, view.height) / field));
     this.originX = Math.floor((view.width - field * this.scaleF) / 2);

@@ -95,7 +95,7 @@ export class GpuCpm {
     for (const k of opts.barrierKinds ?? []) barrierBitmask |= 1 << k;
     d.queue.writeBuffer(buf.nk, 0, new Uint32Array([opts.nKinds, opts.permeableKind ?? 1, barrierBitmask, 0]));
     d.queue.writeBuffer(buf.volDim, 0, new Uint32Array([N, volN, field, field]));
-    d.queue.writeBuffer(buf.cmDim, 0, new Uint32Array([N, 0, 0, 0]));
+    d.queue.writeBuffer(buf.cmDim, 0, new Uint32Array([N, field, 0, 0]));
     d.queue.writeBuffer(buf.cellDim, 0, new Uint32Array([N, volN, field, CAP]));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

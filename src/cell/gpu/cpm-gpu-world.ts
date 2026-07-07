@@ -5,6 +5,7 @@
 import { flattenJ } from "./cpm-gpu-encoding";
 import { buildKindColorLut } from "./cpm-gpu-palette";
 
+// KIND.WALL is the endothelial vessel lining (a hard barrier).
 export const KIND = { BG: 0, PLAYER: 1, MICROBE: 2, WALL: 3 } as const;
 
 function perimOf(lat: Int32Array, field: number, id: number): number {
@@ -42,25 +43,29 @@ export interface GpuWorld {
   barrierKinds: number[];
 }
 
-/** Build the demo world. `field` is the lattice edge; `microbeSpacing`/`microbeR` set the lawn
- *  density (tighter spacing + smaller cells => more cells => more border pixels). */
-export function buildGpuWorld(field = 200, microbeSpacing = 20, microbeR = 5): GpuWorld {
+/** Build a vessel world: top + bottom endothelial walls (each SEGMENTED into distinct cells) form
+ *  a tube; the player + a lawn of microbes live in the lumen between them. The endothelial lining is
+ *  a hard barrier that NOTHING crosses, so the walls confine everyone. `microbeSpacing`/`microbeR`
+ *  set the lumen density. */
+export function buildGpuWorld(field = 320, microbeSpacing = 15, microbeR = 5): GpuWorld {
   const lattice = new Int32Array(field * field);
   const kindArr: number[] = [0];
   const volArr: number[] = [0];
   let id = 0;
 
-  // Border frame = one WALL (barrier) cell.
-  id++;
-  const wallId = id;
-  kindArr[id] = KIND.WALL;
-  const t = 3;
-  let wallArea = 0;
-  for (let y = 0; y < field; y++) for (let x = 0; x < field; x++) {
-    if (x < t || x >= field - t || y < t || y >= field - t) { lattice[y * field + x] = wallId; wallArea++; }
-  }
-  volArr[wallId] = wallArea;
-
+  const stampRect = (k: number, x0: number, y0: number, x1: number, y1: number): number => {
+    id++;
+    let area = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      if (x < 0 || x >= field || y < 0 || y >= field) continue;
+      if (lattice[y * field + x] !== 0) continue;
+      lattice[y * field + x] = id;
+      area++;
+    }
+    kindArr[id] = k;
+    volArr[id] = area;
+    return id;
+  };
   const stampDisc = (k: number, cx: number, cy: number, r: number): number => {
     const r2 = r * r;
     let area = 0;
@@ -69,7 +74,7 @@ export function buildGpuWorld(field = 200, microbeSpacing = 20, microbeR = 5): G
       if (dx * dx + dy * dy > r2) continue;
       const x = cx + dx, y = cy + dy;
       if (x < 0 || x >= field || y < 0 || y >= field) continue;
-      if (lattice[y * field + x] !== 0) continue; // don't overwrite the wall / other cells
+      if (lattice[y * field + x] !== 0) continue; // don't overwrite walls / other cells
       lattice[y * field + x] = id;
       area++;
     }
@@ -78,16 +83,27 @@ export function buildGpuWorld(field = 200, microbeSpacing = 20, microbeR = 5): G
     return id;
   };
 
-  // Player near the centre.
-  const playerR = 9;
-  const playerId = stampDisc(KIND.PLAYER, Math.floor(field / 2), Math.floor(field / 2), playerR);
+  // Vessel: top + bottom endothelial walls, each split into distinct cells (segments).
+  const wallH = Math.round(field * 0.15);
+  const segW = 26;
+  const firstEndo = id + 1;
+  for (let x0 = 0; x0 < field; x0 += segW) {
+    const x1 = Math.min(x0 + segW, field);
+    stampRect(KIND.WALL, x0, 0, x1, wallH); // top
+    stampRect(KIND.WALL, x0, field - wallH, x1, field); // bottom
+  }
 
-  // A lawn of microbes, skipping the player's neighbourhood.
-  const spacing = microbeSpacing;
+  // Player in the lumen centre.
+  const lumenTop = wallH, lumenBot = field - wallH;
   const pc = Math.floor(field / 2);
-  for (let gy = 16; gy < field - 16; gy += spacing) {
-    for (let gx = 16; gx < field - 16; gx += spacing) {
-      if (Math.abs(gx - pc) < 24 && Math.abs(gy - pc) < 24) continue; // keep clear around the player
+  const playerId = stampDisc(KIND.PLAYER, pc, pc, 9);
+  const firstMicrobe = id + 1;
+
+  // Distinct microbes scattered through the lumen (never in the walls).
+  const spacing = microbeSpacing;
+  for (let gy = lumenTop + 10; gy < lumenBot - 10; gy += spacing) {
+    for (let gx = 12; gx < field - 12; gx += spacing) {
+      if (Math.abs(gx - pc) < 26 && Math.abs(gy - pc) < 26) continue; // clear around the player
       if (lattice[gy * field + gx] !== 0) continue;
       stampDisc(KIND.MICROBE, gx, gy, microbeR);
     }
@@ -112,29 +128,35 @@ export function buildGpuWorld(field = 200, microbeSpacing = 20, microbeR = 5): G
   }
 
   // Per-kind target perimeter, from a representative cell of each kind.
-  let aMicrobe = playerId + 1;
-  const targetP = [0, perimOf(lattice, field, playerId), aMicrobe <= id ? perimOf(lattice, field, aMicrobe) : 0, 0];
+  const targetP = [
+    0,
+    perimOf(lattice, field, playerId), // player disc
+    firstMicrobe <= id ? perimOf(lattice, field, firstMicrobe) : 40, // microbe disc
+    perimOf(lattice, field, firstEndo), // endothelial wall segment
+  ];
 
-  // Adhesion: like=0, most unlike=20, player<->microbe a touch stickier (16).
+  // Adhesion (J[kindA][kindB]). Same-kind microbe adhesion is HIGH (28) so microbes stay distinct
+  // instead of merging into one blob; endothelial lining is cohesive (6).
   const { J, nKinds } = flattenJ([
-    [0, 20, 20, 20],
-    [20, 0, 16, 20],
-    [20, 16, 0, 20],
-    [20, 20, 20, 0],
+    [0, 20, 20, 20], // bg
+    [20, 0, 14, 20], // player: a touch sticky to microbes (14) so it can grab
+    [20, 14, 28, 16], // microbe: microbe<->microbe 28 => distinct
+    [20, 20, 16, 6], // endothelial: cohesive wall
   ]);
-  const lut = buildKindColorLut([0x000000, 0x4fc3f7, 0xff7043, 0x5a6b7a]); // bg, player=cyan, microbe=orange, wall=slate
+  const lut = buildKindColorLut([0x000000, 0x49d0ff, 0xff7043, 0x8a6f9e]); // bg, player, microbe, endothelial
 
   return {
     field, border, lattice, kind, targetVol, maxId: id, playerId, nKinds, J, lut,
-    // Matches the tuned PLAYER_PROFILE (cpm-config): hot Act (maxAct 80) is what makes the
-    // amoeboid crawl actually translate; wall is inert. Microbes wander more gently.
-    maxAct: [0, 80, 50, 0],
-    lambdaAct: [0, 220, 120, 0],
-    lambdaP: [0, 2, 2, 0],
+    // player & microbes crawl (Act); the endothelial lining is inert (it's a hard barrier anyway).
+    maxAct: [0, 80, 45, 0],
+    lambdaAct: [0, 220, 130, 0],
+    lambdaP: [0, 2, 2, 3],
     targetP,
     lambdaV: 50,
     T: 20,
-    permeableKind: KIND.PLAYER, // the player plows through walls/debris
-    barrierKinds: [KIND.WALL],
+    // No permeable kind (99 = nothing) so the endothelial barrier BLOCKS everyone — the player is
+    // confined to the vessel lumen, microbes can't escape it.
+    permeableKind: 99,
+    barrierKinds: [KIND.WALL], // KIND.WALL is the endothelial vessel lining
   };
 }

@@ -484,12 +484,31 @@ export const COLORMAP_WGSL = /* wgsl */ `
 @group(0) @binding(1) var<storage, read> cellKind: array<u32>;
 @group(0) @binding(2) var<storage, read> lut: array<u32>;
 @group(0) @binding(3) var<storage, read_write> framebuffer: array<u32>;
-@group(0) @binding(4) var<uniform> DIM: vec4<u32>; // x=N pixels
+@group(0) @binding(4) var<uniform> DIM: vec4<u32>; // x=N pixels, y=W
+
+// darken the packed 0xAABBGGRR colour toward black (keeps alpha).
+fn darken(col: u32, f: f32) -> u32 {
+  let r = u32(f32(col & 0xffu) * f);
+  let g = u32(f32((col >> 8u) & 0xffu) * f);
+  let b = u32(f32((col >> 16u) & 0xffu) * f);
+  return (col & 0xff000000u) | (b << 16u) | (g << 8u) | r;
+}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= DIM.x) { return; }
-  framebuffer[i] = lut[cellKind[lattice[i]]];
+  let id = lattice[i];
+  var col = lut[cellKind[id]];
+  // draw a dark edge between adjacent DIFFERENT cells so distinct cells read individually.
+  if (id > 0) {
+    let W = i32(DIM.y);
+    let x = i32(i % DIM.y);
+    let ii = i32(i);
+    let rightDiff = (x + 1 < W) && lattice[ii + 1] != id && lattice[ii + 1] != 0;
+    let downDiff = (ii + W < i32(DIM.x)) && lattice[ii + W] != id && lattice[ii + W] != 0;
+    if (rightDiff || downDiff) { col = darken(col, 0.32); }
+  }
+  framebuffer[i] = col;
 }
 `;
