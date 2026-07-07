@@ -116,12 +116,24 @@ export async function gpuScale(
   const s0 = performance.now();
   gpu.stepCellParallelN(mcsPerFrame * frames); await gpu.flush();
   const stepMs = (performance.now() - s0) / frames;
+
+  // PIPELINED throughput: submit every frame's work (step + a non-blocking readback kick) WITHOUT a
+  // per-frame CPU sync, then flush once. The GPU runs ahead and readbacks overlap the compute, so
+  // this is the true sustained per-frame cost the pipelined sandbox can hit.
+  const p0 = performance.now();
+  for (let f = 0; f < frames; f++) {
+    gpu.stepCellParallelN(mcsPerFrame);
+    gpu.requestFramebuffer();
+  }
+  await gpu.flush();
+  const pipeMs = (performance.now() - p0) / frames;
   gpu.destroy();
 
   return {
     field, cellSize, cells: packed.maxId, border: packed.border, mcsPerFrame,
-    frameMs: +frameMs.toFixed(2), fps: Math.round(1000 / frameMs),
-    stepMs: +stepMs.toFixed(2), readbackMs: +(frameMs - stepMs).toFixed(2),
+    blockingFrameMs: +frameMs.toFixed(2), blockingFps: Math.round(1000 / frameMs),
+    pipelinedFrameMs: +pipeMs.toFixed(2), pipelinedFps: Math.round(1000 / pipeMs),
+    stepMs: +stepMs.toFixed(2),
   };
 }
 

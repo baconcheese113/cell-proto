@@ -76,17 +76,21 @@ export class CpmGpuScene extends Phaser.Scene {
     const ly = (p.y - this.originY) / this.scaleF;
     gpu.setSteer(this.world.playerId, lx, ly, this.steerLambda);
 
-    // One in-flight GPU step/read at a time; the render pace follows the GPU.
+    // One in-flight step batch at a time, throttled on the STEP completing (~ms), not on the
+    // framebuffer readback. The readback is pipelined (requestFramebuffer kicks it without blocking;
+    // it lands 1-2 frames later), so the sim isn't stalled by the ~1-frame mapAsync latency.
     if (!this.busy) {
       this.busy = true;
       void (async () => {
         gpu.stepCellParallelN(this.mcsPerFrame); // cell-parallel: cells actually crawl
-        const fb = await gpu.readFramebuffer();
-        renderer.blit(fb, this.originX, this.originY);
+        await gpu.flush();
+        gpu.requestFramebuffer(); // non-blocking; harvested into newestFramebuffer() when ready
         this.steps += this.mcsPerFrame;
         this.busy = false;
       })();
     }
+    const fb = gpu.newestFramebuffer();
+    if (fb) renderer.blit(fb, this.originX, this.originY);
 
     this.frames++;
     const now = this.time.now;

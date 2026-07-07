@@ -28,6 +28,11 @@ export class GpuCpm {
     private readonly bind: any
   ) {}
 
+  // pipelined framebuffer readback state (double-buffered so the sim never stalls on mapAsync).
+  private newestFb: Uint32Array | null = null;
+  private readonly fbBusy: boolean[] = [false, false];
+  private fbArr: Uint32Array[] | null = null;
+
   static async create(opts: {
     field: number; B?: number; lambdaV: number; T: number;
     J: Float32Array; nKinds: number; lut: Uint32Array;
@@ -83,6 +88,7 @@ export class GpuCpm {
       cellDim: uniform(16),
       volStaging: d.createBuffer({ size: volN * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
       fbStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
+      fbStaging2: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
       latStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
     };
     d.queue.writeBuffer(buf.lattice, 0, opts.lattice);
@@ -340,6 +346,38 @@ export class GpuCpm {
     const out = new Int32Array(this.buf.latStaging.getMappedRange().slice(0));
     this.buf.latStaging.unmap();
     return out;
+  }
+
+  /** Pipelined (non-blocking) framebuffer readback: colour-map + copy into a free ping-pong
+   *  staging buffer and start its mapAsync WITHOUT awaiting; a completed map is harvested into a
+   *  persistent array in the background. Call once per rendered frame, then blit newestFramebuffer().
+   *  This overlaps the readback with the next step so the sim is never blocked by the ~1-frame
+   *  mapAsync latency. */
+  requestFramebuffer(): void {
+    const N = this.field * this.field;
+    if (!this.fbArr) this.fbArr = [new Uint32Array(N), new Uint32Array(N)];
+    const slot = !this.fbBusy[0] ? 0 : !this.fbBusy[1] ? 1 : -1;
+    if (slot < 0) return; // both readbacks still in flight — skip this frame
+    this.fbBusy[slot] = true;
+    const staging = slot === 0 ? this.buf.fbStaging : this.buf.fbStaging2;
+    const enc = this.d.createCommandEncoder();
+    this.dispatch(enc, this.pipe.colormap, this.bind.colormap, N);
+    enc.copyBufferToBuffer(this.buf.framebuffer, 0, staging, 0, N * 4);
+    this.d.queue.submit([enc.finish()]);
+    staging.mapAsync(MAP_READ_FLAG()).then(
+      () => {
+        this.fbArr![slot].set(new Uint32Array(staging.getMappedRange()));
+        staging.unmap();
+        this.newestFb = this.fbArr![slot];
+        this.fbBusy[slot] = false;
+      },
+      () => { this.fbBusy[slot] = false; }
+    );
+  }
+
+  /** The most recently completed pipelined framebuffer (may be 1–2 frames stale), or null. */
+  newestFramebuffer(): Uint32Array | null {
+    return this.newestFb;
   }
 
   async readFramebuffer(): Promise<Uint32Array> {
