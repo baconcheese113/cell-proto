@@ -23,6 +23,7 @@ function perimOf(lat: Int32Array, field: number, id: number): number {
 
 export interface GpuWorld {
   field: number;
+  border: number; // border-pixel count (drives the CPM step cost)
   lattice: Int32Array;
   kind: Int32Array;
   targetVol: Float32Array;
@@ -41,8 +42,9 @@ export interface GpuWorld {
   barrierKinds: number[];
 }
 
-/** Build the demo world. `field` is the lattice edge (≈200 keeps a full lawn at 60fps). */
-export function buildGpuWorld(field = 200): GpuWorld {
+/** Build the demo world. `field` is the lattice edge; `microbeSpacing`/`microbeR` set the lawn
+ *  density (tighter spacing + smaller cells => more cells => more border pixels). */
+export function buildGpuWorld(field = 200, microbeSpacing = 20, microbeR = 5): GpuWorld {
   const lattice = new Int32Array(field * field);
   const kindArr: number[] = [0];
   const volArr: number[] = [0];
@@ -81,8 +83,7 @@ export function buildGpuWorld(field = 200): GpuWorld {
   const playerId = stampDisc(KIND.PLAYER, Math.floor(field / 2), Math.floor(field / 2), playerR);
 
   // A lawn of microbes, skipping the player's neighbourhood.
-  const microbeR = 5;
-  const spacing = 20;
+  const spacing = microbeSpacing;
   const pc = Math.floor(field / 2);
   for (let gy = 16; gy < field - 16; gy += spacing) {
     for (let gx = 16; gx < field - 16; gx += spacing) {
@@ -94,6 +95,21 @@ export function buildGpuWorld(field = 200): GpuWorld {
 
   const kind = Int32Array.from(kindArr);
   const targetVol = Float32Array.from(volArr);
+
+  // border-pixel count (pixels adjacent to a different id) — the driver of step cost.
+  let border = 0;
+  for (let y = 0; y < field; y++) for (let x = 0; x < field; x++) {
+    const v = lattice[y * field + x];
+    if (v === 0) continue;
+    let isB = false;
+    for (let ky = -1; ky <= 1 && !isB; ky++) for (let kx = -1; kx <= 1; kx++) {
+      if (kx === 0 && ky === 0) continue;
+      const nx = x + kx, ny = y + ky;
+      const nid = nx < 0 || nx >= field || ny < 0 || ny >= field ? 0 : lattice[ny * field + nx];
+      if (nid !== v) { isB = true; break; }
+    }
+    if (isB) border++;
+  }
 
   // Per-kind target perimeter, from a representative cell of each kind.
   let aMicrobe = playerId + 1;
@@ -109,7 +125,7 @@ export function buildGpuWorld(field = 200): GpuWorld {
   const lut = buildKindColorLut([0x000000, 0x4fc3f7, 0xff7043, 0x5a6b7a]); // bg, player=cyan, microbe=orange, wall=slate
 
   return {
-    field, lattice, kind, targetVol, maxId: id, playerId, nKinds, J, lut,
+    field, border, lattice, kind, targetVol, maxId: id, playerId, nKinds, J, lut,
     // Matches the tuned PLAYER_PROFILE (cpm-config): hot Act (maxAct 80) is what makes the
     // amoeboid crawl actually translate; wall is inert. Microbes wander more gently.
     maxAct: [0, 80, 50, 0],

@@ -33,7 +33,10 @@ export class CpmGpuScene extends Phaser.Scene {
 
   create(): void {
     const view = this.scale;
-    this.world = buildGpuWorld(200);
+    // Dense lawn ~50k border pixels (field 400, tight small microbes) to stress the GPU step;
+    // ?sparse falls back to the light 200-field world.
+    const sparse = new URLSearchParams(location.search).has("sparse");
+    this.world = sparse ? buildGpuWorld(200) : buildGpuWorld(400, 8, 4);
     const field = this.world.field;
     this.scaleF = Math.max(1, Math.floor(Math.min(view.width, view.height) / field));
     this.originX = Math.floor((view.width - field * this.scaleF) / 2);
@@ -95,11 +98,13 @@ export class CpmGpuScene extends Phaser.Scene {
       this.steps = 0;
       this.lastSample = now;
       (window as unknown as { __gpuSandbox?: unknown }).__gpuSandbox = {
-        ready: true, fps: this.fps, sps: this.sps, cells: this.world.maxId, mcsPerFrame: this.mcsPerFrame,
+        ready: true, fps: this.fps, sps: this.sps, cells: this.world.maxId,
+        border: this.world.border, mcsPerFrame: this.mcsPerFrame,
       };
     }
     this.hud.setText(
-      `GPU CPM sandbox — ${this.world.field}² lattice, ${this.world.maxId} cells\n` +
+      `GPU CPM sandbox — ${this.world.field}² lattice, ${this.world.maxId} cells, ` +
+        `${(this.world.border / 1000).toFixed(1)}k border\n` +
         `${this.fps} fps · ${this.sps} MCS/s · ${this.mcsPerFrame} MCS/frame (Q/E)\n` +
         `move the mouse to steer the cyan player; it plows through walls`
     );
