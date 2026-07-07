@@ -79,7 +79,7 @@ export async function gpuSteerTest(mcs = 1000): Promise<object> {
  *  with real params. Speed is MCS-bound, so this runs a healthy number of MCS. */
 export async function gpuMoveTest(
   mcs = 2500,
-  opts: { lambdaV?: number; lambdaP?: number; maxAct?: number; lambdaAct?: number; steerLambda?: number; B?: number } = {}
+  opts: { lambdaV?: number; lambdaP?: number; maxAct?: number; lambdaAct?: number; steerLambda?: number; B?: number; cellParallel?: boolean } = {}
 ): Promise<object> {
   const field = 96;
   const startX = 26, startY = 48, targetX = 74, targetY = 48;
@@ -109,7 +109,8 @@ export async function gpuMoveTest(
   };
   const start = cen(await gpu.readLattice());
   gpu.setSteer(1, targetX, targetY, steerLambda);
-  gpu.stepN(mcs); await gpu.flush();
+  if (opts.cellParallel) gpu.stepCellParallelN(mcs); else gpu.stepN(mcs);
+  await gpu.flush();
   const end = cen(await gpu.readLattice());
   gpu.destroy();
 
@@ -123,7 +124,7 @@ export async function gpuMoveTest(
 /** Barrier test: a solid barrier-kind wall down the middle; a cell steered hard into it. When the
  *  mover is a non-permeable kind it must NOT cross; when it is the permeable (player) kind it must.
  *  Proves the hard PermeableBarrierConstraint + permeability on the GPU. */
-export async function gpuBarrierTest(mcs = 600): Promise<object> {
+export async function gpuBarrierTest(mcs = 600, cellParallel = false): Promise<object> {
   const field = 64;
   const wallX0 = 32, wallX1 = 34; // inclusive columns of the wall
 
@@ -161,7 +162,8 @@ export async function gpuBarrierTest(mcs = 600): Promise<object> {
     if ("error" in gpu) return { moverMaxX: -1, moverInWall: -1, latChanged: -1 };
 
     gpu.setSteer(2, 62, 32, 900); // shove the mover right, hard, into the wall
-    gpu.stepN(mcs); await gpu.flush();
+    if (cellParallel) gpu.stepCellParallelN(mcs); else gpu.stepN(mcs);
+    await gpu.flush();
     const lat = await gpu.readLattice();
     gpu.destroy();
 

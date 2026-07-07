@@ -3,10 +3,13 @@
 // Worker-safe (no Phaser). Physics is intentionally reduced (no Act/perimeter/barrier yet — M1b).
 
 import { acquireGpu, BUF, MAP_READ_FLAG } from "./cpm-gpu-device";
-import { STEP_WGSL, VOL_WGSL, PERIM_WGSL, COLORMAP_WGSL, ACT_DECAY_WGSL } from "./cpm-gpu-wgsl";
+import {
+  STEP_WGSL, VOL_WGSL, PERIM_WGSL, COLORMAP_WGSL, ACT_DECAY_WGSL, BORDER_BUILD_WGSL, CELL_STEP_WGSL,
+} from "./cpm-gpu-wgsl";
 import { blockDispatch, encodeParams } from "./cpm-gpu-encoding";
 
 const WG = 64;
+const CAP = 512; // max tracked border pixels per cell (cell-parallel step)
 
 export class GpuCpm {
   private constructor(
@@ -70,11 +73,14 @@ export class GpuCpm {
       kindParams: store(kindParams.byteLength),
       perim: store(volN * 4),
       steer: store(volN * 16), // per-cell vec4 (targetX, targetY, lambda, frozen); zero = idle
+      borderCount: store(volN * 4),
+      borderList: store(volN * CAP * 4),
       framebuffer: store(N * 4),
       params: uniform(48),
       nk: uniform(16),
       volDim: uniform(16),
       cmDim: uniform(16),
+      cellDim: uniform(16),
       volStaging: d.createBuffer({ size: volN * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
       fbStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
       latStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
@@ -90,6 +96,7 @@ export class GpuCpm {
     d.queue.writeBuffer(buf.nk, 0, new Uint32Array([opts.nKinds, opts.permeableKind ?? 1, barrierBitmask, 0]));
     d.queue.writeBuffer(buf.volDim, 0, new Uint32Array([N, volN, field, field]));
     d.queue.writeBuffer(buf.cmDim, 0, new Uint32Array([N, 0, 0, 0]));
+    d.queue.writeBuffer(buf.cellDim, 0, new Uint32Array([N, volN, field, CAP]));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mod = (code: string): any => d.createShaderModule({ code });
@@ -101,6 +108,9 @@ export class GpuCpm {
       perimScatter: d.createComputePipeline({ layout: "auto", compute: { module: mod(PERIM_WGSL), entryPoint: "scatter" } }),
       colormap: d.createComputePipeline({ layout: "auto", compute: { module: mod(COLORMAP_WGSL), entryPoint: "main" } }),
       actDecay: d.createComputePipeline({ layout: "auto", compute: { module: mod(ACT_DECAY_WGSL), entryPoint: "decay" } }),
+      borderClear: d.createComputePipeline({ layout: "auto", compute: { module: mod(BORDER_BUILD_WGSL), entryPoint: "clear" } }),
+      borderScatter: d.createComputePipeline({ layout: "auto", compute: { module: mod(BORDER_BUILD_WGSL), entryPoint: "scatter" } }),
+      cellStep: d.createComputePipeline({ layout: "auto", compute: { module: mod(CELL_STEP_WGSL), entryPoint: "main" } }),
     };
     const bind = {
       step: d.createBindGroup({
@@ -169,6 +179,42 @@ export class GpuCpm {
           { binding: 4, resource: { buffer: buf.cmDim } },
         ],
       }),
+      // BORDER_BUILD `clear` uses only borderCount + DIM (not lattice/borderList) — layout omits them.
+      borderClear: d.createBindGroup({
+        layout: pipe.borderClear.getBindGroupLayout(0),
+        entries: [
+          { binding: 1, resource: { buffer: buf.borderCount } },
+          { binding: 3, resource: { buffer: buf.cellDim } },
+        ],
+      }),
+      borderScatter: d.createBindGroup({
+        layout: pipe.borderScatter.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: buf.lattice } },
+          { binding: 1, resource: { buffer: buf.borderCount } },
+          { binding: 2, resource: { buffer: buf.borderList } },
+          { binding: 3, resource: { buffer: buf.cellDim } },
+        ],
+      }),
+      cellStep: d.createBindGroup({
+        layout: pipe.cellStep.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: buf.lattice } },
+          { binding: 1, resource: { buffer: buf.vol } },
+          { binding: 2, resource: { buffer: buf.perim } },
+          { binding: 3, resource: { buffer: buf.act } },
+          { binding: 4, resource: { buffer: buf.kind } },
+          { binding: 5, resource: { buffer: buf.targetVol } },
+          { binding: 6, resource: { buffer: buf.J } },
+          { binding: 7, resource: { buffer: buf.kindParams } },
+          { binding: 8, resource: { buffer: buf.steer } },
+          { binding: 9, resource: { buffer: buf.borderCount } },
+          { binding: 10, resource: { buffer: buf.borderList } },
+          { binding: 11, resource: { buffer: buf.params } },
+          { binding: 12, resource: { buffer: buf.nk } },
+          { binding: 13, resource: { buffer: buf.cellDim } },
+        ],
+      }),
     };
     // Initialise vol + perim from the uploaded lattice so the first MCS reads correct baselines
     // (otherwise deltaH on MCS 1 sees zeroed state and over-accepts).
@@ -231,6 +277,33 @@ export class GpuCpm {
    *  the cell a hard barrier (wall-sleep). Writes just this cell's slot in the steer buffer. */
   setSteer(id: number, x: number, y: number, lambda: number, frozen = 0): void {
     this.d.queue.writeBuffer(this.buf.steer, id * 16, new Float32Array([x, y, lambda, frozen]));
+  }
+
+  /** Cell-parallel step: one thread per cell runs its border loop sequentially (preserves the Act
+   *  crawl), cells concurrently, boundary pixels claimed atomically (collision-safe). Rebuilds the
+   *  per-cell border lists each MCS, then recomputes vol/perim + decays act, like the checkerboard. */
+  stepCellParallelN(n: number): void {
+    const N = this.field * this.field;
+    for (let m = 0; m < n; m++) {
+      this.d.queue.writeBuffer(
+        this.buf.params, 0,
+        encodeParams({ W: this.field, H: this.field, B: 4, phase: 0, ox: 0, oy: 0,
+          seed: (Math.random() * 1e9) | 0, lambdaV: this.lambdaV, T: this.T })
+      );
+      const enc = this.d.createCommandEncoder();
+      // build per-cell border lists from the current lattice
+      this.dispatch(enc, this.pipe.borderClear, this.bind.borderClear, this.volN);
+      this.dispatch(enc, this.pipe.borderScatter, this.bind.borderScatter, N);
+      // one thread per cell id
+      this.dispatch(enc, this.pipe.cellStep, this.bind.cellStep, this.volN);
+      // drift-safe recompute + act decay (same as the checkerboard path)
+      this.dispatch(enc, this.pipe.volClear, this.bind.volClear, this.volN);
+      this.dispatch(enc, this.pipe.volScatter, this.bind.volScatter, N);
+      this.dispatch(enc, this.pipe.perimClear, this.bind.perimClear, this.volN);
+      this.dispatch(enc, this.pipe.perimScatter, this.bind.perimScatter, N);
+      this.dispatch(enc, this.pipe.actDecay, this.bind.actDecay, N);
+      this.d.queue.submit([enc.finish()]);
+    }
   }
 
   async flush(): Promise<void> {

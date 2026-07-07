@@ -20,7 +20,7 @@ const LAMBDA_ACT = [0, 200];
 const LAMBDA_P = [0, 2]; // Perimeter constraint strength per kind — holds cells cohesive vs Act
 
 export async function gpuBench(
-  opts: { field?: number; cellSize?: number; mcs?: number; B?: number } = {}
+  opts: { field?: number; cellSize?: number; mcs?: number; B?: number; cellParallel?: boolean } = {}
 ): Promise<object> {
   const field = opts.field ?? 336;
   const cellSize = opts.cellSize ?? 10;
@@ -42,9 +42,10 @@ export async function gpuBench(
   });
   if ("error" in gpu) return gpu;
 
-  gpu.stepN(20); await gpu.flush();
+  const step = (n: number): void => opts.cellParallel ? gpu.stepCellParallelN(n) : gpu.stepN(n);
+  step(20); await gpu.flush();
   const g0 = performance.now();
-  gpu.stepN(mcs); await gpu.flush();
+  step(mcs); await gpu.flush();
   const gpuMs = (performance.now() - g0) / mcs;
 
   const vols = await gpu.readVolumes();

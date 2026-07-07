@@ -77,7 +77,7 @@ export class CpmGpuScene extends Phaser.Scene {
     if (!this.busy) {
       this.busy = true;
       void (async () => {
-        gpu.stepN(this.mcsPerFrame);
+        gpu.stepCellParallelN(this.mcsPerFrame); // cell-parallel: cells actually crawl
         const fb = await gpu.readFramebuffer();
         renderer.blit(fb, this.originX, this.originY);
         this.steps += this.mcsPerFrame;

@@ -134,7 +134,7 @@ export class CpmWorldScene extends Phaser.Scene {
       gpuBench: (o?: Parameters<typeof gpuBench>[0]) => gpuBench(o),
       // M1c behaviour tests: a steered cell migrates; a barrier blocks non-players, not the player.
       gpuSteerTest: (mcs?: number) => gpuSteerTest(mcs),
-      gpuBarrierTest: (mcs?: number) => gpuBarrierTest(mcs),
+      gpuBarrierTest: (mcs?: number, cellParallel?: boolean) => gpuBarrierTest(mcs, cellParallel),
       gpuMoveTest: (mcs?: number, opts?: Parameters<typeof gpuMoveTest>[1]) => gpuMoveTest(mcs, opts),
       cpuMoveTest: (mcs?: number) => cpuMoveTest(mcs),
     };
