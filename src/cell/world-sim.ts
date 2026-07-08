@@ -21,6 +21,7 @@ import { PRESETS, rollComponents, type BodyKey } from "./cell-presets";
 import { CpmVessel, DEFAULT_VESSEL } from "./cpm-vessel";
 import { simStepsFor } from "./sim-clock";
 import { checkerboardStepN } from "./cpm-checkerboard-spike";
+import { GpuStepBridge } from "./gpu/gpu-step-bridge";
 import { AgentWorld, TEAM } from "./agent-world";
 import { hostile } from "./agent-world-core";
 import {
@@ -313,6 +314,17 @@ export class WorldSim {
   private timeSec = 0;
   private buildIndex = 0;
   private input: WorldInput = { steering: false, pointerWX: 0, pointerWY: 0, engulf: false, pointerSpeed: 0, viewHalfDiag: 600, diag: false };
+
+  // GPU-offloaded Monte-Carlo step (?gpu). When enabled, the per-tick `cpm.step` runs on the GPU via
+  // GpuStepBridge instead of `sim.stepN`. Everything else (streaming, combat, nucleus, rendering)
+  // stays on the CPU exactly as before — the bridge just advances the lattice. Built lazily on the
+  // first stepped tick; falls back to CPU if WebGPU is unavailable. NOTE: Footprint (nucleus) + Flow
+  // are not yet in the GPU step (M-Bridge-2), so those couplings are inert while GPU-stepping.
+  private gpuEnabled = false;
+  private gpu: GpuStepBridge | null = null;
+  private gpuFailed = false;
+  /** Spare per-cell id headroom so occasional spawns don't force a bridge rebuild every time. */
+  private static readonly GPU_ID_HEADROOM = 256;
 
   constructor(config: CpmWorldConfig = DEFAULT_WORLD_CONFIG) {
     const cfg = config;
@@ -619,8 +631,48 @@ export class WorldSim {
     };
   }
 
+  /** Turn on GPU-offloaded stepping (?gpu). Idempotent; the bridge is built lazily on the first
+   *  stepped tick so cells already exist when it snapshots the config. */
+  enableGpu(): void {
+    this.gpuEnabled = true;
+  }
+
+  /** True once the GPU step bridge is built and actually stepping the lattice. False if GPU stepping
+   *  is disabled or WebGPU was unavailable and it fell back to the CPU. */
+  gpuActive(): boolean {
+    return this.gpuEnabled && !this.gpuFailed && this.gpu !== null;
+  }
+
+  /** Advance the CPM lattice `steps` MCS on the GPU. Builds the bridge lazily and rebuilds it if the
+   *  live cell-id range has outgrown the GPU buffers (a spawn beyond headroom). Falls back to CPU
+   *  permanently if WebGPU is unavailable. */
+  private async gpuStep(steps: number): Promise<void> {
+    const needed = GpuStepBridge.maxLiveId(this.sim);
+    if (this.gpu && needed > this.gpu.capacity) {
+      this.gpu.destroy();
+      this.gpu = null;
+    }
+    if (!this.gpu) {
+      const built = await GpuStepBridge.create(this.sim, {
+        permeableKind: CONTROLLED_KIND, // the player plows through barriers, matching the CPU sim
+        barrierKinds: [DEBRIS_KIND], // inert ripped-membrane fragments are hard barriers
+        idHeadroom: WorldSim.GPU_ID_HEADROOM,
+      });
+      if ("error" in built) {
+        console.warn("GPU step unavailable, staying on CPU:", built.error);
+        this.gpuFailed = true;
+        this.sim.stepN(steps); // this tick still advances, on the CPU
+        return;
+      }
+      this.gpu = built;
+    }
+    await this.gpu.step(steps);
+  }
+
   // ---- the one fixed-timestep tick ----------------------------------------
-  tick(dtSec: number): void {
+  // Async because the GPU step awaits its readback; when GPU-stepping is OFF the function hits no
+  // `await` and so completes synchronously (the worker path is unaffected).
+  async tick(dtSec: number): Promise<void> {
     this.timeSec += dtSec;
     this.tickSeq++;
     const input = this.input;
@@ -674,13 +726,17 @@ export class WorldSim {
     this.simAccumMs += dtSec * 1000;
     const plan = simStepsFor(this.simAccumMs, 1000 / this.mcsPerSec, MAX_CATCHUP_STEPS);
     this.simAccumMs = plan.remainderMs;
-    // SPIKE: swap in the checkerboard step (same math, phase-alternating order) to eyeball
-    // whether the parallel-friendly scheme preserves the dynamics. DEV toggle only.
-    this.prof.measure("cpm.step", () =>
-      this.useCheckerboard
-        ? checkerboardStepN(this.sim, plan.steps, this.checkerboardB)
-        : this.sim.stepN(plan.steps)
-    );
+    if (this.gpuEnabled && !this.gpuFailed && plan.steps > 0) {
+      await this.gpuStep(plan.steps);
+    } else {
+      // SPIKE: swap in the checkerboard step (same math, phase-alternating order) to eyeball
+      // whether the parallel-friendly scheme preserves the dynamics. DEV toggle only.
+      this.prof.measure("cpm.step", () =>
+        this.useCheckerboard
+          ? checkerboardStepN(this.sim, plan.steps, this.checkerboardB)
+          : this.sim.stepN(plan.steps)
+      );
+    }
 
     // Infinite-world streaming (or, when frozen, edge-cull traffic).
     let shiftX = 0;

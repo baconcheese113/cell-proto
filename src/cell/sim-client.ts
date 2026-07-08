@@ -36,10 +36,30 @@ export interface SimClient {
   dispose(): void;
 }
 
-/** Sim on the render thread (debug/fallback). Ticks once per takeSnapshot. */
+/** Sim on the render thread (debug/fallback). Self-driven at ~60Hz (was render-driven) because the
+ *  tick is now async — the GPU-world path (?gpuworld) awaits its readback, so takeSnapshot can no
+ *  longer tick inline and return synchronously. The render loop just reads the latest snapshot. */
 export class LocalSimClient implements SimClient {
   readonly worldSim = new WorldSim();
   private lastTime = performance.now();
+  private latest: WorldSnapshot | null = null;
+  private disposed = false;
+
+  /** @param gpu run the CPM Monte-Carlo step on the GPU (GpuStepBridge) instead of the CPU. */
+  constructor(gpu = false) {
+    if (gpu) this.worldSim.enableGpu();
+    void this.loop();
+  }
+
+  private async loop(): Promise<void> {
+    if (this.disposed) return;
+    const now = performance.now();
+    const dt = Math.min((now - this.lastTime) / 1000, 0.1);
+    this.lastTime = now;
+    await this.worldSim.tick(dt);
+    this.latest = this.worldSim.snapshot();
+    if (!this.disposed) setTimeout(() => void this.loop(), 1000 / 60);
+  }
 
   setInput(input: WorldInput): void {
     this.worldSim.setInput(input);
@@ -53,14 +73,12 @@ export class LocalSimClient implements SimClient {
   pickCell(wx: number, wy: number): void {
     this.worldSim.pickCellAt(wx, wy);
   }
-  takeSnapshot(): WorldSnapshot {
-    const now = performance.now();
-    const dt = Math.min((now - this.lastTime) / 1000, 0.1);
-    this.lastTime = now;
-    this.worldSim.tick(dt);
-    return this.worldSim.snapshot();
+  takeSnapshot(): WorldSnapshot | null {
+    return this.latest;
   }
-  dispose(): void {}
+  dispose(): void {
+    this.disposed = true;
+  }
 }
 
 /** Sim on a Web Worker. The worker ticks itself; we keep only the latest snapshot. */

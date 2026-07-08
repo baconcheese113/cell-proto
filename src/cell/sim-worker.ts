@@ -42,7 +42,9 @@ function loop(): void {
   const start = performance.now();
   const dt = Math.min((start - last) / 1000, 0.1);
   last = start;
-  sim.tick(dt);
+  // tick() is async (the GPU path awaits its readback), but the worker never enables GPU, so tick
+  // hits no await and completes synchronously here before we snapshot.
+  void sim.tick(dt);
   // Structured clone copies the framebuffer (a ~400KB buffer copy — cheaper than the
   // multi-ms step we moved off-thread); the worker keeps its own buffer for next tick.
   ctx.postMessage({ t: "snapshot", snap: sim.snapshot() });

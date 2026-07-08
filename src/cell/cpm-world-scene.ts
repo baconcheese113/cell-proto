@@ -58,8 +58,13 @@ export class CpmWorldScene extends Phaser.Scene {
 
     // The whole simulation, behind the client boundary. Worker by default; ?local runs
     // it inline (so __cpm can reach the live WorldSim for debugging).
-    const useLocal = new URLSearchParams(location.search).has("local");
-    this.sim = useLocal ? new LocalSimClient() : new WorkerSimClient();
+    // ?gpuworld runs the REAL WorldSim with its CPM step offloaded to the GPU (GpuStepBridge). It
+    // implies local (main-thread) so WebGPU + __cpm are reachable; the default worker path stays on
+    // CPU. (?gpu is a different thing — the standalone GPU sandbox scene, see main.ts.)
+    const params = new URLSearchParams(location.search);
+    const useGpuWorld = params.has("gpuworld");
+    const useLocal = params.has("local") || useGpuWorld;
+    this.sim = useLocal ? new LocalSimClient(useGpuWorld) : new WorkerSimClient();
 
     // Agent tier drawn BELOW the CPM lattice (depth 8 < 10) so promoted CPM detail
     // draws over agents where they coincide. The lattice renderer is created lazily
@@ -151,6 +156,8 @@ export class CpmWorldScene extends Phaser.Scene {
         combat: ws.combat,
         rules: ws.rules,
         getPlayerId: () => ws.controlledCellId,
+        // ?gpuworld: true once the CPM step is running on the GPU (GpuStepBridge), false on CPU fallback.
+        gpuActive: () => ws.gpuActive(),
         occupants: () => ws.grid.occupants,
         deaths: () => ws.deaths,
         perf: () => ws.prof.report(),

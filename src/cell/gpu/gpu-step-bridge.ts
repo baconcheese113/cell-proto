@@ -61,6 +61,7 @@ export interface GpuStepBridgeOptions {
 function exportArtistooState(
   cpm: CpmInternals, act: ActConstraint, attract: AttractConstraint,
   field: number, volN: number, yBits: number, yMask: number,
+  isFrozen: (id: number) => boolean,
 ): { lattice: Int32Array; actArr: Int32Array; kind: Int32Array; targetVol: Float32Array; steer: Float32Array } {
   const f = field, N = f * f;
   const xStep = 1 << yBits;
@@ -95,7 +96,7 @@ function exportArtistooState(
     targetVol[id] = V[k] ?? 0;
   }
 
-  // per-cell steering (vec4: targetX, targetY, lambda, frozen). frozen unused by the bridge yet.
+  // per-cell steering (vec4: targetX, targetY, lambda, frozen).
   const steer = new Float32Array(volN * 4);
   for (const [id, tgt] of attract.targets) {
     if (id <= 0 || id >= volN) continue;
@@ -105,6 +106,11 @@ function exportArtistooState(
     steer[id * 4 + 1] = tgt[1];
     steer[id * 4 + 2] = l;
   }
+  // frozen (wall-sleep): a settled far-from-player wall is a hard barrier on the GPU too, so the
+  // vessel lining doesn't drift. Set the w-component for every frozen live cell (even λ=0 ones).
+  for (let id = 1; id < volN; id++) {
+    if (kind[id] !== 0 && isFrozen(id)) steer[id * 4 + 3] = 1;
+  }
 
   return { lattice, actArr, kind, targetVol, steer };
 }
@@ -112,6 +118,7 @@ function exportArtistooState(
 export class GpuStepBridge {
   private constructor(
     private readonly gpu: GpuCpm,
+    private readonly sim: CpmSimulation,
     private readonly cpm: CpmInternals,
     private readonly act: ActConstraint,
     private readonly perim: PerimConstraint,
@@ -123,10 +130,14 @@ export class GpuStepBridge {
     private readonly yMask: number,
   ) {}
 
-  /** Highest live cell id currently on the grid (drives GPU buffer sizing). */
-  private static maxLiveId(cpm: CpmInternals): number {
+  /** Highest cell id the GPU buffers can address. Exceed it (a spawn beyond headroom) and the
+   *  caller must rebuild the bridge with a bigger allocation. */
+  get capacity(): number { return this.volN - 1; }
+
+  /** Highest live cell id currently on the grid (drives GPU buffer sizing / rebuild checks). */
+  static maxLiveId(sim: CpmSimulation): number {
+    const cv = (sim.cpm as unknown as { cellvolume: number[] }).cellvolume;
     let m = 0;
-    const cv = cpm.cellvolume;
     for (const key in cv) {
       const id = +key;
       if (cv[id] > 0 && id > m) m = id;
@@ -148,7 +159,7 @@ export class GpuStepBridge {
     const yMask = grid.Y_MASK;
 
     const { J, nKinds } = flattenJ(conf.J); // nKinds = full matrix dim (includes background)
-    const maxId = GpuStepBridge.maxLiveId(cpm) + (opts.idHeadroom ?? 0);
+    const maxId = GpuStepBridge.maxLiveId(sim) + (opts.idHeadroom ?? 0);
     const volN = maxId + 1;
 
     const act = cpm.getConstraint("ActivityConstraint") as ActConstraint;
@@ -165,7 +176,7 @@ export class GpuStepBridge {
     const lut = buildKindColorLut(new Array(nKinds).fill(0x000000));
 
     const { lattice, actArr, kind, targetVol } =
-      exportArtistooState(cpm, act, attract, field, volN, yBits, yMask);
+      exportArtistooState(cpm, act, attract, field, volN, yBits, yMask, (id) => sim.isFrozen(id));
 
     const gpu = await GpuCpm.create({
       field, lambdaV, T: conf.T, J, nKinds, lut,
@@ -178,7 +189,7 @@ export class GpuStepBridge {
     gpu.uploadAct(actArr);
     // Seed the resident vol/perim baselines from the uploaded lattice.
     gpu.recomputeReductions();
-    return new GpuStepBridge(gpu, cpm, act, perim, attract, field, volN, yBits, yMask);
+    return new GpuStepBridge(gpu, sim, cpm, act, perim, attract, field, volN, yBits, yMask);
   }
 
   /** Advance the sim `n` Monte-Carlo steps on the GPU and write the result back into Artistoo.
@@ -188,7 +199,13 @@ export class GpuStepBridge {
     // export live Artistoo state -> upload -> refresh baselines -> step
     const { lattice, actArr, kind, targetVol, steer } = exportArtistooState(
       this.cpm, this.act, this.attract, this.field, this.volN, this.yBits, this.yMask,
+      (id) => this.sim.isFrozen(id),
     );
+    const conf = this.cpm.conf;
+    // Per-kind params are mutated live (setKindActive -> LAMBDA_ACT, perimeter budget -> P), so
+    // re-upload them every step or the player's crawl toggle + perimeter budget would be frozen
+    // at build state.
+    this.gpu.uploadKindParams(conf.MAX_ACT, conf.LAMBDA_ACT, conf.LAMBDA_P, conf.P);
     this.gpu.uploadLattice(lattice);
     this.gpu.uploadAct(actArr);
     this.gpu.uploadKind(kind);

@@ -20,6 +20,7 @@ export class GpuCpm {
     private readonly lambdaV: number,
     private readonly T: number,
     private readonly volN: number,
+    private readonly nKinds: number,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private readonly buf: any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -237,7 +238,7 @@ export class GpuCpm {
       disp(pipe.perimScatter, bind.perimScatter, N);
       d.queue.submit([enc.finish()]);
     }
-    return new GpuCpm(d, field, B, opts.lambdaV, opts.T, volN, buf, pipe, bind);
+    return new GpuCpm(d, field, B, opts.lambdaV, opts.T, volN, opts.nKinds, buf, pipe, bind);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -370,6 +371,21 @@ export class GpuCpm {
   uploadTargetVol(tv: Float32Array): void { this.d.queue.writeBuffer(this.buf.targetVol, 0, tv); }
   /** Overwrite the whole per-cell steer buffer (vec4 per cell: targetX, targetY, lambda, frozen). */
   uploadSteer(steer: Float32Array): void { this.d.queue.writeBuffer(this.buf.steer, 0, steer); }
+  /** Re-upload the per-kind params (vec4: maxAct, lambdaAct, lambdaP, targetP). Needed each tick in
+   *  the live world, where LAMBDA_ACT (setKindActive) and P (perimeter budget) are mutated per frame. */
+  uploadKindParams(maxAct: number[], lambdaAct: number[], lambdaP: number[], targetP: number[]): void {
+    const kp = new Float32Array(this.nKinds * 4);
+    for (let k = 0; k < this.nKinds; k++) {
+      kp[k * 4] = maxAct[k] ?? 0;
+      kp[k * 4 + 1] = lambdaAct[k] ?? 0;
+      kp[k * 4 + 2] = lambdaP[k] ?? 0;
+      kp[k * 4 + 3] = targetP[k] ?? 0;
+    }
+    this.d.queue.writeBuffer(this.buf.kindParams, 0, kp);
+  }
+  /** Buffer capacity: the highest cell id the per-cell buffers can address. Exceed it and the bridge
+   *  must rebuild with a larger allocation. */
+  get capacity(): number { return this.volN - 1; }
 
   /** Recompute vol + perim from the current lattice (call after uploadLattice so the next step's
    *  deltaH reads correct baselines). */
