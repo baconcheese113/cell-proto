@@ -14,6 +14,7 @@ import { runBench, spikeCompare, cpuMoveTest } from "./cpm-bench";
 import { gpuSpike } from "./cpm-gpu-spike";
 import { gpuBench, gpuScale } from "./gpu/cpm-gpu-bench";
 import { gpuSteerTest, gpuBarrierTest, gpuMoveTest } from "./gpu/cpm-gpu-scenarios";
+import { gpuBridgeParity } from "./gpu/gpu-bridge-scenario";
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: SimClient;
@@ -138,6 +139,9 @@ export class CpmWorldScene extends Phaser.Scene {
       gpuBarrierTest: (mcs?: number, cellParallel?: boolean) => gpuBarrierTest(mcs, cellParallel),
       gpuMoveTest: (mcs?: number, opts?: Parameters<typeof gpuMoveTest>[1]) => gpuMoveTest(mcs, opts),
       cpuMoveTest: (mcs?: number) => cpuMoveTest(mcs),
+      // M-Bridge-1 gate: run a real CpmSimulation through the GpuStepBridge (export -> GPU step ->
+      // write-back) and report its health vs a CPU control. __cpm.gpuBridgeParity(1000).
+      gpuBridgeParity: (mcs?: number) => gpuBridgeParity(mcs),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;
