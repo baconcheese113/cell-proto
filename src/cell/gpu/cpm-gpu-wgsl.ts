@@ -375,6 +375,11 @@ fn actGeomA(x: i32, y: i32, id: i32) -> f32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let c = i32(gid.x);
   if (c <= 0 || c >= i32(DIM.y)) { return; } // cell ids are 1..volN-1
+  // A FROZEN cell (wall-sleep) is pinned: skip its thread entirely so it can neither grow nor
+  // retract. Its pixels live only in its own border list, so with this thread skipped no other cell
+  // can target them either — it stays EXACTLY as stamped, like the CPU PermeableBarrierConstraint's
+  // cheap reject. (Far sleeping walls; the player only meets AWAKE walls, which still deform.)
+  if (steer[c].w > 0.5) { return; }
   let nb0 = borderCount[c];
   if (nb0 <= 0) { return; }
   let cap = i32(DIM.w);

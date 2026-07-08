@@ -14,7 +14,7 @@ import { runBench, spikeCompare, cpuMoveTest } from "./cpm-bench";
 import { gpuSpike } from "./cpm-gpu-spike";
 import { gpuBench, gpuScale } from "./gpu/cpm-gpu-bench";
 import { gpuSteerTest, gpuBarrierTest, gpuMoveTest } from "./gpu/cpm-gpu-scenarios";
-import { gpuBridgeParity, gpuBridgeFlowTest } from "./gpu/gpu-bridge-scenario";
+import { gpuBridgeParity, gpuBridgeFlowTest, gpuBridgeBoundaryTest, gpuBridgeFrozenTest, gpuBridgeSpawnTest } from "./gpu/gpu-bridge-scenario";
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: SimClient;
@@ -149,6 +149,10 @@ export class CpmWorldScene extends Phaser.Scene {
       gpuBridgeParity: (mcs?: number) => gpuBridgeParity(mcs),
       // M-Bridge-2 gate: the vessel current drifts a flowing cell downstream through the bridge.
       gpuBridgeFlowTest: (mcs?: number) => gpuBridgeFlowTest(mcs),
+      // Diagnose "jello boundaries": cell-cell membrane sharpness, CPU (sequential) vs GPU (parallel).
+      gpuBridgeBoundaryTest: (mcs?: number) => gpuBridgeBoundaryTest(mcs),
+      gpuBridgeFrozenTest: (mcs?: number) => gpuBridgeFrozenTest(mcs),
+      gpuBridgeSpawnTest: (mcs?: number) => gpuBridgeSpawnTest(mcs),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;
@@ -161,6 +165,34 @@ export class CpmWorldScene extends Phaser.Scene {
         // ?gpuworld: true once the CPM step is running on the GPU (GpuStepBridge), false on CPU fallback.
         gpuActive: () => ws.gpuActive(),
         gpuDiag: () => ws.gpuDiag(),
+        // Live boundary diagnostic: activity hotness + mean membrane roughness over all live cells,
+        // for A/B-ing ?local (CPU) vs ?gpuworld (GPU) on the REAL world.
+        liveDiag: () => {
+          const sim = ws.sim as unknown as { field: number; cpm: any };
+          const f = sim.field;
+          const kindAt = new Int32Array(f * f);
+          let cellPix = 0;
+          for (const [[x, y], id] of sim.cpm.grid.pixels()) { kindAt[y * f + x] = sim.cpm.cellKind(id); cellPix++; }
+          const at = (x: number, y: number): number => (x < 0 || x >= f || y < 0 || y >= f ? 0 : kindAt[y * f + x]);
+          // id map too, so we can split border by whether the cell is FROZEN (wall-sleep).
+          const idAt = new Int32Array(f * f);
+          for (const [[x, y], id] of sim.cpm.grid.pixels()) idAt[y * f + x] = id;
+          const isFrozen = (id: number): boolean => (sim as unknown as { isFrozen(i: number): boolean }).isFrozen(id);
+          let frozenBorder = 0, awakeBorder = 0, frozenCells = 0;
+          const seen = new Set<number>();
+          for (let y = 0; y < f; y++) for (let x = 0; x < f; x++) {
+            const k = kindAt[y * f + x];
+            if (k === 0) continue;
+            const id = idAt[y * f + x];
+            if (!seen.has(id)) { seen.add(id); if (isFrozen(id)) frozenCells++; }
+            let unlike = 0;
+            for (const [dx, dy] of [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]] as [number,number][]) {
+              if (at(x + dx, y + dy) !== k) unlike++;
+            }
+            if (isFrozen(id)) frozenBorder += unlike; else awakeBorder += unlike;
+          }
+          return { cellPix, cells: seen.size, frozenCells, frozenBorder, awakeBorder };
+        },
         occupants: () => ws.grid.occupants,
         deaths: () => ws.deaths,
         perf: () => ws.prof.report(),
