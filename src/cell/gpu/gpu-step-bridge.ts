@@ -247,15 +247,14 @@ export class GpuStepBridge {
     this.gpu.recomputeReductions();
     this.gpu.stepCellParallelN(n);
     const t2 = performance.now();
-    await this.gpu.flush(); // GPU step actually executes here
-    const t3 = performance.now();
+    // No explicit flush: the readback's mapAsync already waits for the step to finish, so a separate
+    // flush would just double the GPU-sync stall.
     const r = await this.writeBack();
-    const t4 = performance.now();
+    const t3 = performance.now();
     this.lastTimings["export"] = +(t1 - t0).toFixed(2);
     this.lastTimings["upload"] = +(t2 - t1).toFixed(2);
-    this.lastTimings["gpuStep"] = +(t3 - t2).toFixed(2);
-    this.lastTimings["readback"] = +(t4 - t3).toFixed(2);
-    this.lastTimings["total"] = +(t4 - t0).toFixed(2);
+    this.lastTimings["readback"] = +(t3 - t2).toFixed(2);
+    this.lastTimings["total"] = +(t3 - t0).toFixed(2);
     return r;
   }
 
@@ -273,9 +272,9 @@ export class GpuStepBridge {
     // perimeter budget, so it's amortized — a slightly stale budget is imperceptible but a blocking
     // readback every tick is not.
     const readPerim = (this.stepCount++ % GpuStepBridge.PERIM_READ_EVERY) === 0;
-    const lat = await this.gpu.readLattice();
+    // Lattice + act in one map (one drain). Perimeter is amortized (rare) and reads separately.
+    const { lat, act: actArr } = await this.gpu.readLatticeAct();
     const perimArr = readPerim ? await this.gpu.readPerimeters() : null;
-    const actArr = await this.gpu.readAct();
 
     // Rewrite the padded pixel array from the tight lattice; recount volumes as we go.
     const px = this.cpm.grid._pixels;

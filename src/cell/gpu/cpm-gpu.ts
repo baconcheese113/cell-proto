@@ -94,6 +94,7 @@ export class GpuCpm {
       fbStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
       fbStaging2: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
       latStaging: d.createBuffer({ size: N * 4, usage: BUF.COPY_DST() | BUF.MAP_READ() }),
+      laStaging: d.createBuffer({ size: N * 8, usage: BUF.COPY_DST() | BUF.MAP_READ() }), // lattice+act, one map
     };
     d.queue.writeBuffer(buf.lattice, 0, opts.lattice);
     d.queue.writeBuffer(buf.kind, 0, opts.kind);
@@ -353,6 +354,23 @@ export class GpuCpm {
     const out = new Int32Array(this.buf.latStaging.getMappedRange().slice(0));
     this.buf.latStaging.unmap();
     return out;
+  }
+
+  /** Read lattice AND act in ONE mapAsync (one GPU→CPU pipeline drain instead of two). The two
+   *  serial blocking reads were ~3ms each; combining halves that stall — the dominant per-tick cost
+   *  of the retrofit bridge. */
+  async readLatticeAct(): Promise<{ lat: Int32Array; act: Int32Array }> {
+    const N = this.field * this.field;
+    const enc = this.d.createCommandEncoder();
+    enc.copyBufferToBuffer(this.buf.lattice, 0, this.buf.laStaging, 0, N * 4);
+    enc.copyBufferToBuffer(this.buf.act, 0, this.buf.laStaging, N * 4, N * 4);
+    this.d.queue.submit([enc.finish()]);
+    await this.buf.laStaging.mapAsync(MAP_READ_FLAG());
+    const range: ArrayBuffer = this.buf.laStaging.getMappedRange();
+    const lat = new Int32Array(range.slice(0, N * 4));
+    const act = new Int32Array(range.slice(N * 4, N * 8));
+    this.buf.laStaging.unmap();
+    return { lat, act };
   }
 
   async readPerimeters(): Promise<Int32Array> {
