@@ -160,6 +160,7 @@ export class CpmWorldScene extends Phaser.Scene {
         getPlayerId: () => ws.controlledCellId,
         // ?gpuworld: true once the CPM step is running on the GPU (GpuStepBridge), false on CPU fallback.
         gpuActive: () => ws.gpuActive(),
+        gpuDiag: () => ws.gpuDiag(),
         occupants: () => ws.grid.occupants,
         deaths: () => ws.deaths,
         perf: () => ws.prof.report(),

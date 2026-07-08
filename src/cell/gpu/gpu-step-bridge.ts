@@ -208,13 +208,21 @@ export class GpuStepBridge {
   /** Advance the sim `n` Monte-Carlo steps on the GPU and write the result back into Artistoo.
    *  Returns the ids of any cells that died on the GPU (lost all pixels) so the caller can
    *  reconcile its own bookkeeping (CellRecord map, agent tier). */
+  /** Per-phase wall-clock timings of the last step() (ms), for perf triage. */
+  readonly lastTimings: Record<string, number> = {};
+  private stepCount = 0;
+  /** Read the (CPU-budget-only) perimeter back every Nth step; the GPU keeps its own each MCS. */
+  private static readonly PERIM_READ_EVERY = 8;
+
   async step(n: number): Promise<{ dead: number[] }> {
+    const t0 = performance.now();
     // export live Artistoo state -> upload -> refresh baselines -> step
     const { lattice, actArr, kind, targetVol, steer } = exportArtistooState(
       this.cpm, this.act, this.attract, this.field, this.volN, this.yBits, this.yMask,
       (id) => this.sim.isFrozen(id),
     );
     const conf = this.cpm.conf;
+    const t1 = performance.now();
     // Per-kind params are mutated live (setKindActive -> LAMBDA_ACT, perimeter budget -> P), so
     // re-upload them every step or the player's crawl toggle + perimeter budget would be frozen
     // at build state.
@@ -234,7 +242,17 @@ export class GpuStepBridge {
     );
     this.gpu.recomputeReductions();
     this.gpu.stepCellParallelN(n);
-    return this.writeBack();
+    const t2 = performance.now();
+    await this.gpu.flush(); // GPU step actually executes here
+    const t3 = performance.now();
+    const r = await this.writeBack();
+    const t4 = performance.now();
+    this.lastTimings["export"] = +(t1 - t0).toFixed(2);
+    this.lastTimings["upload"] = +(t2 - t1).toFixed(2);
+    this.lastTimings["gpuStep"] = +(t3 - t2).toFixed(2);
+    this.lastTimings["readback"] = +(t4 - t3).toFixed(2);
+    this.lastTimings["total"] = +(t4 - t0).toFixed(2);
+    return r;
   }
 
   /** Pull the stepped lattice/perimeter/activity off the GPU and write them back into Artistoo's
@@ -246,8 +264,13 @@ export class GpuStepBridge {
     const xStep = 1 << this.yBits;
     // Serial, not Promise.all: readLattice + readAct share one staging buffer (latStaging) and
     // readPerimeters shares volStaging with readVolumes — concurrent maps collide ("outstanding map").
+    // Lattice + act round-trip every tick (both feed the CPU: rendering + the next step's crawl).
+    // Perimeter is read-only-FROM-the-GPU (recomputed there each MCS) and only feeds the CPU-side
+    // perimeter budget, so it's amortized — a slightly stale budget is imperceptible but a blocking
+    // readback every tick is not.
+    const readPerim = (this.stepCount++ % GpuStepBridge.PERIM_READ_EVERY) === 0;
     const lat = await this.gpu.readLattice();
-    const perimArr = await this.gpu.readPerimeters();
+    const perimArr = readPerim ? await this.gpu.readPerimeters() : null;
     const actArr = await this.gpu.readAct();
 
     // Rewrite the padded pixel array from the tight lattice; recount volumes as we go.
@@ -270,7 +293,7 @@ export class GpuStepBridge {
       const v = vol[id] ?? 0;
       if (v > 0) {
         nr++;
-        cellperimeters[id] = perimArr[id] ?? 0;
+        if (perimArr) cellperimeters[id] = perimArr[id] ?? 0;
       } else if (t2k[id] !== undefined) {
         dead.push(id);
         delete t2k[id];

@@ -643,6 +643,12 @@ export class WorldSim {
     return this.gpuEnabled && !this.gpuFailed && this.gpu !== null;
   }
 
+  /** Perf triage for ?gpuworld: per-phase timings of the last GPU step + MCS driven this tick. */
+  gpuDiag(): object {
+    return { timings: this.gpu?.lastTimings ?? null, lastSteps: this.lastGpuSteps, capacity: this.gpu?.capacity };
+  }
+  private lastGpuSteps = 0;
+
   /** Advance the CPM lattice `steps` MCS on the GPU. Builds the bridge lazily and rebuilds it if the
    *  live cell-id range has outgrown the GPU buffers (a spawn beyond headroom). Falls back to CPU
    *  permanently if WebGPU is unavailable. */
@@ -727,6 +733,7 @@ export class WorldSim {
     const plan = simStepsFor(this.simAccumMs, 1000 / this.mcsPerSec, MAX_CATCHUP_STEPS);
     this.simAccumMs = plan.remainderMs;
     if (this.gpuEnabled && !this.gpuFailed && plan.steps > 0) {
+      this.lastGpuSteps = plan.steps;
       await this.gpuStep(plan.steps);
     } else {
       // SPIKE: swap in the checkerboard step (same math, phase-alternating order) to eyeball

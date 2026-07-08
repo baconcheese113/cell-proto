@@ -53,12 +53,16 @@ export class LocalSimClient implements SimClient {
 
   private async loop(): Promise<void> {
     if (this.disposed) return;
-    const now = performance.now();
-    const dt = Math.min((now - this.lastTime) / 1000, 0.1);
-    this.lastTime = now;
+    const start = performance.now();
+    const dt = Math.min((start - this.lastTime) / 1000, 0.1);
+    this.lastTime = start;
     await this.worldSim.tick(dt);
     this.latest = this.worldSim.snapshot();
-    if (!this.disposed) setTimeout(() => void this.loop(), 1000 / 60);
+    if (this.disposed) return;
+    // Schedule the next tick after only the REMAINDER of the 60Hz budget (was a flat 16.7ms idle on
+    // top of every tick — which at a ~26ms GPU tick alone dropped the rate to ~23Hz).
+    const remaining = 1000 / 60 - (performance.now() - start);
+    setTimeout(() => void this.loop(), Math.max(0, remaining));
   }
 
   setInput(input: WorldInput): void {
