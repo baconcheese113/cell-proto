@@ -152,7 +152,7 @@ export class CpmWorldScene extends Phaser.Scene {
       // Diagnose "jello boundaries": cell-cell membrane sharpness, CPU (sequential) vs GPU (parallel).
       gpuBridgeBoundaryTest: (mcs?: number) => gpuBridgeBoundaryTest(mcs),
       gpuBridgeFrozenTest: (mcs?: number) => gpuBridgeFrozenTest(mcs),
-      gpuBridgeSpawnTest: (mcs?: number) => gpuBridgeSpawnTest(mcs),
+      gpuBridgeSpawnTest: (mcs?: number, headroom?: number) => gpuBridgeSpawnTest(mcs, headroom),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;
@@ -165,6 +165,35 @@ export class CpmWorldScene extends Phaser.Scene {
         // ?gpuworld: true once the CPM step is running on the GPU (GpuStepBridge), false on CPU fallback.
         gpuActive: () => ws.gpuActive(),
         gpuDiag: () => ws.gpuDiag(),
+        // Energy distribution over microbes (kind 4) — to see if they're on a starvation trajectory.
+        energyDiag: () => {
+          const s = ws.sim as any;
+          const es: number[] = [];
+          for (const rec of s.getCells()) if (rec.kind === 4) es.push(Math.round(ws.life.energyOf(rec.id)));
+          es.sort((a, b) => a - b);
+          const sum = es.reduce((x, y) => x + y, 0);
+          return { microbes: es.length, min: es[0] ?? 0, mean: es.length ? Math.round(sum / es.length) : 0, max: es[es.length - 1] ?? 0, lowEnergy: es.filter((e) => e < 15).length };
+        },
+        // Volume/fragmentation breakdown: distinguishes cells SHRINKING (total below target) from
+        // FRAGMENTING (total ~ok but largest component small) — the two ways a cell trips the rules
+        // layer's "dissolved" death. A/B ?local vs ?gpuworld.
+        volDiag: () => {
+          const s = ws.sim as any;
+          const comps = s.componentSizesByCell();
+          const cents = s.centroidsAll();
+          let n = 0, shrunk = 0, fragmented = 0; const samples: number[][] = [];
+          for (const rec of s.getCells()) {
+            const target = s.targetVolume(rec.id);
+            if (target <= 0) continue;
+            const px = cents.get(rec.id)?.pixels ?? 0;
+            const largest = (comps.get(rec.id) ?? [0])[0] ?? 0;
+            n++;
+            if (px < 0.4 * target) shrunk++;
+            else if (largest < 0.4 * target) fragmented++;
+            if (samples.length < 6) samples.push([rec.kind, Math.round(px), Math.round(largest), target]);
+          }
+          return { n, shrunk, fragmented, samples };
+        },
         // Live boundary diagnostic: activity hotness + mean membrane roughness over all live cells,
         // for A/B-ing ?local (CPU) vs ?gpuworld (GPU) on the REAL world.
         liveDiag: () => {

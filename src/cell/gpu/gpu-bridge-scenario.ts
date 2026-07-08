@@ -267,34 +267,49 @@ export async function gpuBridgeFrozenTest(mcs = 400): Promise<object> {
  *  "too many cells dissolving on spawn". Runs with generous id headroom so this isolates step
  *  DYNAMICS (not a capacity/rebuild miss). Reports the new cell's pixel count right after spawn vs
  *  after more steps, CPU vs GPU. */
-export async function gpuBridgeSpawnTest(mcs = 300): Promise<object> {
+export async function gpuBridgeSpawnTest(mcs = 300, headroom = 200): Promise<object> {
   const field = 80;
-  const run = async (useGpu: boolean): Promise<{ before: number; after: number }> => {
+  const run = async (useGpu: boolean): Promise<{ before: number; after: number; rebuilds: number }> => {
     const cfg: CpmWorldConfig = { ...DEFAULT_WORLD_CONFIG, fieldSize: field, temperature: 20, stepsPerFrame: 1, seed: 1 };
     const sim = new CpmSimulation(cfg, [PLAYER_PROFILE, ENEMY_PROFILE]);
-    sim.spawnCellFilled(1, 45, 40, 9);
-    sim.setKindActive(1, false);
+    // a crowd of active cells (like the busy lumen a promoted cell spawns into)
+    for (let gy = 16; gy <= field - 16; gy += 16) for (let gx = 16; gx <= field - 16; gx += 16) {
+      sim.spawnCellFilled(((gx + gy) / 16) % 2 === 0 ? 1 : 2, gx, gy, 6);
+    }
+    sim.setKindActive(1, true); sim.setKindActive(2, true);
     let bridge: GpuStepBridge | null = null;
+    let rebuilds = 0;
     if (useGpu) {
-      const b = await GpuStepBridge.create(sim, { idHeadroom: 200 }); // headroom so capacity isn't the variable
-      if ("error" in b) return { before: -1, after: -1 };
+      const b = await GpuStepBridge.create(sim, { idHeadroom: headroom });
+      if ("error" in b) return { before: -1, after: -1, rebuilds: 0 };
       bridge = b;
     }
+    // WorldSim-style step: rebuild the bridge if a spawn outgrew capacity (mirrors WorldSim.gpuStep).
     const step = async (n: number): Promise<void> => {
-      if (bridge) { for (let d = 0; d < n; d += 40) await bridge.step(Math.min(40, n - d)); }
-      else sim.stepN(n);
+      if (!bridge) { sim.stepN(n); return; }
+      if (GpuStepBridge.maxLiveId(sim) > bridge.capacity) {
+        bridge.destroy();
+        const b = await GpuStepBridge.create(sim, { idHeadroom: headroom });
+        if ("error" in b) return;
+        bridge = b; rebuilds++;
+      }
+      for (let d = 0; d < n; d += 40) await bridge.step(Math.min(40, n - d));
     };
     await step(mcs);
-    const nc = sim.spawnCellFilled(2, 22, 22, 6); // spawn a fresh enemy cell mid-run
+    const nc = sim.spawnCellFilled(2, 40, 40, 6); // spawn a fresh, properly-sized active cell mid-run
     const before = sim.centroidLattice(nc.id)?.pixels ?? 0;
     await step(mcs);
     const after = sim.centroidLattice(nc.id)?.pixels ?? 0;
     bridge?.destroy();
-    return { before, after };
+    return { before, after, rebuilds };
   };
   const cpu = await run(false);
   const gpu = await run(true);
-  return { targetVol: ENEMY_PROFILE.volume, cpu_before: cpu.before, cpu_after: cpu.after, gpu_before: gpu.before, gpu_after: gpu.after };
+  return {
+    targetVol: ENEMY_PROFILE.volume, headroom,
+    cpu_before: cpu.before, cpu_after: cpu.after,
+    gpu_before: gpu.before, gpu_after: gpu.after, gpu_rebuilds: gpu.rebuilds,
+  };
 }
 
 /** Flow gate (M-Bridge-2): a resting, unsteered flowing-kind cell should drift DOWNSTREAM under the

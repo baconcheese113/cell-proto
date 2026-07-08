@@ -38,6 +38,10 @@ interface CpmInternals {
   t2k: number[];
   cellvolume: number[];
   nr_cells: number;
+  /** Cached stat results (Centroids, ConnectedComponentsByCell, ...). CPM.timeStep clears this each
+   *  MCS; the GPU path bypasses timeStep, so the bridge must clear it or getStat consumers (the rules
+   *  layer's fragmentation check) read STALE connectivity and spuriously kill moving cells. */
+  stat_values: Record<string, unknown>;
   getConstraint(name: string): unknown;
 }
 interface ActConstraint { cellpixelsact: Record<number, number>; }
@@ -302,6 +306,10 @@ export class GpuStepBridge {
     }
     this.cpm.cellvolume = vol;
     this.cpm.nr_cells = nr;
+    // Invalidate the CPM stat cache (Centroids / ConnectedComponentsByCell / ...). Normally
+    // cpm.timeStep does this every MCS; the GPU path skips timeStep, so without this the rules
+    // layer's connected-component check reads a stale (often empty) result and culls moving cells.
+    this.cpm.stat_values = {};
 
     // Activity write-back (rendering-only). Rebuild the sparse map keyed by padded index.
     const cpa: Record<number, number> = {};
