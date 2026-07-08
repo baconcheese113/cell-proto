@@ -7,7 +7,7 @@
 
 import { CpmSimulation } from "../cpm-simulation";
 import { GpuStepBridge } from "./gpu-step-bridge";
-import { PLAYER_PROFILE, ENEMY_PROFILE, DEFAULT_WORLD_CONFIG } from "../cpm-config";
+import { PLAYER_PROFILE, ENEMY_PROFILE, ENDOTHELIAL_PROFILE, DEFAULT_WORLD_CONFIG } from "../cpm-config";
 import type { CpmWorldConfig, CpmCellProfile } from "../cpm-config";
 import type { CellId } from "../../vendor/artistoo";
 
@@ -310,6 +310,52 @@ export async function gpuBridgeSpawnTest(mcs = 300, headroom = 200): Promise<obj
     cpu_before: cpu.before, cpu_after: cpu.after,
     gpu_before: gpu.before, gpu_after: gpu.after, gpu_rebuilds: gpu.rebuilds,
   };
+}
+
+/** Diapedesis vs smoothing sweep: an immune cell (strong Act) must push THROUGH a cohesive lining
+ *  band (immune↔lining adhesion=100, so Act drives it through). GPU-only perimeter tension on the
+ *  lining (smoothKinds) resists that poke. Sweeps the lining lambdaP and reports how far the immune
+ *  cell got past the lining for each — so we can pick the largest lambdaP that still transmigrates. */
+export async function gpuBridgeDiapedesisTest(mcs = 2500): Promise<object> {
+  const field = 70;
+  const liningY0 = 30, liningY1 = 40; // lining band rows
+  const runOne = async (liningLambdaP: number): Promise<number> => {
+    const cfg: CpmWorldConfig = { ...DEFAULT_WORLD_CONFIG, fieldSize: field, temperature: 20, stepsPerFrame: 1, seed: 1 };
+    // kind 1 = immune (PLAYER: strong Act), kind 2 = lining (ENDOTHELIAL: inert, cohesive).
+    const sim = new CpmSimulation(cfg, [PLAYER_PROFILE, ENDOTHELIAL_PROFILE]);
+    // two lining cells forming a band with a junction at x=field/2 (the immune pushes the junction).
+    sim.spawnCellFilled(2, Math.round(field * 0.3), 35, 0); // seed; grow via stamping below
+    // stamp the band directly as two kind-2 cells
+    const mid = Math.round(field / 2);
+    const stampBand = (kind: number, x0: number, x1: number): void => {
+      const rec = sim.spawnCellAtLattice(kind, Math.round((x0 + x1) / 2), 35);
+      for (let y = liningY0; y < liningY1; y++) for (let x = x0; x < x1; x++) {
+        if (sim.ownerAtLattice(x, y) === 0) (sim.cpm as unknown as { setpix(p: [number, number], t: number): void }).setpix([x, y], rec.id);
+      }
+    };
+    stampBand(2, 8, mid);
+    stampBand(2, mid, field - 8);
+    const immune = sim.spawnCellFilled(1, mid, 54, 7);
+    // diapedesis adhesion (mirror world-sim): immune↔lining expensive, lining cohesive.
+    sim.setKindAdhesion(1, 2, 100);
+    sim.setKindAdhesion(2, 2, 20);
+    sim.setKindActive(1, true);
+    sim.setKindActive(2, false);
+    sim.steerCell(immune.id, mid, 6); // drive the immune cell UP through the lining
+
+    const bridge = await GpuStepBridge.create(sim, {
+      smoothKinds: liningLambdaP > 0 ? { kinds: [2], lambdaP: liningLambdaP } : undefined,
+    });
+    if ("error" in bridge) return NaN;
+    for (let done = 0; done < mcs; done += 40) await bridge.step(Math.min(40, mcs - done));
+    bridge.destroy();
+    // How far ABOVE the lining top (liningY0) the immune centroid got. >0 = broke through.
+    const c = sim.centroidsAll().get(immune.id);
+    return c ? +(liningY0 - c.y).toFixed(1) : NaN; // positive => above the lining = transmigrated
+  };
+  const out: Record<string, number> = {};
+  for (const lp of [0, 0.25, 0.5, 0.75]) out[`lambdaP_${lp}`] = await runOne(lp);
+  return out; // per lambdaP: immune centroid's px ABOVE the lining top (>0 means it transmigrated)
 }
 
 /** Flow gate (M-Bridge-2): a resting, unsteered flowing-kind cell should drift DOWNSTREAM under the

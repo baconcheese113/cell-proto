@@ -14,7 +14,7 @@ import { runBench, spikeCompare, cpuMoveTest } from "./cpm-bench";
 import { gpuSpike } from "./cpm-gpu-spike";
 import { gpuBench, gpuScale } from "./gpu/cpm-gpu-bench";
 import { gpuSteerTest, gpuBarrierTest, gpuMoveTest } from "./gpu/cpm-gpu-scenarios";
-import { gpuBridgeParity, gpuBridgeFlowTest, gpuBridgeBoundaryTest, gpuBridgeFrozenTest, gpuBridgeSpawnTest } from "./gpu/gpu-bridge-scenario";
+import { gpuBridgeParity, gpuBridgeFlowTest, gpuBridgeBoundaryTest, gpuBridgeFrozenTest, gpuBridgeSpawnTest, gpuBridgeDiapedesisTest } from "./gpu/gpu-bridge-scenario";
 
 export class CpmWorldScene extends Phaser.Scene {
   private sim!: SimClient;
@@ -153,6 +153,7 @@ export class CpmWorldScene extends Phaser.Scene {
       gpuBridgeBoundaryTest: (mcs?: number) => gpuBridgeBoundaryTest(mcs),
       gpuBridgeFrozenTest: (mcs?: number) => gpuBridgeFrozenTest(mcs),
       gpuBridgeSpawnTest: (mcs?: number, headroom?: number) => gpuBridgeSpawnTest(mcs, headroom),
+      gpuBridgeDiapedesisTest: (mcs?: number) => gpuBridgeDiapedesisTest(mcs),
     };
     if (this.sim instanceof LocalSimClient) {
       const ws = this.sim.worldSim;

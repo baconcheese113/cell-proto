@@ -663,9 +663,10 @@ export class WorldSim {
         permeableKind: CONTROLLED_KIND, // the player plows through barriers, matching the CPU sim
         barrierKinds: [DEBRIS_KIND], // inert ripped-membrane fragments are hard barriers
         idHeadroom: WorldSim.GPU_ID_HEADROOM,
-        // The perimeter-less structural tissue (epithelium/lining/fibroblast) goes ragged on the
-        // parallel step; a small GPU-only membrane tension restores the crisp borders the CPU has.
-        smoothKinds: { kinds: [EPITHELIAL_KIND, ENDOTHELIAL_KIND, FIBROBLAST_KIND], lambdaP: 3 },
+        // NB: NO smoothKinds tension on the tissue. It would crisp the ragged borders, but the
+        // gpuBridgeDiapedesisTest sweep proved ANY lambdaP>0 (even 0.25) on the deformable lining
+        // BLOCKS diapedesis — the immune cell can no longer poke through. Passable tissue must stay
+        // floppy, so the parallel-step roughness on structural cells is accepted as-is.
       });
       if ("error" in built) {
         console.warn("GPU step unavailable, staying on CPU:", built.error);
