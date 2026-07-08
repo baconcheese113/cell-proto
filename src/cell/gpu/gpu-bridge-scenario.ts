@@ -354,7 +354,7 @@ export async function gpuBridgeDiapedesisTest(mcs = 2500): Promise<object> {
     return c ? +(liningY0 - c.y).toFixed(1) : NaN; // positive => above the lining = transmigrated
   };
   const out: Record<string, number> = {};
-  for (const lp of [0, 0.25, 0.5, 0.75]) out[`lambdaP_${lp}`] = await runOne(lp);
+  for (const lp of [0, 0.5, 1, 2]) out[`lambdaP_${lp}`] = await runOne(lp);
   return out; // per lambdaP: immune centroid's px ABOVE the lining top (>0 means it transmigrated)
 }
 

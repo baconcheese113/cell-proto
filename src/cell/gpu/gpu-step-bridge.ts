@@ -149,6 +149,69 @@ export class GpuStepBridge {
 
   /** Reusable tight footprint-mask scratch (lazily sized; rebuilt each step). */
   private fpMask: Uint32Array | null = null;
+  /** Reusable connected-component label buffer for despeckle (lazily sized). */
+  private labelBuf: Int32Array | null = null;
+  private compCell: number[] = [];
+  private compSize: number[] = [];
+  private floodStack: Int32Array | null = null;
+
+  /** Reabsorb spurious disconnected fragments: keep only each cell's LARGEST connected component,
+   *  clearing smaller ones to background. The parallel step sheds these tiny islands (visible tissue
+   *  "speckle"); the sequential CPU step never does (measured: CPU 0 fragmented tissue cells, GPU
+   *  ~14). SAFE for diapedesis — the immune cell's poke-through finger is part of its MAIN (largest)
+   *  component, so it is always kept. */
+  private despeckle(lat: Int32Array): void {
+    const f = this.field, N = f * f;
+    if (!this.labelBuf || this.labelBuf.length !== N) {
+      this.labelBuf = new Int32Array(N);
+      this.floodStack = new Int32Array(N);
+    }
+    const label = this.labelBuf, stack = this.floodStack!;
+    label.fill(-1);
+    const compCell = this.compCell, compSize = this.compSize;
+    let nComp = 0;
+    for (let s = 0; s < N; s++) {
+      const id = lat[s];
+      if (id <= 0 || label[s] !== -1) continue;
+      const comp = nComp++;
+      let sp = 0;
+      stack[sp++] = s;
+      label[s] = comp;
+      let size = 0;
+      while (sp > 0) {
+        const p = stack[--sp];
+        size++;
+        const px = p % f, py = (p / f) | 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          const ny = py + ky;
+          if (ny < 0 || ny >= f) continue;
+          for (let kx = -1; kx <= 1; kx++) {
+            if (kx === 0 && ky === 0) continue;
+            const nx = px + kx;
+            if (nx < 0 || nx >= f) continue;
+            const ni = ny * f + nx;
+            if (lat[ni] === id && label[ni] === -1) { label[ni] = comp; stack[sp++] = ni; }
+          }
+        }
+      }
+      compCell[comp] = id;
+      compSize[comp] = size;
+    }
+    // largest component index per cell id
+    const largest = new Map<number, number>();
+    for (let c = 0; c < nComp; c++) {
+      const cell = compCell[c];
+      const cur = largest.get(cell);
+      if (cur === undefined || compSize[c] > compSize[cur]) largest.set(cell, c);
+    }
+    // Clear ONLY tiny non-largest components (true specks). Larger second components are transient
+    // splits (e.g. a cell the player plowed through) that reconnect naturally — deleting them loses
+    // real mass and triggers a regrowth-churn feedback that slews the GPU step ~12x.
+    for (let s = 0; s < N; s++) {
+      const c = label[s];
+      if (c >= 0 && c !== largest.get(compCell[c]) && compSize[c] < GpuStepBridge.SPECK_MAX) lat[s] = 0;
+    }
+  }
   /** GPU-only membrane-tension override for perimeter-less structural tissue (see smoothKinds). */
   private smooth?: { kinds: number[]; lambdaP: number };
 
@@ -226,6 +289,9 @@ export class GpuStepBridge {
   private stepCount = 0;
   /** Read the (CPU-budget-only) perimeter back every Nth step; the GPU keeps its own each MCS. */
   private static readonly PERIM_READ_EVERY = 8;
+  /** Despeckle clears only disconnected fragments SMALLER than this (true specks); larger transient
+   *  splits are left to reconnect, else deleting their mass churns the step. */
+  private static readonly SPECK_MAX = 10;
 
   async step(n: number): Promise<{ dead: number[] }> {
     const t0 = performance.now();
@@ -293,6 +359,8 @@ export class GpuStepBridge {
     // Lattice + act in one map (one drain). Perimeter is amortized (rare) and reads separately.
     const { lat, act: actArr } = await this.gpu.readLatticeAct();
     const perimArr = readPerim ? await this.gpu.readPerimeters() : null;
+
+    this.despeckle(lat);
 
     // Rewrite the padded pixel array from the tight lattice; recount volumes as we go.
     const px = this.cpm.grid._pixels;
