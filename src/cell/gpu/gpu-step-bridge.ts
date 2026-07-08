@@ -62,6 +62,11 @@ export interface GpuStepBridgeOptions {
   permeableKind?: number;
   /** Kinds that act as hard barriers (debris/walls). */
   barrierKinds?: number[];
+  /** GPU-ONLY membrane tension for otherwise perimeter-less (lambdaP=0) structural tissue. The
+   *  parallel step leaves such cells' boundaries ragged where the CPU's sequential step keeps them
+   *  crisp; a small lambdaP with a smooth per-kind target perimeter (~3.6·√area) restores crisp
+   *  borders on the GPU without touching the CPU physics. Deliberate CPU↔GPU divergence. */
+  smoothKinds?: { kinds: number[]; lambdaP: number };
 }
 
 /** Export the live Artistoo state into GPU-tight (y*field+x) buffers. Lattice + activity are
@@ -144,6 +149,8 @@ export class GpuStepBridge {
 
   /** Reusable tight footprint-mask scratch (lazily sized; rebuilt each step). */
   private fpMask: Uint32Array | null = null;
+  /** GPU-only membrane-tension override for perimeter-less structural tissue (see smoothKinds). */
+  private smooth?: { kinds: number[]; lambdaP: number };
 
   /** Highest cell id the GPU buffers can address. Exceed it (a spawn beyond headroom) and the
    *  caller must rebuild the bridge with a bigger allocation. */
@@ -206,7 +213,9 @@ export class GpuStepBridge {
     gpu.uploadAct(actArr);
     // Seed the resident vol/perim baselines from the uploaded lattice.
     gpu.recomputeReductions();
-    return new GpuStepBridge(gpu, sim, cpm, act, perim, attract, flow, foot, field, volN, yBits, yMask);
+    const b = new GpuStepBridge(gpu, sim, cpm, act, perim, attract, flow, foot, field, volN, yBits, yMask);
+    b.smooth = opts.smoothKinds;
+    return b;
   }
 
   /** Advance the sim `n` Monte-Carlo steps on the GPU and write the result back into Artistoo.
@@ -229,8 +238,17 @@ export class GpuStepBridge {
     const t1 = performance.now();
     // Per-kind params are mutated live (setKindActive -> LAMBDA_ACT, perimeter budget -> P), so
     // re-upload them every step or the player's crawl toggle + perimeter budget would be frozen
-    // at build state.
-    this.gpu.uploadKindParams(conf.MAX_ACT, conf.LAMBDA_ACT, conf.LAMBDA_P, conf.P);
+    // at build state. Apply the GPU-only smoothing tension for perimeter-less structural tissue.
+    let lambdaP = conf.LAMBDA_P, targetP = conf.P;
+    if (this.smooth) {
+      lambdaP = [...conf.LAMBDA_P];
+      targetP = [...conf.P];
+      for (const k of this.smooth.kinds) {
+        lambdaP[k] = this.smooth.lambdaP;
+        targetP[k] = Math.round(3.6 * Math.sqrt(conf.V[k] ?? 0)); // smooth (compact) target perimeter
+      }
+    }
+    this.gpu.uploadKindParams(conf.MAX_ACT, conf.LAMBDA_ACT, lambdaP, targetP);
     this.gpu.uploadLattice(lattice);
     this.gpu.uploadAct(actArr);
     this.gpu.uploadKind(kind);

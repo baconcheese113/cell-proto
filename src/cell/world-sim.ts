@@ -663,6 +663,9 @@ export class WorldSim {
         permeableKind: CONTROLLED_KIND, // the player plows through barriers, matching the CPU sim
         barrierKinds: [DEBRIS_KIND], // inert ripped-membrane fragments are hard barriers
         idHeadroom: WorldSim.GPU_ID_HEADROOM,
+        // The perimeter-less structural tissue (epithelium/lining/fibroblast) goes ragged on the
+        // parallel step; a small GPU-only membrane tension restores the crisp borders the CPU has.
+        smoothKinds: { kinds: [EPITHELIAL_KIND, ENDOTHELIAL_KIND, FIBROBLAST_KIND], lambdaP: 3 },
       });
       if ("error" in built) {
         console.warn("GPU step unavailable, staying on CPU:", built.error);
