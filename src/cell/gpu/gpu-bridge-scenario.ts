@@ -117,3 +117,32 @@ export async function gpuBridgeParity(mcs = 1000): Promise<object> {
     cells: gpuHealth.cells,
   };
 }
+
+/** Flow gate (M-Bridge-2): a resting, unsteered flowing-kind cell should drift DOWNSTREAM under the
+ *  vessel current when it's on, and barely move when it's off. Proves CpmFlowConstraint is mirrored
+ *  into the GPU step through the bridge (upload + shader term). */
+export async function gpuBridgeFlowTest(mcs = 800): Promise<object> {
+  const field = 80;
+  const startX = 20;
+  const runOne = async (flowLambda: number): Promise<number> => {
+    const cfg: CpmWorldConfig = { ...DEFAULT_WORLD_CONFIG, fieldSize: field, temperature: 20, stepsPerFrame: 1, seed: 1 };
+    const sim = new CpmSimulation(cfg, [PLAYER_PROFILE, ENEMY_PROFILE]);
+    const cell = sim.spawnCellFilled(1, startX, 40, 8);
+    sim.setKindActive(1, false); // rest (player lambdaActRest=0 => still); flow is the only force
+    sim.flow.setFlowingKinds([1]);
+    sim.flow.setFlow(1, 0, flowLambda); // +x current
+    const bridge = await GpuStepBridge.create(sim);
+    if ("error" in bridge) return NaN;
+    for (let done = 0; done < mcs; done += 40) await bridge.step(Math.min(40, mcs - done));
+    bridge.destroy();
+    return sim.centroidsAll().get(cell.id)?.x ?? NaN;
+  };
+  const withFlowX = await runOne(60);
+  const noFlowX = await runOne(0);
+  return {
+    startX,
+    withFlowX: +withFlowX.toFixed(1),
+    noFlowX: +noFlowX.toFixed(1),
+    drift: +(withFlowX - noFlowX).toFixed(1), // downstream displacement attributable to the current
+  };
+}

@@ -46,6 +46,12 @@ interface AttractConstraint {
   targets: Map<number, [number, number]>;
   lambdas: Map<number, number>;
 }
+interface FlowConstraint {
+  dirX: number; dirY: number; strength: number; flowKindsBitmask(): number;
+}
+interface FootprintConstraint {
+  host: number; strength: number; writeTightMask(out: Uint32Array, field: number): void;
+}
 
 export interface GpuStepBridgeOptions {
   /** Kind that may cross barrier boundaries (the player). Mirror the sim's barrierPermeableKind. */
@@ -123,12 +129,17 @@ export class GpuStepBridge {
     private readonly act: ActConstraint,
     private readonly perim: PerimConstraint,
     private readonly attract: AttractConstraint,
+    private readonly flow: FlowConstraint,
+    private readonly foot: FootprintConstraint,
     private readonly field: number,
     /** Buffer capacity = highest cell id the GPU buffers can address + 1. */
     private readonly volN: number,
     private readonly yBits: number,
     private readonly yMask: number,
   ) {}
+
+  /** Reusable tight footprint-mask scratch (lazily sized; rebuilt each step). */
+  private fpMask: Uint32Array | null = null;
 
   /** Highest cell id the GPU buffers can address. Exceed it (a spawn beyond headroom) and the
    *  caller must rebuild the bridge with a bigger allocation. */
@@ -165,6 +176,8 @@ export class GpuStepBridge {
     const act = cpm.getConstraint("ActivityConstraint") as ActConstraint;
     const perim = cpm.getConstraint("PerimeterConstraint") as PerimConstraint;
     const attract = cpm.getConstraint("PerCellAttractionConstraint") as AttractConstraint;
+    const flow = cpm.getConstraint("CpmFlowConstraint") as FlowConstraint;
+    const foot = cpm.getConstraint("CpmFootprintConstraint") as FootprintConstraint;
 
     // GpuCpm carries a single scalar lambdaV (per-cell target volume, but one shared strength).
     // Use kind 1's; the bench keeps LAMBDA_V uniform so this is exact. (Per-kind lambdaV is a
@@ -189,7 +202,7 @@ export class GpuStepBridge {
     gpu.uploadAct(actArr);
     // Seed the resident vol/perim baselines from the uploaded lattice.
     gpu.recomputeReductions();
-    return new GpuStepBridge(gpu, sim, cpm, act, perim, attract, field, volN, yBits, yMask);
+    return new GpuStepBridge(gpu, sim, cpm, act, perim, attract, flow, foot, field, volN, yBits, yMask);
   }
 
   /** Advance the sim `n` Monte-Carlo steps on the GPU and write the result back into Artistoo.
@@ -211,6 +224,14 @@ export class GpuStepBridge {
     this.gpu.uploadKind(kind);
     this.gpu.uploadTargetVol(targetVol);
     this.gpu.uploadSteer(steer);
+    // Flow (vessel current) + Footprint (nucleus coupling), mirrored from the CPU constraints.
+    if (!this.fpMask) this.fpMask = new Uint32Array(this.field * this.field);
+    this.foot.writeTightMask(this.fpMask, this.field);
+    this.gpu.uploadFootprint(this.fpMask);
+    this.gpu.setFlowFootprint(
+      this.flow.dirX, this.flow.dirY, this.flow.strength,
+      this.foot.strength, this.foot.host, this.flow.flowKindsBitmask(),
+    );
     this.gpu.recomputeReductions();
     this.gpu.stepCellParallelN(n);
     return this.writeBack();
@@ -277,9 +298,7 @@ export class GpuStepBridge {
   }
 }
 
-// KNOWN GAPS (tracked for M-Bridge-2/3):
-//  - Footprint (nucleus coupling) + Flow (vessel current) are not yet in the GPU cell-step, so a sim
-//    that relies on them will diverge from the CPU until they are ported into CELL_STEP_WGSL.
+// KNOWN GAPS:
 //  - lambdaV is a single scalar on the GPU; per-kind LAMBDA_V is not honoured (kindParams carries
 //    maxAct/lambdaAct/lambdaP/targetP but not lambdaV).
 //  - Live per-kind conf changes (setKindActive -> LAMBDA_ACT, perimeter-budget retarget -> P) are

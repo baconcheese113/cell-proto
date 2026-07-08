@@ -37,3 +37,11 @@ test("bridge: a real CpmSimulation stepped on the GPU stays healthy + self-consi
   expect(res.cpu_consistent).toBe(true);
   expect(res.cpu_fragmented).toBe(0);
 });
+
+test("bridge: the vessel current (Flow) drifts a flowing cell downstream (M-Bridge-2)", async ({ page }) => {
+  const res = await page.evaluate(async () => await window.__cpm.gpuBridgeFlowTest(800));
+  console.log("bridge flow:", res);
+  expect(res.error, "GPU available").toBeUndefined();
+  // With the current on, the resting cell is carried downstream (+x) noticeably further than with it off.
+  expect(res.drift, "flow carries the cell downstream").toBeGreaterThan(3);
+});

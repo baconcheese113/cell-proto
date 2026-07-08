@@ -81,6 +81,9 @@ export class GpuCpm {
       steer: store(volN * 16), // per-cell vec4 (targetX, targetY, lambda, frozen); zero = idle
       borderCount: store(volN * 4),
       borderList: store(volN * CAP * 4),
+      footprint: store(N * 4), // per-pixel organelle-footprint mask (0 by default -> off)
+      fx: uniform(16), // vec4<f32>: flowX, flowY, flowLambda, footprintLambda
+      fxk: uniform(16), // vec4<u32>: footprintHost, flowKindsBitmask
       framebuffer: store(N * 4),
       params: uniform(48),
       nk: uniform(16),
@@ -220,6 +223,9 @@ export class GpuCpm {
           { binding: 11, resource: { buffer: buf.params } },
           { binding: 12, resource: { buffer: buf.nk } },
           { binding: 13, resource: { buffer: buf.cellDim } },
+          { binding: 14, resource: { buffer: buf.footprint } },
+          { binding: 15, resource: { buffer: buf.fx } },
+          { binding: 16, resource: { buffer: buf.fxk } },
         ],
       }),
     };
@@ -386,6 +392,16 @@ export class GpuCpm {
   /** Buffer capacity: the highest cell id the per-cell buffers can address. Exceed it and the bridge
    *  must rebuild with a larger allocation. */
   get capacity(): number { return this.volN - 1; }
+  /** Overwrite the per-pixel organelle-footprint mask (y*field+x, 1 = footprint pixel). */
+  uploadFootprint(mask: Uint32Array): void { this.d.queue.writeBuffer(this.buf.footprint, 0, mask); }
+  /** Set the vessel-flow vector + footprint coupling params (both default off = 0 lambda). */
+  setFlowFootprint(
+    flowX: number, flowY: number, flowLambda: number,
+    footprintLambda: number, footprintHost: number, flowKindsBitmask: number,
+  ): void {
+    this.d.queue.writeBuffer(this.buf.fx, 0, new Float32Array([flowX, flowY, flowLambda, footprintLambda]));
+    this.d.queue.writeBuffer(this.buf.fxk, 0, new Uint32Array([footprintHost, flowKindsBitmask, 0, 0]));
+  }
 
   /** Recompute vol + perim from the current lattice (call after uploadLattice so the next step's
    *  deltaH reads correct baselines). */

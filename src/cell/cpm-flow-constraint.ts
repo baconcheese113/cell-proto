@@ -39,6 +39,17 @@ export class CpmFlowConstraint extends SoftConstraint {
     this.flowing = new Set(kinds);
   }
 
+  // --- reads for the GPU bridge (mirror this constraint into the GPU step) ---
+  get dirX(): number { return this.fx; }
+  get dirY(): number { return this.fy; }
+  get strength(): number { return this.lambda; }
+  /** Bitmask of flowing kinds (bit k set => kind k is carried). */
+  flowKindsBitmask(): number {
+    let m = 0;
+    for (const k of this.flowing) m |= 1 << k;
+    return m;
+  }
+
   deltaH(
     src_i: IndexCoordinate,
     tgt_i: IndexCoordinate,

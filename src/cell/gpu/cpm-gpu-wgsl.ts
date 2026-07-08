@@ -341,6 +341,9 @@ struct Params {
 @group(0) @binding(11) var<uniform> P: Params;
 @group(0) @binding(12) var<uniform> NK: vec4<u32>; // x=nKinds y=permeableKind z=barrierBitmask
 @group(0) @binding(13) var<uniform> DIM: vec4<u32>; // x=N y=volN z=W w=CAP
+@group(0) @binding(14) var<storage, read> footprint: array<u32>; // per-pixel: 1 = organelle footprint
+@group(0) @binding(15) var<uniform> FX: vec4<f32>;  // x=flowX y=flowY z=flowLambda w=footprintLambda
+@group(0) @binding(16) var<uniform> FXK: vec4<u32>; // x=footprintHost y=flowKindsBitmask
 
 fn inb(x: i32, y: i32) -> bool { return x >= 0 && x < i32(P.W) && y >= 0 && y < i32(P.H); }
 fn latA(x: i32, y: i32) -> i32 { if (inb(x,y)) { return atomicLoad(&lattice[y * i32(P.W) + x]); } return 0; }
@@ -450,6 +453,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let ldir = dirx*dirx + diry*diry;
         if (ldir > 0.0) { let r = f32(tx-sx)*dirx + f32(ty-sy)*diry; dH += (-r * s.z) / sqrt(ldir); }
       }
+    }
+    // Flow (CpmFlowConstraint): flowing-kind cells drift downstream. Reward a copy whose displacement
+    // (source pixel -> target pixel) aligns with the global flow vector. FX.z = pulse-scaled lambda.
+    if (srcType > 0 && FX.z > 0.0 && (FXK.y & (1u << kSrc)) != 0u) {
+      dH += -FX.z * (f32(tx - sx) * FX.x + f32(ty - sy) * FX.y);
+    }
+    // Footprint (CpmFootprintConstraint): keep host cytoplasm over the organelle footprint. Removing
+    // host off a footprint pixel costs +lambda; covering one with host is rewarded -lambda.
+    if (FX.w > 0.0 && footprint[ti] == 1u) {
+      let host = i32(FXK.x);
+      if (tgtType == host && srcType != host) { dH += FX.w; }
+      else if (tgtType != host && srcType == host) { dH += -FX.w; }
     }
 
     var accept = dH < 0.0;

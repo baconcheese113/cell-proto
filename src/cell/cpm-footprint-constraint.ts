@@ -47,6 +47,22 @@ export class CpmFootprintConstraint extends SoftConstraint {
     this.lambda = lambda;
   }
 
+  // --- reads for the GPU bridge (mirror this constraint into the GPU step) ---
+  get host(): CellId { return this.hostId; }
+  get strength(): number { return this.lambda; }
+  /** Write a tight (y*field+x) 0/1 footprint mask into `out` (length field*field). Clears first;
+   *  a no-op leaving it all-zero when the coupling is disabled. */
+  writeTightMask(out: Uint32Array, field: number): void {
+    out.fill(0);
+    if (this.lambda === 0) return;
+    const yb = this.yBits;
+    for (let x = 0; x < field; x++) {
+      for (let y = 0; y < field; y++) {
+        if (this.mark[(x << yb) + y] === 1) out[y * field + x] = 1;
+      }
+    }
+  }
+
   deltaH(
     _src_i: IndexCoordinate,
     tgt_i: IndexCoordinate,
