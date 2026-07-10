@@ -531,7 +531,7 @@ export class WorldSim {
   /** Build a self-contained render snapshot (worker-ready). Renders the lattice,
    *  projects agents + interior to world coords, drains FX + control-change. */
   snapshot(): WorldSnapshot {
-    this.renderLattice();
+    this.prof.measure("render", () => this.renderLattice());
 
     const scale = this.sim.scale;
     const diag = this.input.diag;
@@ -649,10 +649,18 @@ export class WorldSim {
   }
   private lastGpuSteps = 0;
 
-  /** Advance the CPM lattice `steps` MCS on the GPU. Builds the bridge lazily and rebuilds it if the
-   *  live cell-id range has outgrown the GPU buffers (a spawn beyond headroom). Falls back to CPU
-   *  permanently if WebGPU is unavailable. */
-  private async gpuStep(steps: number): Promise<void> {
+  /** Collect the previously kicked GPU step into Artistoo (call at TICK START). The readback drain
+   *  already happened in the background since last tick, so this rarely blocks — that's the pipeline. */
+  private async gpuHarvest(): Promise<void> {
+    if (this.gpu) await this.gpu.harvest();
+  }
+
+  /** Kick the next GPU step WITHOUT blocking (call at TICK END, after all CPU edits so the export
+   *  captures them). Builds/rebuilds the bridge as needed; falls back to CPU permanently if WebGPU is
+   *  unavailable. The pipelined harvest happens at the next tick's start. */
+  private async gpuKick(steps: number): Promise<void> {
+    // Drain any straggler before a rebuild (normally already harvested at tick start).
+    if (this.gpu && this.gpu.hasPending) await this.gpu.harvest();
     const needed = GpuStepBridge.maxLiveId(this.sim);
     if (this.gpu && needed > this.gpu.capacity) {
       this.gpu.destroy();
@@ -676,7 +684,7 @@ export class WorldSim {
       }
       this.gpu = built;
     }
-    await this.gpu.step(steps);
+    this.gpu.kick(steps);
   }
 
   // ---- the one fixed-timestep tick ----------------------------------------
@@ -686,6 +694,12 @@ export class WorldSim {
     this.timeSec += dtSec;
     this.tickSeq++;
     const input = this.input;
+
+    // PIPELINE (GPU): collect the step kicked LAST tick into the lattice now, at the top, BEFORE any
+    // system reads or edits the grid. The kick happens at the very END of the tick (after all edits),
+    // so the export captures them — no clobber. The ~8ms GPU→CPU drain overlapped the whole last tick,
+    // so this harvest rarely blocks. Costs one tick of latency (worth it to hide the drain).
+    if (this.gpuEnabled && !this.gpuFailed) await this.gpuHarvest();
 
     // Controlled cell: rests by default, protrudes + steers only while LMB held.
     const kind = this.controlledKind();
@@ -736,10 +750,11 @@ export class WorldSim {
     this.simAccumMs += dtSec * 1000;
     const plan = simStepsFor(this.simAccumMs, 1000 / this.mcsPerSec, MAX_CATCHUP_STEPS);
     this.simAccumMs = plan.remainderMs;
-    if (this.gpuEnabled && !this.gpuFailed && plan.steps > 0) {
-      this.lastGpuSteps = plan.steps;
-      await this.gpuStep(plan.steps);
-    } else {
+    this.lastGpuSteps = plan.steps;
+    if (this.gpuEnabled && !this.gpuFailed) {
+      // GPU path: the step is KICKED at the end of the tick (pipelined) — nothing to do here. The
+      // grid the following systems read is the one just harvested at the top of this tick.
+    } else if (plan.steps > 0) {
       // SPIKE: swap in the checkerboard step (same math, phase-alternating order) to eyeball
       // whether the parallel-friendly scheme preserves the dynamics. DEV toggle only.
       this.prof.measure("cpm.step", () =>
@@ -827,6 +842,11 @@ export class WorldSim {
 
     this.prof.measure("rules", () => this.rules.update());
     this.stepDebris(dtSec);
+
+    // PIPELINE (GPU): kick the next step NOW — after every grid edit this tick (streaming, combat,
+    // rules kills, debris) — so the export captures them all. Non-blocking; the result is harvested
+    // at the top of the next tick, hiding the GPU→CPU drain.
+    if (this.gpuEnabled && !this.gpuFailed && plan.steps > 0) await this.gpuKick(plan.steps);
 
     this.census();
     this.prof.frame();

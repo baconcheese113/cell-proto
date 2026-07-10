@@ -293,25 +293,32 @@ export class GpuStepBridge {
    *  splits are left to reconnect, else deleting their mass churns the step. */
   private static readonly SPECK_MAX = 10;
 
-  async step(n: number): Promise<{ dead: number[] }> {
+  /** In-flight readback (the lattice+act map from the last kick). Non-null between kick() and the
+   *  harvest() that collects it — the whole point of the pipeline. */
+  private pending: Promise<void> | null = null;
+
+  /** True while a kicked step is awaiting harvest (used by WorldSim to bootstrap the pipeline). */
+  get hasPending(): boolean { return this.pending !== null; }
+
+  /** Kick a GPU step WITHOUT blocking on its result: export the live CPU state, upload it, submit the
+   *  Monte-Carlo step, and START the readback (non-blocking). harvest() collects the result on the
+   *  NEXT tick, by which time the ~8ms GPU→CPU drain has already happened in the background. */
+  kick(n: number): void {
     const t0 = performance.now();
-    // export live Artistoo state -> upload -> refresh baselines -> step
     const { lattice, actArr, kind, targetVol, steer } = exportArtistooState(
       this.cpm, this.act, this.attract, this.field, this.volN, this.yBits, this.yMask,
       (id) => this.sim.isFrozen(id),
     );
     const conf = this.cpm.conf;
-    const t1 = performance.now();
     // Per-kind params are mutated live (setKindActive -> LAMBDA_ACT, perimeter budget -> P), so
-    // re-upload them every step or the player's crawl toggle + perimeter budget would be frozen
-    // at build state. Apply the GPU-only smoothing tension for perimeter-less structural tissue.
+    // re-upload them every step. Apply the GPU-only smoothing tension for perimeter-less tissue.
     let lambdaP = conf.LAMBDA_P, targetP = conf.P;
     if (this.smooth) {
       lambdaP = [...conf.LAMBDA_P];
       targetP = [...conf.P];
       for (const k of this.smooth.kinds) {
         lambdaP[k] = this.smooth.lambdaP;
-        targetP[k] = Math.round(3.6 * Math.sqrt(conf.V[k] ?? 0)); // smooth (compact) target perimeter
+        targetP[k] = Math.round(3.6 * Math.sqrt(conf.V[k] ?? 0));
       }
     }
     this.gpu.uploadKindParams(conf.MAX_ACT, conf.LAMBDA_ACT, lambdaP, targetP);
@@ -330,34 +337,41 @@ export class GpuStepBridge {
     );
     this.gpu.recomputeReductions();
     this.gpu.stepCellParallelN(n);
-    const t2 = performance.now();
-    // No explicit flush: the readback's mapAsync already waits for the step to finish, so a separate
-    // flush would just double the GPU-sync stall.
-    const r = await this.writeBack();
-    const t3 = performance.now();
-    this.lastTimings["export"] = +(t1 - t0).toFixed(2);
-    this.lastTimings["upload"] = +(t2 - t1).toFixed(2);
-    this.lastTimings["readback"] = +(t3 - t2).toFixed(2);
-    this.lastTimings["total"] = +(t3 - t0).toFixed(2);
+    this.pending = this.gpu.requestLatticeAct();
+    this.lastTimings["kick"] = +(performance.now() - t0).toFixed(2);
+  }
+
+  /** Collect the previously kicked step and write it back into Artistoo. No-op (no dead) if nothing
+   *  is pending. The awaited map usually resolved during the last tick, so this rarely blocks. */
+  async harvest(): Promise<{ dead: number[] }> {
+    if (!this.pending) return { dead: [] };
+    const t0 = performance.now();
+    await this.pending;
+    this.pending = null;
+    const { lat, act: actArr } = this.gpu.takeLatticeAct();
+    const r = this.writeBackFrom(lat, actArr);
+    this.lastTimings["harvest"] = +(performance.now() - t0).toFixed(2);
     return r;
+  }
+
+  /** Synchronous step (kick + immediate harvest) for tests/scenarios that expect blocking semantics. */
+  async step(n: number): Promise<{ dead: number[] }> {
+    if (this.pending) await this.harvest();
+    this.kick(n);
+    return this.harvest();
   }
 
   /** Pull the stepped lattice/perimeter/activity off the GPU and write them back into Artistoo's
    *  arrays directly (NOT via setpixi replay, which would reset Act + is O(changed×listeners)).
    *  Volume is recounted from the downloaded lattice so grid._pixels and cellvolume stay exactly
    *  consistent. */
-  private async writeBack(): Promise<{ dead: number[] }> {
+  private async writeBackFrom(lat: Int32Array, actArr: Int32Array): Promise<{ dead: number[] }> {
     const f = this.field;
     const xStep = 1 << this.yBits;
-    // Serial, not Promise.all: readLattice + readAct share one staging buffer (latStaging) and
-    // readPerimeters shares volStaging with readVolumes — concurrent maps collide ("outstanding map").
-    // Lattice + act round-trip every tick (both feed the CPU: rendering + the next step's crawl).
     // Perimeter is read-only-FROM-the-GPU (recomputed there each MCS) and only feeds the CPU-side
-    // perimeter budget, so it's amortized — a slightly stale budget is imperceptible but a blocking
-    // readback every tick is not.
+    // perimeter budget, so it's amortized (a slightly stale budget is imperceptible). This is the
+    // only blocking readback left, and only every Nth tick.
     const readPerim = (this.stepCount++ % GpuStepBridge.PERIM_READ_EVERY) === 0;
-    // Lattice + act in one map (one drain). Perimeter is amortized (rare) and reads separately.
-    const { lat, act: actArr } = await this.gpu.readLatticeAct();
     const perimArr = readPerim ? await this.gpu.readPerimeters() : null;
 
     this.despeckle(lat);

@@ -360,12 +360,26 @@ export class GpuCpm {
    *  serial blocking reads were ~3ms each; combining halves that stall — the dominant per-tick cost
    *  of the retrofit bridge. */
   async readLatticeAct(): Promise<{ lat: Int32Array; act: Int32Array }> {
+    await this.requestLatticeAct();
+    return this.takeLatticeAct();
+  }
+
+  /** Pipelined readback part 1: copy lattice+act into the staging buffer and START its mapAsync
+   *  WITHOUT awaiting. Returns the map promise so the caller can await it a whole tick later (by
+   *  which time the GPU work is done → the await is ~free), hiding the ~8ms drain. */
+  requestLatticeAct(): Promise<void> {
     const N = this.field * this.field;
     const enc = this.d.createCommandEncoder();
     enc.copyBufferToBuffer(this.buf.lattice, 0, this.buf.laStaging, 0, N * 4);
     enc.copyBufferToBuffer(this.buf.act, 0, this.buf.laStaging, N * 4, N * 4);
     this.d.queue.submit([enc.finish()]);
-    await this.buf.laStaging.mapAsync(MAP_READ_FLAG());
+    return this.buf.laStaging.mapAsync(MAP_READ_FLAG());
+  }
+
+  /** Pipelined readback part 2: read the mapped staging buffer (the map promise from
+   *  requestLatticeAct must have resolved) and unmap. */
+  takeLatticeAct(): { lat: Int32Array; act: Int32Array } {
+    const N = this.field * this.field;
     const range: ArrayBuffer = this.buf.laStaging.getMappedRange();
     const lat = new Int32Array(range.slice(0, N * 4));
     const act = new Int32Array(range.slice(N * 4, N * 8));
